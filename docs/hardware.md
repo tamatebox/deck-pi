@@ -248,12 +248,29 @@ display on I2C instead of SPI is what keeps this option open.
 | 16 | REW — hold to seek back, tap for previous | v1 |
 | 26 | FF — hold to seek forward, tap for next | v1 |
 | 12, 13 | Jog encoder A / B | v2 |
-| 4 | spare | |
+| 4 | reserved for a dedicated ENTER, if open question 3 takes it | v1 |
+| 7 | **Unity** — passthrough on/off | v2 |
 
-**One spare, not two.** Losing GPIO 20 to I2S costs a pin, so open question 3 (a
-dedicated ENTER) would take the last one. If more are needed, the reserve is
-**GPIO 7** — it is SPI0's second chip select, and a single ADC needs only one, so
-7 can come out of the SPI0 block without giving up the v2 pitch fader.
+**The count is five buttons in v1, six in v2, seven if ENTER gets its own.** BACK,
+PLAY/PAUSE, CUE, FF and REW, plus the encoder whose push is ENTER; then unity; then
+possibly a separate ENTER.
+
+**The pins land exactly, with nothing left over.** Losing GPIO 20 to I2S left one
+free pin, and there are two claimants:
+
+- **GPIO 4** to a dedicated ENTER. It is the clean spare and open question 3 is a
+  v1 question, so it gets the v1 pin.
+- **GPIO 7** to the unity button. It is SPI0's second chip select, and a single
+  ADC needs only one, so it can leave the SPI0 block without giving up the v2 pitch
+  fader. Both claimants on that block — the ADC and this button — are v2, which
+  makes the trade self-consistent.
+
+An earlier version of this table had no row for unity at all, even though
+`architecture.md` requires it to be a button rather than a deadband on the fader.
+It was the only control in either phase without a pin.
+
+After this there is no spare. Anything further needs I2C — a port expander on the
+bus the display already uses — or it needs one of these to go.
 
 Three cautions from HiFiBerry's GPIO-usage page, all of which this build touches:
 
