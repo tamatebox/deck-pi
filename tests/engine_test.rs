@@ -16,6 +16,7 @@ use fixtures::{decode_samples, signal, Bits, Kind, Scratch};
 use deck_pi::engine::{Engine, Outcome};
 use deck_pi::file::{Depth, RING_CHANNELS};
 use deck_pi::ring::{self, Miss};
+use deck_pi::sink::{AudioSink, CaptureSink};
 use deck_pi::transport::Transport;
 use deck_pi::window::{Command, Window};
 
@@ -30,8 +31,12 @@ fn depth_of(bits: Bits) -> Depth {
 }
 
 /// Plays a whole track through the real arrangement — a window thread filling
-/// beside a callback draining — and returns every sample handed to the
-/// output, in order.
+/// beside a callback draining into a sink — and returns every sample the sink
+/// was handed, in order.
+///
+/// The sink is where ALSA stands, which is what makes this the null test
+/// `implementation.md` describes rather than a parallel one: "play a file,
+/// collect the buffers handed to ALSA, and check them against the source".
 fn play_to_completion(path: &std::path::Path, frames: u64) -> Vec<i32> {
     let (window, reader, info) = Window::load(path, WINDOW_BYTES).expect("loads");
     assert_eq!(info.frames, frames);
@@ -43,14 +48,17 @@ fn play_to_completion(path: &std::path::Path, frames: u64) -> Vec<i32> {
     let mut engine = Engine::new(frames);
     transport.play();
 
-    let mut collected = Vec::with_capacity(frames as usize * RING_CHANNELS);
+    let mut sink = CaptureSink::new(info.rate, PERIOD, frames as usize + PERIOD);
     let mut period = vec![0i32; PERIOD * RING_CHANNELS];
     let deadline = Instant::now() + Duration::from_secs(30);
 
     loop {
         match engine.fill(&transport, &reader, &mut period) {
             Outcome::Played { frames: n } | Outcome::PlayedTail { frames: n } => {
-                collected.extend_from_slice(&period[..n * RING_CHANNELS]);
+                // Only the frames that are really the track's go to the
+                // device; the silent tail of the last short period does not.
+                sink.write_period(&period[..n * RING_CHANNELS])
+                    .expect("sink accepted the period");
             }
             Outcome::EndOfTrack => break,
             // The filler has not reached here yet. A real callback would have
@@ -62,9 +70,17 @@ fn play_to_completion(path: &std::path::Path, frames: u64) -> Vec<i32> {
         assert!(Instant::now() < deadline, "playback never completed");
     }
 
+    sink.drain().expect("drain");
     let _ = tx.send(Command::Shutdown);
     let _ = thread.join();
-    collected
+
+    assert!(sink.was_drained());
+    assert_eq!(
+        sink.frames_written() as u64,
+        frames,
+        "the sink was handed the wrong number of frames"
+    );
+    sink.captured().to_vec()
 }
 
 #[test]

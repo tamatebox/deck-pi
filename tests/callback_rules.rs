@@ -14,6 +14,7 @@ use assert_no_alloc::assert_no_alloc;
 use deck_pi::engine::{Engine, Outcome};
 use deck_pi::file::RING_CHANNELS;
 use deck_pi::ring::{self, Miss};
+use deck_pi::sink::{AudioSink, CaptureSink};
 use deck_pi::transport::Transport;
 
 /// Everything the audio callback does, on a resident window.
@@ -148,6 +149,56 @@ fn the_callback_body_allocates_nothing_on_any_branch() {
     assert_eq!(seen[6], Some(Outcome::EndOfTrack));
     assert_eq!(seen[7], Some(Outcome::EndOfTrack));
     assert!(seen[8].is_some());
+}
+
+/// The callback plus the sink, which together are everything that runs under
+/// the deadline. `CaptureSink` is pre-allocated to its full size and refuses
+/// to grow, so if it ever started reallocating this test would catch it —
+/// which matters, because a sink that grows on write would make every other
+/// allocation-freedom result here meaningless.
+#[test]
+fn the_callback_and_the_sink_together_allocate_nothing() {
+    let frames = 2_000u64;
+    let (mut w, r) = ring::new(2048);
+    let block: Vec<i32> = (0..2000u64).flat_map(|f| [f as i32, f as i32]).collect();
+    w.append(&block);
+
+    let t = Transport::new();
+    let mut e = Engine::new(frames);
+    let mut period = vec![0i32; 128 * RING_CHANNELS];
+    let mut sink = CaptureSink::new(44_100, 128, frames as usize + 128);
+    let mut wrote = 0usize;
+    let mut errors = 0usize;
+
+    assert_no_alloc(|| {
+        t.play();
+        for _ in 0..20 {
+            match e.fill(&t, &r, &mut period) {
+                Outcome::Played { frames: n } | Outcome::PlayedTail { frames: n } => {
+                    if sink.write_period(&period[..n * RING_CHANNELS]).is_err() {
+                        errors += 1;
+                    } else {
+                        wrote += n;
+                    }
+                }
+                _ => {}
+            }
+        }
+        // CUE runs on the control thread, but nothing stops it landing
+        // between two periods, so its slot writes are on this budget too.
+        t.cue_down();
+        t.cue_up();
+        let _ = e.fill(&t, &r, &mut period);
+        sink.drain().unwrap();
+    });
+
+    assert_eq!(errors, 0);
+    // 20 periods of 128 is 2560 frames, but the track is 2000: fifteen full
+    // periods and an 80-frame tail. The rest come back as EndOfTrack and
+    // write nothing, which is the behaviour under test as much as the count.
+    assert_eq!(wrote, frames as usize);
+    assert_eq!(sink.frames_written(), frames as usize);
+    assert!(sink.was_drained());
 }
 
 /// Not a test of our code — a test of the harness. Without it, every

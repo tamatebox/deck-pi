@@ -10,6 +10,7 @@
 pub mod engine;
 pub mod file;
 pub mod ring;
+pub mod sink;
 pub mod sndfile;
 pub mod transport;
 pub mod window;
