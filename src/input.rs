@@ -1,0 +1,652 @@
+//! Input: `/dev/input`, the kernel-decoded encoder, and tap-versus-hold.
+//!
+//! `architecture.md` puts this module's ignorance in its description: it
+//! "deliberately knows nothing" about GPIO or wiring, because it emits
+//! standard keycodes and **which GPIO produces which is a line in
+//! `config.txt`**. Nothing here names a pin.
+//!
+//! # Three disciplines, not one, and the difference is not cosmetic
+//!
+//! | Buttons | Discipline | Why |
+//! |---|---|---|
+//! | BACK, PLAY/PAUSE, ENTER | `Press` on key-down | No second meaning, so waiting would only add latency to the most-used controls. |
+//! | CUE | `Press` and `Release` | Three behaviours, and the *transport* picks from its own state — `cue_down` / `cue_up` are already exactly this pair. The Cue Point Sampler "continues while the button is held in", so it must start on the press, not after a threshold. |
+//! | FF, REW | `Tap`, `HoldStart`, `HoldEnd` | Genuinely two actions on one button: hold seeks, tap changes track. The tap meaning is unknowable until the button comes back up before the threshold. |
+//!
+//! Giving every button the tap-or-hold treatment would be simpler and wrong:
+//! **PLAY held a little long would emit a hold and never a tap**, so the deck
+//! would not start. That is the failure shape a uniform rule buys.
+//!
+//! `hardware.md` fixes the two intervals and the gap between them: debounce is
+//! 30-50 ms and happens **in the kernel**, and the hold threshold is 300-500 ms
+//! and happens here. They must stay well clear of each other.
+//!
+//! # The clock is read here, not taken from the event
+//!
+//! Every kernel input event carries a timestamp, and using it is the obvious
+//! thing. It is also a trap: those timestamps are **`CLOCK_REALTIME` by
+//! default**, so an NTP step — plausible while the Ethernet cable is in for
+//! maintenance — would turn a tap into a forty-minute hold. `EVIOCSCLOCKID`
+//! can switch the device to `CLOCK_MONOTONIC`, but a monotonic reading taken
+//! when the event is *read* is accurate to microseconds against a 300 ms
+//! threshold, so the extra ioctl and its extra failure mode buy nothing.
+//!
+//! The decoder therefore takes the time as an argument. That is also what
+//! makes tap-versus-hold testable with no device and no sleeping.
+
+use std::time::Duration;
+
+/// `hardware.md`: "the hold threshold (~300-500 ms) must sit well clear of the
+/// 30-50 ms debounce interval". The middle of the range.
+pub const HOLD_AFTER: Duration = Duration::from_millis(400);
+
+/// The controls, named by function rather than by pin or keycode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Button {
+    Back,
+    PlayPause,
+    Cue,
+    Enter,
+    Rew,
+    Ff,
+}
+
+/// How a button's presses are interpreted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Discipline {
+    /// One meaning; fires on key-down.
+    Simple,
+    /// Down and up both matter, and the transport decides what they mean.
+    Momentary,
+    /// Two meanings on one button, separated by [`HOLD_AFTER`].
+    TapOrHold,
+}
+
+impl Button {
+    /// The keycodes `config.txt` assigns, from `hardware.md`.
+    ///
+    /// **Verify these against `input-event-codes.h` on the actual image**
+    /// rather than trusting them here — `hardware.md` says so, and one wrong
+    /// number is a button that silently does nothing. `Cue` is `KEY_STOP`
+    /// because Linux has no cue keycode; its three behaviours are all
+    /// userspace interpretation of one code.
+    pub fn from_keycode(code: u16) -> Option<Button> {
+        Some(match code {
+            158 => Button::Back,      // KEY_BACK
+            164 => Button::PlayPause, // KEY_PLAYPAUSE
+            128 => Button::Cue,       // KEY_STOP
+            28 => Button::Enter,      // KEY_ENTER
+            168 => Button::Rew,       // KEY_REWIND
+            208 => Button::Ff,        // KEY_FASTFORWARD
+            _ => return None,
+        })
+    }
+
+    pub fn keycode(self) -> u16 {
+        match self {
+            Button::Back => 158,
+            Button::PlayPause => 164,
+            Button::Cue => 128,
+            Button::Enter => 28,
+            Button::Rew => 168,
+            Button::Ff => 208,
+        }
+    }
+
+    pub fn discipline(self) -> Discipline {
+        match self {
+            // Nothing else to wait for, and these are the controls where
+            // latency is felt.
+            Button::Back | Button::PlayPause | Button::Enter => Discipline::Simple,
+            // The Cue Point Sampler plays while held, so the press starts it.
+            Button::Cue => Discipline::Momentary,
+            // Hold seeks, tap changes track.
+            Button::Rew | Button::Ff => Discipline::TapOrHold,
+        }
+    }
+
+    const ALL: [Button; 6] = [
+        Button::Back,
+        Button::PlayPause,
+        Button::Cue,
+        Button::Enter,
+        Button::Rew,
+        Button::Ff,
+    ];
+
+    fn index(self) -> usize {
+        match self {
+            Button::Back => 0,
+            Button::PlayPause => 1,
+            Button::Cue => 2,
+            Button::Enter => 3,
+            Button::Rew => 4,
+            Button::Ff => 5,
+        }
+    }
+}
+
+/// What the rest of the application reacts to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    /// A `Simple` button, or the down half of a `Momentary` one.
+    Press(Button),
+    /// The up half of a `Momentary` button.
+    Release(Button),
+    /// A `TapOrHold` button released before the threshold.
+    Tap(Button),
+    /// A `TapOrHold` button still down at the threshold.
+    HoldStart(Button),
+    /// That button released.
+    HoldEnd(Button),
+    /// Browse encoder detents, signed. One unit per detent — the kernel
+    /// decodes the quadrature, so nothing here counts edges.
+    Browse(i32),
+}
+
+/// One kernel input event, already split out of its struct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RawEvent {
+    pub kind: u16,
+    pub code: u16,
+    pub value: i32,
+}
+
+/// `linux/input-event-codes.h`.
+pub const EV_SYN: u16 = 0x00;
+pub const EV_KEY: u16 = 0x01;
+pub const EV_REL: u16 = 0x02;
+pub const EV_ABS: u16 = 0x03;
+pub const REL_X: u16 = 0x00;
+pub const ABS_X: u16 = 0x00;
+
+/// Turns kernel events into [`Action`]s.
+///
+/// Holds no clock and does no I/O, so tap-versus-hold is testable without a
+/// device and without sleeping.
+pub struct Decoder {
+    hold_after: Duration,
+    /// When each button went down, and whether its hold has already fired.
+    down: [Option<(Duration, bool)>; 6],
+    /// The last absolute encoder position, for the `EV_ABS` flavour.
+    abs: Option<i32>,
+}
+
+impl Default for Decoder {
+    fn default() -> Self {
+        Decoder::new(HOLD_AFTER)
+    }
+}
+
+impl Decoder {
+    pub fn new(hold_after: Duration) -> Decoder {
+        Decoder {
+            hold_after,
+            down: [None; 6],
+            abs: None,
+        }
+    }
+
+    /// Feeds one event, appending whatever it means.
+    pub fn feed(&mut self, now: Duration, ev: RawEvent, out: &mut Vec<Action>) {
+        match ev.kind {
+            EV_KEY => self.key(now, ev, out),
+            // The `rotary-encoder` overlay reports **either** a relative or an
+            // absolute axis depending on its `relative` parameter, and
+            // `hardware.md` says to check the overlay's parameters on the
+            // actual image rather than trusting a spelling written down here.
+            // Both are handled, so the code does not depend on a line of
+            // `config.txt` nobody has run yet.
+            EV_REL if ev.code == REL_X && ev.value != 0 => {
+                out.push(Action::Browse(ev.value))
+            }
+            EV_ABS if ev.code == ABS_X => {
+                // The first absolute reading establishes the baseline and
+                // emits nothing. Without that, an encoder that starts at any
+                // position but zero would scroll the browser that far on the
+                // first event.
+                match self.abs.replace(ev.value) {
+                    Some(prev) if ev.value != prev => {
+                        out.push(Action::Browse(ev.value - prev))
+                    }
+                    _ => {}
+                }
+            }
+            // EV_SYN and anything else: nothing to do. Events are acted on
+            // individually, so no frame boundary is needed.
+            _ => {}
+        }
+    }
+
+    fn key(&mut self, now: Duration, ev: RawEvent, out: &mut Vec<Action>) {
+        let Some(button) = Button::from_keycode(ev.code) else {
+            return;
+        };
+        match ev.value {
+            // Autorepeat. `gpio-key` does not repeat by default, but if it
+            // ever did, treating a repeat as a fresh press would fire PLAY
+            // over and over while a finger rested on it.
+            2 => {}
+            1 => self.press(now, button, out),
+            0 => self.release(button, out),
+            _ => {}
+        }
+    }
+
+    fn press(&mut self, now: Duration, button: Button, out: &mut Vec<Action>) {
+        let slot = &mut self.down[button.index()];
+        if slot.is_some() {
+            // A second down with no up between. The kernel does not do this;
+            // ignoring it keeps the state machine total rather than trusting
+            // that.
+            return;
+        }
+        *slot = Some((now, false));
+        match button.discipline() {
+            Discipline::Simple | Discipline::Momentary => out.push(Action::Press(button)),
+            // Nothing yet — which meaning it has is not known.
+            Discipline::TapOrHold => {}
+        }
+    }
+
+    fn release(&mut self, button: Button, out: &mut Vec<Action>) {
+        let Some((_, hold_fired)) = self.down[button.index()].take() else {
+            // An up with no down. Happens after a device is reopened with a
+            // button already held.
+            return;
+        };
+        match button.discipline() {
+            Discipline::Simple => {}
+            Discipline::Momentary => out.push(Action::Release(button)),
+            Discipline::TapOrHold => out.push(if hold_fired {
+                Action::HoldEnd(button)
+            } else {
+                Action::Tap(button)
+            }),
+        }
+    }
+
+    /// Emits [`Action::HoldStart`] for anything that has now been held long
+    /// enough.
+    ///
+    /// Must be called even when no event arrives, because a hold is defined
+    /// by an event *not* happening. The reader's poll timeout is what bounds
+    /// how late this can be.
+    pub fn tick(&mut self, now: Duration, out: &mut Vec<Action>) {
+        for button in Button::ALL {
+            if button.discipline() != Discipline::TapOrHold {
+                continue;
+            }
+            let slot = &mut self.down[button.index()];
+            if let Some((since, fired)) = slot {
+                if !*fired && now.saturating_sub(*since) >= self.hold_after {
+                    *fired = true;
+                    out.push(Action::HoldStart(button));
+                }
+            }
+        }
+    }
+
+    /// Drops all held state — for a device that went away and came back,
+    /// where the presses that were in flight are no longer knowable.
+    pub fn reset(&mut self) {
+        self.down = [None; 6];
+        self.abs = None;
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod device {
+    use super::*;
+    use std::fs::File;
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+    use std::path::Path;
+
+    /// `struct input_event`, derived rather than hardcoded.
+    ///
+    /// `implementation.md` says "an input event is a fixed 24-byte struct".
+    /// **It is 24 bytes because `timeval` is 16 on a 64-bit build** — measured
+    /// against `linux/input.h` on aarch64: `sizeof` 24, with `type` at 16,
+    /// `code` at 18 and `value` at 20. On a 32-bit userspace `timeval` is 8
+    /// bytes and the struct is 16, so "fixed" is true only of the base
+    /// `decisions.md` chose. Deriving it costs one `size_of` and removes the
+    /// assumption.
+    const TIME_LEN: usize = std::mem::size_of::<libc::timeval>();
+    pub const EVENT_LEN: usize = TIME_LEN + 2 + 2 + 4;
+
+    /// Splits one event out of its bytes. The timestamp is skipped
+    /// deliberately — see the module docs on `CLOCK_REALTIME`.
+    pub fn parse_event(bytes: &[u8]) -> Option<RawEvent> {
+        if bytes.len() < EVENT_LEN {
+            return None;
+        }
+        let u16_at = |o: usize| u16::from_ne_bytes([bytes[o], bytes[o + 1]]);
+        let i32_at = |o: usize| {
+            i32::from_ne_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]])
+        };
+        Some(RawEvent {
+            kind: u16_at(TIME_LEN),
+            code: u16_at(TIME_LEN + 2),
+            value: i32_at(TIME_LEN + 4),
+        })
+    }
+
+    /// One `/dev/input/eventN`.
+    pub struct Device {
+        file: File,
+        /// Sized for a burst; a partial event at the end is carried over,
+        /// because a `read` is not guaranteed to stop on a struct boundary.
+        buf: Vec<u8>,
+        held: usize,
+    }
+
+    impl Device {
+        pub fn open(path: &Path) -> std::io::Result<Device> {
+            Ok(Device {
+                file: File::open(path)?,
+                buf: vec![0u8; EVENT_LEN * 64],
+                held: 0,
+            })
+        }
+
+        /// Waits up to `timeout` for something to read.
+        ///
+        /// A timeout rather than a blocking read, because a **hold is defined
+        /// by an event not arriving**: block forever and `Decoder::tick`
+        /// never runs, so FF would never start seeking. The timeout is what
+        /// bounds how late a `HoldStart` can be.
+        pub fn wait(&self, timeout: Duration) -> std::io::Result<bool> {
+            let mut fds = libc::pollfd {
+                fd: self.file.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let ms = timeout.as_millis().min(i32::MAX as u128) as i32;
+            // SAFETY: one valid `pollfd` describing an open file descriptor
+            // this struct owns.
+            let rc = unsafe { libc::poll(&mut fds, 1, ms) };
+            match rc {
+                -1 => {
+                    let e = std::io::Error::last_os_error();
+                    // A signal is not a failure; the caller loops.
+                    if e.kind() == std::io::ErrorKind::Interrupted {
+                        Ok(false)
+                    } else {
+                        Err(e)
+                    }
+                }
+                0 => Ok(false),
+                _ => Ok(true),
+            }
+        }
+
+        /// Reads whatever is pending and appends the events.
+        pub fn read_pending(&mut self, out: &mut Vec<RawEvent>) -> std::io::Result<()> {
+            let n = self.file.read(&mut self.buf[self.held..])?;
+            let total = self.held + n;
+            let whole = total / EVENT_LEN;
+            for i in 0..whole {
+                if let Some(ev) = parse_event(&self.buf[i * EVENT_LEN..]) {
+                    out.push(ev);
+                }
+            }
+            // Carry the tail. A short read mid-struct is unusual on an evdev
+            // node but not forbidden, and dropping the remainder would
+            // desynchronise every event after it.
+            let rest = total % EVENT_LEN;
+            self.buf.copy_within(whole * EVENT_LEN..total, 0);
+            self.held = rest;
+            Ok(())
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub use device::{parse_event, Device, EVENT_LEN};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(code: u16, value: i32) -> RawEvent {
+        RawEvent {
+            kind: EV_KEY,
+            code,
+            value,
+        }
+    }
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    #[test]
+    fn play_fires_on_the_press_however_long_it_is_held() {
+        // The failure a uniform tap-or-hold rule would cause: PLAY held a
+        // little long emits a hold and never a tap, so the deck does not
+        // start. This is the test that pins the three-discipline split.
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+
+        d.feed(ms(0), key(Button::PlayPause.keycode(), 1), &mut out);
+        assert_eq!(out, vec![Action::Press(Button::PlayPause)]);
+
+        out.clear();
+        d.tick(ms(5_000), &mut out);
+        assert!(out.is_empty(), "a held PLAY must not become a hold gesture");
+
+        d.feed(ms(5_000), key(Button::PlayPause.keycode(), 0), &mut out);
+        assert!(out.is_empty(), "and releasing it must add nothing");
+    }
+
+    #[test]
+    fn ff_tapped_is_a_track_change_and_ff_held_is_a_seek() {
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+
+        // Tap: down and up inside the threshold.
+        d.feed(ms(0), key(Button::Ff.keycode(), 1), &mut out);
+        assert!(out.is_empty(), "nothing is known yet on the way down");
+        d.tick(ms(100), &mut out);
+        assert!(out.is_empty(), "still inside the threshold");
+        d.feed(ms(100), key(Button::Ff.keycode(), 0), &mut out);
+        assert_eq!(out, vec![Action::Tap(Button::Ff)]);
+
+        // Hold: the threshold passes with the button still down.
+        out.clear();
+        d.feed(ms(1_000), key(Button::Ff.keycode(), 1), &mut out);
+        d.tick(ms(1_399), &mut out);
+        assert!(out.is_empty(), "one millisecond short");
+        d.tick(ms(1_400), &mut out);
+        assert_eq!(out, vec![Action::HoldStart(Button::Ff)]);
+
+        // And it fires once, not on every tick.
+        out.clear();
+        d.tick(ms(1_500), &mut out);
+        d.tick(ms(2_000), &mut out);
+        assert!(out.is_empty(), "HoldStart must not repeat");
+
+        d.feed(ms(2_000), key(Button::Ff.keycode(), 0), &mut out);
+        assert_eq!(out, vec![Action::HoldEnd(Button::Ff)]);
+    }
+
+    #[test]
+    fn cue_is_a_press_and_a_release_because_the_transport_decides() {
+        // The Cue Point Sampler "continues while the button is held in", so
+        // it cannot wait for a threshold. `Transport::cue_down` /
+        // `cue_up` are exactly this pair, and which of the three CDJ-350
+        // behaviours happens is decided there from the transport's own state.
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+
+        d.feed(ms(0), key(Button::Cue.keycode(), 1), &mut out);
+        assert_eq!(out, vec![Action::Press(Button::Cue)]);
+        out.clear();
+
+        d.tick(ms(5_000), &mut out);
+        assert!(out.is_empty(), "CUE has no threshold");
+
+        d.feed(ms(5_000), key(Button::Cue.keycode(), 0), &mut out);
+        assert_eq!(out, vec![Action::Release(Button::Cue)]);
+    }
+
+    #[test]
+    fn every_button_has_a_discipline_and_the_split_is_the_documented_one() {
+        use Discipline::*;
+        let expected = [
+            (Button::Back, Simple),
+            (Button::PlayPause, Simple),
+            (Button::Enter, Simple),
+            (Button::Cue, Momentary),
+            (Button::Rew, TapOrHold),
+            (Button::Ff, TapOrHold),
+        ];
+        for (b, want) in expected {
+            assert_eq!(b.discipline(), want, "{:?}", b);
+        }
+        // And the keycode mapping is a bijection, so no two controls share a
+        // code and none is unreachable.
+        for b in Button::ALL {
+            assert_eq!(Button::from_keycode(b.keycode()), Some(b), "{:?}", b);
+        }
+        let mut codes: Vec<u16> = Button::ALL.iter().map(|b| b.keycode()).collect();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), Button::ALL.len(), "two buttons share a keycode");
+    }
+
+    #[test]
+    fn the_hold_threshold_sits_clear_of_the_kernel_debounce() {
+        // `hardware.md` fixes debounce at 30-50 ms and the hold threshold at
+        // 300-500 ms, and says they must stay well clear of each other.
+        assert!(HOLD_AFTER >= ms(300) && HOLD_AFTER <= ms(500));
+        assert!(
+            HOLD_AFTER >= ms(50) * 6,
+            "the hold threshold must be far above the debounce interval"
+        );
+    }
+
+    #[test]
+    fn a_relative_encoder_scrolls_and_an_absolute_one_does_not_jump_on_the_first_event() {
+        // The `rotary-encoder` overlay reports one or the other depending on
+        // a parameter nobody has run `dtoverlay -h` against yet. Handling
+        // both removes the dependency on that.
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+
+        for v in [1, -1, 3] {
+            d.feed(
+                ms(0),
+                RawEvent {
+                    kind: EV_REL,
+                    code: REL_X,
+                    value: v,
+                },
+                &mut out,
+            );
+        }
+        assert_eq!(
+            out,
+            vec![Action::Browse(1), Action::Browse(-1), Action::Browse(3)]
+        );
+
+        // Absolute: the first reading is a baseline, not a scroll of 5000.
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        let abs = |v| RawEvent {
+            kind: EV_ABS,
+            code: ABS_X,
+            value: v,
+        };
+        d.feed(ms(0), abs(5000), &mut out);
+        assert!(out.is_empty(), "the first absolute reading must not scroll");
+        d.feed(ms(0), abs(5002), &mut out);
+        d.feed(ms(0), abs(5001), &mut out);
+        assert_eq!(out, vec![Action::Browse(2), Action::Browse(-1)]);
+    }
+
+    #[test]
+    fn autorepeat_is_ignored() {
+        // `gpio-key` does not repeat by default. If it ever did, treating a
+        // repeat as a fresh press would fire PLAY over and over while a
+        // finger rested on it.
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        d.feed(ms(0), key(Button::PlayPause.keycode(), 1), &mut out);
+        out.clear();
+        for t in [100, 200, 300] {
+            d.feed(ms(t), key(Button::PlayPause.keycode(), 2), &mut out);
+        }
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn an_unknown_keycode_and_a_stray_release_are_both_ignored() {
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        // Some other key entirely — the deck's device could carry more than
+        // the six the overlay declares.
+        d.feed(ms(0), key(30, 1), &mut out);
+        // And an up with no down, which is what a device reopened with a
+        // button already held produces.
+        d.feed(ms(0), key(Button::Ff.keycode(), 0), &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn two_hold_buttons_are_tracked_independently() {
+        // FF and REW at once is not a designed gesture, but one must not
+        // clear the other's timer.
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        d.feed(ms(0), key(Button::Ff.keycode(), 1), &mut out);
+        d.feed(ms(200), key(Button::Rew.keycode(), 1), &mut out);
+
+        d.tick(ms(400), &mut out);
+        assert_eq!(out, vec![Action::HoldStart(Button::Ff)]);
+        out.clear();
+        d.tick(ms(600), &mut out);
+        assert_eq!(out, vec![Action::HoldStart(Button::Rew)]);
+    }
+
+    #[test]
+    fn reset_forgets_everything_in_flight() {
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        d.feed(ms(0), key(Button::Ff.keycode(), 1), &mut out);
+        d.reset();
+        d.tick(ms(10_000), &mut out);
+        assert!(out.is_empty(), "a reset device has no presses in flight");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_event_struct_is_the_size_the_kernel_header_says() {
+        // Measured against `linux/input.h` on aarch64: sizeof 24, with
+        // `type` at 16, `code` at 18 and `value` at 20. Derived from
+        // `timeval` rather than hardcoded, because a 32-bit build makes it
+        // 16 — so "a fixed 24-byte struct" is true of the chosen base and
+        // not of the struct.
+        assert_eq!(
+            EVENT_LEN,
+            std::mem::size_of::<libc::timeval>() + 8,
+            "the event layout moved"
+        );
+
+        // And a round trip through the byte form the kernel writes.
+        let mut bytes = vec![0u8; EVENT_LEN];
+        let t = std::mem::size_of::<libc::timeval>();
+        bytes[t..t + 2].copy_from_slice(&EV_KEY.to_ne_bytes());
+        bytes[t + 2..t + 4].copy_from_slice(&164u16.to_ne_bytes());
+        bytes[t + 4..t + 8].copy_from_slice(&1i32.to_ne_bytes());
+        assert_eq!(
+            parse_event(&bytes),
+            Some(RawEvent {
+                kind: EV_KEY,
+                code: 164,
+                value: 1
+            })
+        );
+        assert_eq!(parse_event(&bytes[..EVENT_LEN - 1]), None, "a short read");
+    }
+}
