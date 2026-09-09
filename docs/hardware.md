@@ -248,29 +248,43 @@ display on I2C instead of SPI is what keeps this option open.
 | 16 | REW — hold to seek back, tap for previous | v1 |
 | 26 | FF — hold to seek forward, tap for next | v1 |
 | 12, 13 | Jog encoder A / B | v2 |
-| 4 | reserved for a dedicated ENTER, if open question 3 takes it | v1 |
 | 7 | **Unity** — passthrough on/off | v2 |
+| 4 | spare | |
 
-**The count is five buttons in v1, six in v2, seven if ENTER gets its own.** BACK,
-PLAY/PAUSE, CUE, FF and REW, plus the encoder whose push is ENTER; then unity; then
-possibly a separate ENTER.
+**Seven switches, and one pin left.** BACK, PLAY/PAUSE, CUE, FF, REW, the encoder's
+push as ENTER, and unity in v2. That is 27 of the header's 28 GPIOs, with GPIO 4
+free.
 
-**The pins land exactly, with nothing left over.** Losing GPIO 20 to I2S left one
-free pin, and there are two claimants:
+Unity takes **GPIO 7**, SPI0's second chip select: one ADC needs one, not two, and
+both claimants on that block — the ADC and this button — are v2, which makes the
+trade self-consistent. An earlier version of this table had no row for unity at all,
+even though `architecture.md` requires it to be a button rather than a deadband on
+the fader; it was the only control in either phase without a pin.
 
-- **GPIO 4** to a dedicated ENTER. It is the clean spare and open question 3 is a
-  v1 question, so it gets the v1 pin.
-- **GPIO 7** to the unity button. It is SPI0's second chip select, and a single
-  ADC needs only one, so it can leave the SPI0 block without giving up the v2 pitch
-  fader. Both claimants on that block — the ADC and this button — are v2, which
-  makes the trade self-consistent.
+**Open question 3 is a swap, not an addition.** A dedicated ENTER would take GPIO 4
+and leave the encoder's push switch unused, freeing GPIO 22. Either way exactly one
+pin is spare.
 
-An earlier version of this table had no row for unity at all, even though
-`architecture.md` requires it to be a button rather than a deadband on the fader.
-It was the only control in either phase without a pin.
+### The button ceiling
 
-After this there is no spare. Anything further needs I2C — a port expander on the
-bus the display already uses — or it needs one of these to go.
+| Assumption | Buttons possible |
+|---|---|
+| As planned — SPI ADC, serial console kept, v2 jog | **8** |
+| **Pitch fader on an I2C ADC instead** | **12** |
+| Also give up the serial console | 14 |
+| Also give up the v2 jog | 16 |
+
+Subtract from 28: ten pins hard-reserved (EEPROM, I2C, the two crystal selects,
+I2S), two for the serial console, four for the encoders, four for an SPI ADC.
+
+**The ADC choice is the whole lever.** This file already names "an MCP3008 or
+ADS1115"; the first is SPI and costs four pins, the second is I2C and costs none,
+joining the bus the display is already on. So which ADC the v2 pitch fader uses
+decides whether there are eight buttons or twelve. Bus time is not the objection —
+a two-byte read at 100 Hz is about 1% of a 400 kHz bus, against the display's 26 ms
+frames.
+
+Past those ceilings the only route is an I2C port expander, or dropping something.
 
 Three cautions from HiFiBerry's GPIO-usage page, all of which this build touches:
 
