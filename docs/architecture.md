@@ -119,8 +119,9 @@ The stick is content; the Pi owns state it created. One consequence to accept:
 cues would not travel between two decks, if a second is ever built, because they
 are two machines.
 
-For a long piece, cues are the primary way to navigate *inside* a track, not just
-a mixing tool — which is why cue regions are pre-locked (see Playback).
+Cues are a mixing tool for dance material and the primary way to navigate *inside*
+a long piece — both, since the stick carries both. Either way cue regions are
+pre-locked (see Playback).
 
 ### Do not upsample
 
@@ -270,6 +271,16 @@ Jog is unaffected: the ring is RAM, so reads inside it are free in either
 direction, and scrubbing past its edge means an `sf_seek` and a refill — exactly
 what a page fault would have cost.
 
+**True of the ring, and measured; not yet true of the filling policy.** Reads inside
+the window really are free in either direction. But the fill step relocates to the
+playhead and only ever appends *forward*, so a **descending** playhead gets a window
+laid out entirely ahead of where it is going: measured at 12 relocations over 12
+periods, 0 periods served. Backwards playback consumes input *below* the position,
+which a forward-only refill never provides. So "built to accept v2 without rework"
+holds for the ring and the rate variable, and the filling policy needs
+direction-aware relocation — inferable from successive playhead values, so no new
+plumbing. A test asserts the present behaviour and names it as a known v2 gap.
+
 Pulling the stick therefore behaves like a CDJ, and for the same reason: what is
 already resident keeps playing. The grace period is the forward half of the
 window, so it is bounded rather than guaranteed, and the window thread is where
@@ -356,6 +367,26 @@ carries two things this application specifically needs:
 - **`soxr_set_io_ratio(soxr, ratio, slew_len)`** — the third argument slews the
   rate change across a span, which is the fix for zipper noise at block
   boundaries. It does not have to be hand-written.
+
+### One configuration requirement comes with it
+
+`SOXR_VR` is allocation-free in steady state **provided `soxr_create` is given a
+ratio range that brackets the range the deck will use.** Declare 1:1 and then set
+ratios outside it and `soxr_process` reallocates on the audio thread, unboundedly,
+while the audio stays correct and `assert_no_alloc` stays silent. The pitch range is
+±10% and known before the resampler is built, so this is a line of setup code rather
+than a design constraint — but it is a load-bearing one, and it lives in
+`implementation.md` with the measurements.
+
+An earlier version of this section said measurement had *inverted* the bullet above —
+that the first-class variable-rate mode was the allocating one and only a fixed ratio
+was clean. That was a misconfigured probe, not a property of libsoxr. The bullet
+stands as written. `decisions.md` records the reversal, and one idea it prompted is
+worth keeping even though its problem evaporated: **moving the resampler off the audio
+thread would buy the invariant's letter and not its purpose**, because the producer
+would then owe every period on time, so the deadline relocates rather than
+disappears — onto a thread where `assert_no_alloc` is equally blind to libsoxr.
+
 
 `passband_end`, `stopband_begin` and `phase_response` are all directly settable,
 so bandwidth trades against CPU continuously rather than in three steps.
@@ -478,9 +509,14 @@ implementing it exist for every controller in play — ssd1306, ssd1309, ssd1322
 (including a 256x64 variant), ssd1327, ili9341, st7789 — with
 `linux-embedded-hal` putting them on the Pi's `/dev/i2c` and `/dev/spidev` rather
 than on a microcontroller's peripherals. So the display model is **not locked in
-by the UI code**: the device constructor is the only line that changes. Prototype
-against a cheap 0.96 in panel and pick the real one after seeing actual filenames
-on screen.
+by the UI code**: the device constructor is the only line that changes.
+
+That also means the panel can be evaluated before it is bought:
+`embedded-graphics-simulator` runs the same `DrawTarget` code on a desktop, so
+competing geometries can be compared with real filenames on screen. Earlier text
+here suggested prototyping on a cheap 0.96 in panel instead, which is worse on both
+counts — it misrepresents legibility by being finer-pitched than any candidate, and
+it costs money to do what the simulator does for nothing.
 
 This is the reversibility that keeps open question 1 open, and it is why the
 language choice went the way it did — `luma` gave Python the same property, and C
@@ -489,6 +525,18 @@ has no equivalent at all.
 Update on state change, not on a timer. Not for noise — the isolator settles that
 — but for bus time: a full 128x64 frame is ~26 ms over I2C at 400 kHz, and the
 WM8804 shares that bus.
+
+**That figure is a mono 128x64 panel on I2C, and the whole discipline below is sized
+against it** — so it is a constraint on the panel choice rather than a consequence
+of it. Frame bytes are `width x height x bpp / 8`, and both factors bite: a
+128x128 4-bit panel is 8x the bytes, 184 ms, on a bus that carries 44.4 kB/s.
+
+**And the discipline is contingent on the bus.** On SPI the same frame is 0.82 ms at
+10 MHz, and the I2C segment would then carry only the WM8804 and — if the v2 ADC is
+also I2C — a two-byte read at 100 Hz, about 1% of the bus. The partial-update tick
+and the header-reads-ride-the-redraw-budget rule below would stay good practice but
+stop being load-bearing. Which bus the panel is on is open question 1 in
+`decisions.md`, and it turns on the v2 ADC.
 
 One qualification, because the rule as written is too strong: a position readout
 has to advance while a track plays, and that *is* a timer. Take it as **full
@@ -510,8 +558,8 @@ Dim after ~30 s idle and blank after a few minutes. The blank command also stops
 the charge pump, so burn-in and power are handled by one timer.
 
 **Gate that on the transport, though.** These timers were written for an idle
-appliance. With 80-minute tracks, "no input for a few minutes" is the *normal*
-state while something is playing, and blanking then would hide the position
+appliance. With a long track playing, "no input for a few minutes" is a *normal*
+state, and blanking then would hide the position
 readout exactly when it is being watched — in a dark room, during a set. Idle
 means idle: nothing playing. While the transport is running, leave it up.
 

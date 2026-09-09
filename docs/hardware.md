@@ -222,7 +222,7 @@ the low current makes a quiet supply easy rather than expensive.
 
 | GPIO | Use |
 |---|---|
-| 0, 1 | HAT ID EEPROM (physical pins 27/28 — *pins*, not GPIOs, a documented trap) |
+| 0, 1 | HAT ID EEPROM (physical pins 27/28 — *pins*, not GPIOs, a documented trap). Also **I2C0**, a second controller — see below |
 | 2, 3 | I2C — WM8804 control, and the display |
 | 5 | 44.1 kHz crystal enable (`clock44-gpio`) |
 | 6 | 48 kHz crystal enable (`clock48-gpio`) |
@@ -242,6 +242,11 @@ Pro / Digi2 Pro entry replaces that with GPIO 5 and 6.
 **SPI0 (7, 8, 9, 10, 11) is held for a future ADC.** The v2 pitch fader is analog
 and the Pi has no ADC, so an MCP3008 or ADS1115 will be needed. Putting the
 display on I2C instead of SPI is what keeps this option open.
+
+**Read that as one claimant, not a priority.** SPI0 is wanted by two things — the
+ADC and an SPI display — and exactly one of them can be made to want I2C instead.
+Choosing the I2C ADC frees the block *for* a display rather than merely conceding
+it; see open question 1 in `decisions.md`, where the same lever decides the panel.
 
 **Assignment**
 
@@ -285,11 +290,18 @@ Subtract from 28: ten pins hard-reserved (EEPROM, I2C, the two crystal selects,
 I2S), two for the serial console, four for the encoders, four for an SPI ADC.
 
 **The ADC choice is the whole lever.** This file already names "an MCP3008 or
-ADS1115"; the first is SPI and costs four pins, the second is I2C and costs none,
-joining the bus the display is already on. So which ADC the v2 pitch fader uses
-decides whether there are eight buttons or twelve. Bus time is not the objection —
-a two-byte read at 100 Hz is about 1% of a 400 kHz bus, against the display's 26 ms
-frames.
+ADS1115"; the first is SPI and costs four pins, the second is I2C and costs none.
+So which ADC the v2 pitch fader uses decides whether there are eight buttons or
+twelve. Bus time is not the objection — a two-byte read at 100 Hz is about 1% of a
+400 kHz bus.
+
+**It also decides the display, which was missed here.** This section identified the
+lever and then applied it to one axis only. An I2C ADC leaves SPI0 free for a panel,
+and I2C's 44.4 kB/s caps an I2C panel at 128x64 monochrome; an SPI ADC takes the
+block and fixes the panel at that ceiling. **Twelve buttons and a larger display are
+the same choice, not competing ones** — `decisions.md` open question 1 carries the
+arithmetic. The ADS1115 is also 16-bit against the MCP3008's 10-bit, and 860 SPS is
+ample for a fader at ~100 Hz, so nothing is traded away for the pins.
 
 Past those ceilings the only route is an I2C port expander, or dropping something.
 
@@ -314,6 +326,22 @@ Three cautions from HiFiBerry's GPIO-usage page, all of which this build touches
   What does *not* go away is **bus time**: one logical bus from the Pi's controller,
   so a 26 ms full frame still shares it with WM8804 commands. That is the reason for
   the refresh discipline, not noise.
+
+  **The clock follows the same logic, and it is capped by the codec.** One controller
+  means one rate, so the display's segment cannot be clocked faster than the WM8804's
+  tolerates — and its datasheet (v4.5, Table 5) caps SCLK at **400 kHz**, `tSCY`
+  minimum 2500 ns. There is no 1 MHz option while they share a controller.
+
+  **They need not share one.** The BCM2837 has two: I2C1 on GPIO 2/3, and **I2C0 on
+  GPIO 0/1** — the EEPROM pins above, already reserved, and already not depended on
+  because `config.txt` names the overlay explicitly. A panel there would have its own
+  controller and its own clock, taking display frames off the codec's bus entirely.
+  Not adopted: three things are unknown and all are silent when wrong — whether
+  `dtparam=i2c_vc=on` exposes GPIO 0/1 as `/dev/i2c-0` on a **3B+** (i2c0 is also the
+  VideoCore's bus and serves the camera and display connectors on this generation),
+  whether those two lines carry the pull-ups a panel needs, and whether the firmware's
+  boot-time EEPROM probe at 0x50 disturbs a panel answering at 0x3C. See
+  `decisions.md` open question 1, which also says what this does **not** buy.
 - **The whole stack is outside HiFiBerry's supported configuration.** They do not
   guarantee interoperability with other add-on cards, and the IsolatorPi III is an
   interposer rather than a direct plug. Ian Canada's manual supports the Digi Pro
@@ -443,16 +471,22 @@ instead of being spent on a stop the transport already has.
 No new mechanism is needed: hold is `r = 1.0`, release is `r = 0` with the position
 set back to the cue point. Both already exist.
 
-For long-form material this is the main way to navigate *inside* a track, not a
-mixing tool — which is why cue regions are pre-locked (see `architecture.md`).
+**It is both, because the material is both.** For dance it is a mixing tool, which
+is the CDJ's own use of it; for sustained work it is the main way to navigate
+*inside* a track, where the alternative is starting from the beginning. Cue regions
+are pre-locked either way (see `architecture.md`), so the mechanism does not care —
+but an earlier version of this line said "not a mixing tool", which was deciding what
+is on the stick.
 
 **Auto cue is deliberately not adopted.** The CDJ-350 has it: on load it skips the
 silent lead-in and places the cue point just before the sound starts, with eight
-selectable thresholds from -36 to -78 dB. For club material that is a convenience.
-For long-form ambient it is a hazard — a piece may open below -78 dB on purpose, and
-having the deck decide where the music "really" begins is exactly the kind of
-silent, well-meant alteration this project avoids. The cue point starts at frame
-zero unless set.
+selectable thresholds from -36 to -78 dB. **The rejection stands; the reason it used
+to give does not.** That reason was "a convenience for club material, a hazard for
+long-form ambient" — but the deck plays both, so the split settles nothing. What
+settles it is that **one** piece opening below the threshold on purpose is enough:
+having the deck decide where the music "really" begins is exactly the kind of silent,
+well-meant alteration this project avoids, and a rule must hold for everything on the
+stick rather than for most of it. The cue point starts at frame zero unless set.
 
 Fine-adjusting the cue in single frames, which the 350 does with its SEARCH buttons
 while paused at the cue, would fall naturally to FF/REW in the same state. Not
@@ -460,9 +494,12 @@ needed for v1, but the gesture is free if it is ever wanted.
 
 ### FF and REW
 
-Hold to seek, tap to change track. This is what makes long tracks usable: without
-it the only entry point into an 80-minute piece is the beginning, since the jog is
-v2.
+Hold to seek, tap to change track. **Each half earns its keep on different
+material.** Hold-to-seek is what makes a long track usable at all — without it the
+only entry point into an 80-minute piece is the beginning, since the jog is v2.
+Tap-for-next carries more weight across a folder of short tracks, where changing
+track is the frequent action. Both are wanted, which is an argument for the
+tap-versus-hold compression rather than against it.
 
 **This compresses two of the CDJ-350's controls into one pair, deliberately.** That
 player separates them: SEARCH (`◄◄ ►►`) scans within a track, TRACK SEARCH
@@ -652,6 +689,13 @@ should be traceable to one of these; where it is not, the text says so.
   transformer, `P3` for the 5 V input, the `P4` BNC footprint, `U1` as the WM8804,
   and the board printing its own `dtoverlay=hifiberry-digi-pro` line. Marked
   "HW 2.1".
+- **WM8804 datasheet** (Wolfson, now Cirrus Logic; v4.5) —
+  <https://statics.cirrus.com/pubs/proDatasheet/WM8804_v4.5.pdf>
+  Table 5, "Control Interface Timing - 2-Wire Serial Control Mode", is the authority
+  for the **400 kHz** I2C ceiling: SCLK frequency max 400 kHz, `tSCY` min 2500 ns —
+  exactly 1/400 kHz, so the table is self-consistent. Cirrus's own CDN, Cirrus having
+  acquired Wolfson, so this is the vendor. Mouser's copy of the same file sits behind
+  bot protection and returns HTML instead of the PDF.
 - **CA-IS376x datasheet** (Chipanalog) —
   <https://e.chipanalog.com/Public/Uploads/uploadfile/files/20240611/CAIS376xdatasheetVersion1.06en.pdf>
   Six-channel digital isolator. The `H`/`L` suffix sets the fail-safe output state

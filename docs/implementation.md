@@ -272,6 +272,22 @@ statement about intent unless something checks it, and something can:
   inside a marked region fail loudly. There is no equivalent in C without hooking
   `malloc` by hand, and this is the single strongest practical argument for the
   language choice.
+
+  **It has one blind spot, and v2 puts its heaviest work inside it.** The wrapper
+  is Rust's `GlobalAlloc`; a C library calling glibc directly is invisible to it.
+  Confirmed from the shared objects' undefined symbols — libsoxr imports
+  `malloc@GLIBC_2.17`, `calloc`, `realloc`, `free`. The blind spot is exactly the
+  two C dependencies: for **libsndfile** it costs nothing, because it runs in the
+  window thread where allocation is allowed anyway; for **libsoxr** it is the
+  callback in v2. So the claim above holds for Rust code — which is all of v1's
+  callback — and stops being an enforcement story the moment libsoxr arrives.
+  Checking *that* needs an `LD_PRELOAD` interposer counting glibc's allocators, not
+  `assert_no_alloc`.
+
+  This is not hypothetical even though the resampler turns out to be allocation-free
+  when configured correctly: it is *misconfiguration* that allocates, and the blind
+  spot is precisely what makes misconfiguration silent. See **Declare the pitch range
+  when creating the resampler**.
 - **`rtrb`** — single-producer single-consumer, lock-free *and* wait-free, fixed
   capacity allocated once at construction. This is the **control-thread slot**.
 
@@ -298,6 +314,59 @@ the callback** frees memory on the audio thread. Keep ownership outside the
 realtime thread; `basedrop` exists to defer such frees, but not needing it is
 better.
 
+## Declare the pitch range when creating the resampler
+
+v2 only, and it is a **requirement** rather than a note, because getting it wrong
+allocates on the audio thread and nothing tells you.
+
+`soxr_create(input_rate, output_rate, ...)` is what sizes `SOXR_VR`'s internal
+buffers. Give it 1:1 and then hand `soxr_set_io_ratio` anything else, and
+`soxr_process` reallocates to grow into the range it was not told about — for as long
+as the ratio keeps moving. Declare the span and it allocates **nothing**.
+
+Measured over 200,000 periods (1,161 s) on one trajectory sweeping 0.90 to 1.10, the
+full range warmed outside the measurement in every run:
+
+| `soxr_create` | Allocating events | Reallocs | Bytes |
+|---|---|---|---|
+| `(1, 1)` — ratio 1.0 declared | 1,776 | 3,660 | 2.73 GB |
+| `(1, 1.10)` — upper bound only | 114 | 228 | 17.5 MB |
+| **`(0.90, 1.10)`** — the whole span | **0** | **0** | **0** |
+| `(1.10, 1)` — bounds reversed | 1,776 | 3,660 | 2.73 GB |
+
+**Zero here is not a resampler doing nothing**, which is what it would also look
+like. Both configurations produce identical output at every ratio — out/in of 1.0851,
+1.0280, 0.9766, 0.9301 and 0.8878 at ratios 0.90 through 1.10, matching input/ratio
+with the same ~240-frame delay-line offset. The declared-range build resamples
+correctly and identically; it simply does not allocate.
+
+So `SOXR_VR` is usable from the callback and the invariant holds. The pitch range is
+known before the resampler is built — `decisions.md` fixes it at ±10% — so this is a
+configuration requirement, not a constraint.
+
+**The failure shape is this project's usual one, which is why it is a requirement.**
+Misconfigure it and the audio is *correct*, the allocation is unbounded, it is on the
+audio thread, and **`assert_no_alloc` cannot see it** because libsoxr calls glibc
+directly. Three of the four signals this project relies on are silent. It was found
+only by an `LD_PRELOAD` interposer counting glibc's allocators.
+
+**And know why it was got wrong the first time**, because the next reader will hit the
+same wall: `soxr.h` documents variable-rate creation only as "see example # 5". With
+the example not to hand, the create call was **guessed** — 1:1, which looks like the
+neutral choice and is the worst one. If the example is still unavailable, verify with
+an interposer rather than inferring from the header.
+
+`mallopt(M_MMAP_MAX, 0)` and `M_TRIM_THRESHOLD, -1` were once proposed here to keep
+glibc's arena out of `mmap` under `MCL_FUTURE`. **Withdrawn** — correctly configured
+there is no allocation to keep anywhere.
+
+**Retracted from this file:** an earlier version carried a large body of measurement
+concluding that `SOXR_VR` allocates unboundedly while the ratio moves, with per-event
+costs, a saturation table and three usage regimes. All of it described a resampler
+created with a 1:1 ratio. The figures were internally consistent and arithmetically
+correct, which is exactly why checking them could not catch it — they were right
+about the wrong thing. `decisions.md` records the reversal.
+
 ## Dependencies
 
 Chosen against one question: **what happens if this goes unmaintained?** Download
@@ -313,7 +382,7 @@ Useful as a health signal, not as a popularity one.
 | `embedded-graphics` | Drawing API | 2.6M, current |
 | `linux-embedded-hal` | Panel drivers onto `/dev/i2c`, `/dev/spidev` | 5.9M, current |
 | `assert_no_alloc` | Enforcement, not runtime | 4.3M but stale since 2021 |
-| panel driver | One, chosen after open question 1 | thin, varies by controller |
+| panel driver | One, chosen after open question 1 | thin, and it varies a lot: `ssd1309` 13k / 2023, `ssd1327` 1.7k / **2020** |
 | libsndfile | Reading, via hand-written FFI | C library healthy; no crate dependency |
 | libsoxr | v2 resampling, hand-written FFI | C library static since 2023 |
 
