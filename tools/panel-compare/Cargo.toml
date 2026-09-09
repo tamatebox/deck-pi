@@ -1,0 +1,26 @@
+[package]
+name = "panel-compare"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# A throwaway comparison harness, NOT deck code. It exists to settle open
+# question 1 — which panel — before hardware is bought, and it is deliberately
+# outside the deck's crate so `image`, `u8g2-fonts` and their trees never
+# become dependencies of the thing that has to run under a deadline.
+#
+# The fonts are the reason this is worth building rather than guessing:
+# `u8g2-fonts` bundles `u8g2_font_b12_t_japanese*` at a measured 12x12 and
+# `b16_t_japanese*` at 16x16, which are exactly the sizes `decisions.md` calls
+# the practical floor for kanji. Judging 12 px kanji from a downscaled outline
+# font would understate legibility badly and could buy a larger panel than
+# needed.
+#
+# NOTE ON LICENSING: u8g2-fonts is MIT/Apache but its README says outright
+# that "the fonts themselves *are not*". Fine for a harness that is never
+# shipped; a real question if the deck ends up using them.
+
+[dependencies]
+embedded-graphics = "0.8"
+u8g2-fonts = { version = "0.8", features = ["embedded_graphics_textstyle"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
