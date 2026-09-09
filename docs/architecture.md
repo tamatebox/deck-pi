@@ -229,7 +229,8 @@ file mapping — **cannot fault**.
 
 `min(60 s, N MiB)`. Time alone would make RAM swing 4x across the supported rates;
 a byte cap holds it flat and degrades the window length instead. Shown at
-N = 64 MiB, which is illustrative — the value is not yet chosen:
+N = 64 MiB, which is illustrative — the value is not yet chosen,
+[#9](https://github.com/tamatebox/deck-pi/issues/9):
 
 Note there is **no bit-depth axis here.** The ring is int32 whatever the source
 was, so the window is a function of sample rate alone — one fewer thing to reason

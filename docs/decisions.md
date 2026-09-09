@@ -107,6 +107,36 @@ starts at boot.
 
 ## Open
 
+**Status lives in GitHub issues; the reasoning lives here.** Deliberately not both —
+two copies of an analysis means one of them goes stale, and this file exists
+precisely so a dropped line of reasoning is not re-derived by accident. An issue
+carries the question, its dependencies and **what would close it**; the sections
+below carry why it is hard.
+
+| | Question | Issue |
+|---|---|---|
+| 1a | **v2 ADC: I2C or SPI** — decides the display *and* the button ceiling | [#1](https://github.com/tamatebox/deck-pi/issues/1) |
+| 1b | Which display panel (blocked on 1a) | [#2](https://github.com/tamatebox/deck-pi/issues/2) |
+| 2 | Benchmark libsoxr on the A53, thermally soaked | [#3](https://github.com/tamatebox/deck-pi/issues/3) |
+| 3 | ENTER: the encoder's push, or its own button? | [#4](https://github.com/tamatebox/deck-pi/issues/4) |
+| 4 | What the Digi2 Pro's `JP1` does | [#5](https://github.com/tamatebox/deck-pi/issues/5) |
+| 5 | Enclosure vs the 60 C soft limit | [#6](https://github.com/tamatebox/deck-pi/issues/6) |
+| 6 | Power topology: grounding, Pi-side budget | [#7](https://github.com/tamatebox/deck-pi/issues/7) |
+| 7 | How the deck starts at boot | [#8](https://github.com/tamatebox/deck-pi/issues/8) |
+
+**Six more were open and not on this list**, found by grepping for what the
+documents call unsettled rather than by reading the numbered section. One of them
+existed only as a comment in `tools/panel-compare/Cargo.toml`.
+
+| Question | Issue | Where it was hiding |
+|---|---|---|
+| Choose `N`, the window size in bytes | [#9](https://github.com/tamatebox/deck-pi/issues/9) | "the value is not yet chosen", twice, in prose |
+| Font licensing if the deck ships u8g2's Japanese sets | [#10](https://github.com/tamatebox/deck-pi/issues/10) | a `Cargo.toml` comment |
+| The mount point and uid are placeholders | [#11](https://github.com/tamatebox/deck-pi/issues/11) | "chosen here and not decided anywhere" |
+| What an FF/REW tap does at a folder boundary | [#12](https://github.com/tamatebox/deck-pi/issues/12) | one `Open:` line in `hardware.md` |
+| Does the Digi2 Pro have a pass-through header? | [#13](https://github.com/tamatebox/deck-pi/issues/13) | `hardware.md` § Unverified |
+| Read-only rootfs; separate bring-up and production images | [#8](https://github.com/tamatebox/deck-pi/issues/8) | "three things the OS choice does not settle" |
+
 **1. Display.** Japanese filenames make 128x64 marginal — 12x12 is the practical
 floor for kanji, giving 10 characters per line at 128 px.
 
@@ -368,11 +398,15 @@ Fonts (all free, BDF): Misaki 8x8, Shinonome 12/16, k8x12 (8 px halfwidth /
 family of crates, or bake the glyphs to a bitmap atlas off the deck — which is
 faster on an A53 and fits the project's own habit of moving work off the deadline.
 
-One lead, **unverified**: `u8g2-fonts` is a maintained `embedded-graphics` text
-renderer built on U8g2, and U8g2 upstream ships Japanese fonts. If the Rust crate
-exposes those sets it would replace the whole BDF-or-atlas question with a
-dependency. Whether it does was not confirmed — check the repository, not the
-crates.io metadata.
+**Confirmed, and it was a lead marked unverified here until the harness used it.**
+`u8g2-fonts` is a maintained `embedded-graphics` text renderer built on U8g2, and it
+bundles `u8g2_font_b12_t_japanese*` at a measured 12x12 and `b16_t_japanese*` at
+16x16 — exactly the sizes this section calls the floor. That replaces the whole
+BDF-or-atlas question with a dependency. **One catch:** the crate is MIT/Apache but
+its README says outright that the fonts themselves are not — fine for a harness that
+is never shipped, a real question for the deck. See
+[#10](https://github.com/tamatebox/deck-pi/issues/10); the BDF fallbacks above stay
+live because of it.
 
 Suggested: prototype the UI on a cheap 0.96 in panel — unreadable, but it settles
 what fits in how many pixels — then choose. That advice is now weakened: "what

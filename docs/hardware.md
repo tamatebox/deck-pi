@@ -524,8 +524,9 @@ consequences worth knowing — the tap action fires on *release*, which is
 imperceptible for a track change; and the hold threshold (~300-500 ms) must sit
 well clear of the 30-50 ms debounce interval.
 
-Open: what a tap does at a folder boundary — stopping is the simple answer. A
-track reaching its end is settled: it stops, nothing advances on its own.
+Open — [#12](https://github.com/tamatebox/deck-pi/issues/12): what a tap does at a
+folder boundary. Stopping is the simple answer. A track reaching its end is settled:
+it stops, nothing advances on its own.
 
 **v2** — a non-detented *optical* encoder for the jog. Detents are disqualifying
 here: the notches are felt through the platter while scrubbing. 100-200 PPR
@@ -724,7 +725,8 @@ all six worked examples — master is J13 shorted, J12 open — so the manual is
 self-consistent and the apparent contradiction was a bad reading of the silkscreen
 from an oblique photo. See the assembly checklist.
 
-1. **A pass-through GPIO header — reopened by the photo.** The datasheet's
+1. **A pass-through GPIO header — reopened by the photo.**
+   [#13](https://github.com/tamatebox/deck-pi/issues/13). The datasheet's
    "Connectors and Jumpers" section enumerates DSP connector, 5 V power supply,
    TOSLink, RCA, isolation ground jumper and optional BNC, with no pass-through,
    which argued for a terminating HAT. But the board photo shows structure at the
@@ -745,7 +747,8 @@ from an oblique photo. See the assembly checklist.
    splitter (another unsupported interposer, and the isolator is coming anyway), or
    let C do the integration. Not worth chasing — but if the header turns out to be
    there, use it.
-3. **The Digi2 Pro's `JP1`, the "isolation ground jumper".** Two circumstantial
+3. **The Digi2 Pro's `JP1`, the "isolation ground jumper".**
+   [#5](https://github.com/tamatebox/deck-pi/issues/5). Two circumstantial
    lines make the identification safe: the datasheet's connector list carries an
    "isolation ground jumper", and the board photo shows `JP1` immediately beside the
    output isolation transformer. What it *does* is still undocumented.

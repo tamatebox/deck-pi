@@ -250,6 +250,11 @@ Several design decisions were reversed while working this out, and the supersede
 reasoning is plausible enough to re-derive by accident. `decisions.md` records why
 each was dropped; read it before revisiting a choice.
 
+**Open questions are [GitHub issues](https://github.com/tamatebox/deck-pi/issues),
+and the reasoning behind them stays in `decisions.md`** — deliberately not both, so
+there is only one copy of an analysis to keep current. An issue says what would
+close it; the doc says why it is hard.
+
 **The labels in those documents are load-bearing, so read them.** A figure says
 whether it is *measured* or *estimated*, a premise says whether it was *supplied* or
 *assumed*, and a hardware fact says whether it was confirmed against the boards, the

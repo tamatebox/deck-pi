@@ -173,7 +173,8 @@ Two udev properties exist precisely for what this build needs:
 So the fixed path and the per-filesystem options both come from udev, with nothing
 hand-rolled. Draft — **verify every spelling on the actual image**, the same caution
 `hardware.md` applies to overlay parameters. `/media/stick` and `uid=1000` are
-placeholders, chosen here and not decided anywhere:
+placeholders, chosen here and not decided anywhere —
+[#11](https://github.com/tamatebox/deck-pi/issues/11):
 
 ```
 # /etc/udev/rules.d/99-deck-stick.rules
