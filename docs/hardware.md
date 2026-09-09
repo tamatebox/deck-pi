@@ -150,6 +150,13 @@ length, so nothing extra is needed, and `dtoverlay=hifiberry-digi-pro` is alread
 explicit so `config.txt` does not change later. Confirm S/PDIF out at every rate
 and the `hw:` device. No controls here — nowhere to put them.
 
+Most of this is one command: `deck-pi --device=hw:X,Y <file>` opens at the track's
+own rate, prints the period geometry ALSA actually granted and the resulting
+latency, checks the card's mixer is empty, plays the track through the window
+thread, ring, callback and ALSA, and reads `hw_params` back. `plughw:` is refused
+before ALSA is touched, with the reason. What it does not cover is `alsacap`, which
+enumerates what the card offers rather than confirming one setting took.
+
 **C — Pi, isolator, Digi2 Pro.** Integration. Longer standoffs, J12/J13, clean 5 V
 on J1, the grounding question, and the controls moving to J4, wired once into their
 final home.
@@ -421,6 +428,12 @@ Four details worth having exactly, all quoted or paraphrased from that page:
   and it starts from the cue point.
 - **The preview really is momentary.** "Playback continues while the button is held
   in" — so release means stop and return, and there is no latching.
+
+**CUE during a held FF or REW is Back Cue.** The manual does not cover the
+combination, so this is a chosen interpretation rather than a quotation: anything
+not paused counts as moving, and returning to the point is the predictable answer.
+Ignoring the press would be worse — a control that sometimes does nothing is harder
+to trust than one that always does the same thing.
 
 **There is no separate STOP, because a CDJ has none.** Returning to the cue point
 and standing by *is* stopping, which is why this button was labelled "CUE / STOP"
