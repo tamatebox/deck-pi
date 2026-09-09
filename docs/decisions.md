@@ -46,6 +46,10 @@ code: handling it is free. Neither is worth engineering for, because handling it
 | Header reads are driven by renders, not by encoder events | The browser must open the highlighted file to show its length, rate and depth, and to apply the four rejections before PLAY. On solid-state media that is **estimated** at 1-3 ms, and a cheap flash controller with poor random read could be several times that. Because redraws are already coalesced to 30-50 ms, only the positions actually *rendered* need headers — the intermediate positions of a fast spin are skipped outright — so the redraw budget bounds the read load and no second timer is needed. |
 | Cache header reads by path, and read the whole visible page | The cache is what makes it cheap rather than the debounce: scrolling one row leaves 15 of 16 visible rows already read, so the marginal cost is one open. A folder change or page jump costs a full page, 16-32 ms, which fits inside one redraw interval. Reading the whole page rather than the highlighted row alone is then affordable, and it is what lets unplayable files be marked at a glance instead of one at a time. |
 | Cue points live on the Pi, not the stick | Keyed by volume UUID plus relative path. The stick is content; the Pi owns state it created. Consequence: cues would not travel between two decks, if a second one is ever built. |
+| CUE follows the CDJ-350, and there is no separate STOP | Read out of the CDJ-350 operating instructions (Pioneer 389414-01U, p.18) rather than recalled — the 350 being the right reference for a five-button single player. Paused, CUE **sets** the point; playing, it **returns** there and pauses (Back Cue); held at the point, it **plays while held** (Cue Point Sampler). One cue point per track, setting a new one cancels the old, and setting it outputs no sound. The finding that matters: a CDJ has no STOP function, because returning to the cue point and pausing *is* stopping — so "CUE / STOP" is one function, not two, and the hold gesture is free for preview instead of being spent on a stop the transport already has. Costs no new mechanism: hold is `r = 1.0`, release is `r = 0` with the position snapped back. |
+| Auto cue is not adopted | The CDJ-350 skips the silent lead-in on load and places the cue just before the sound starts, thresholds from -36 to -78 dB. Sensible for club material, wrong here: a long-form piece may open below -78 dB deliberately, and letting the deck decide where the music "really" begins is the kind of silent, well-meant alteration this project exists to avoid. The cue starts at frame zero unless set. |
+| A track that reaches its end stops | Nothing starts on its own. In a venue, a next track beginning while attention is elsewhere is worse than a silence, and PLAY is right there. The engine already reports `EndOfTrack` and decides nothing, so this is where the decision lands. Auto-advance is a small addition later if wanted. |
+| Raspberry Pi OS Lite (64-bit) is the base | Four constraints already in these documents pin it down. The HiFiBerry overlay and `rpi-wm8804-soundcard.c` live in the **downstream** `raspberrypi/linux` tree, not mainline, so the OS must ship the rpi kernel and its overlays. The mount design commits to `systemd-mount` and its transient `.mount` unit — the thing that makes teardown on removal automatic — so systemd is not optional. `gpu_mem`, `dtoverlay`, `temp_soft_limit`, `core_freq_fixed` and `vcgencmd` are the Pi's own firmware path, and `config.txt` on the FAT partition is what makes a bad setting recoverable by reading the card on a Mac. And exfat and hfsplus must be in-tree, with `iocharset` and `nls`. 64-bit is not an argument either way — `architecture.md` records that OS bit width stopped being a design input once mmap was dropped — just the current default, and it makes cross-building on an arm64 Mac direct. |
 | FF / REW are a silent seek in v1 | Audible scan needs the resampler, which would give v1 a second mode and break "unconditionally bit-perfect". Position advances while held, the display follows, audio resumes on release. In v2 it becomes `r = 4` on the existing rate variable — no new mechanism. |
 
 ## Reversed during design
@@ -72,6 +76,24 @@ accident.
 | Metadata in SQLite or a sidecar beside the PCM | Neither; the folder tree is the index | With no import step, nothing writes a database. Headers are read lazily for the highlighted row — which is also the mechanism that catches every unplayable file before PLAY is pressed. |
 | Restrict the rate budget to 44.1 and 48 kHz only | All six family rates | Proposed during design and withdrawn the same day. Sizing the window in bytes already fixes RAM at a constant regardless of rate, and v1 has no resampler, so restricting v1 bought nothing at all. v2's cost is handled by unity as the fallback, not by narrowing v1. |
 | The 3B+'s 1.4 GHz gives v2 more headroom than the 3B's 1.2 GHz | Size against 1.2 GHz anyway | The 3B+ has a *soft* temperature limit that drops the clock from 1.4 to 1.2 GHz at 60 C by default (raisable only to 70, "might cause instability"). A deck runs a continuous load in a box, so 1.2 GHz is the steady state. The 3B+ buys thermal mass and Gigabit Ethernet, not resampler headroom. Corollary: benchmark soaked, not cold. |
+
+### Operating systems considered and dropped
+
+Recorded because "surely something leaner" is exactly the kind of thing that gets
+re-derived.
+
+| | Why not |
+|---|---|
+| **DietPi** | The near miss — same Debian + rpi kernel + systemd base, and leaner, which is genuinely attractive for an appliance. It loses because it inserts its own configuration layer that owns `config.txt` and service enablement, and a second actor mutating a load-bearing file is a real cost in a project whose central fear is a setting that is silently wrong. Worth reconsidering at the stripped-image stage. |
+| **Ubuntu Server for Pi** | systemd and a raspi kernel, but its own firmware and overlay packaging and `/boot/firmware` layout. Both HiFiBerry's and Ian Canada's instructions target Raspberry Pi OS. Friction with no benefit. |
+| **Alpine** | No systemd by default, which breaks the documented mount design outright. |
+| **Arch ARM, Fedora, openSUSE** | Mainline-kernel or thin on Pi 3. An appliance should be boring. |
+| **moOde, Volumio, piCorePlayer** | Excluded *because* they already drive HiFiBerry and claim bit-perfect: they **are** the player. Basing on one means fighting MPD for exclusive `hw:` access. |
+| **Buildroot, Yocto, NixOS** | Possible destination for a stripped appliance image, but after the measurements, not before — bring-up needs `alsacap`, `amixer`, `dtoverlay -h`, `vcgencmd`, `rfkill`, `blkid` and `findmnt`, and a minimal image strips all of them. The case is also weaker than it looks: what they mainly buy is kernel control, and `architecture.md` already says PREEMPT_RT is likely unnecessary. |
+
+Three things the OS choice does **not** settle: whether the rootfs ends up
+read-only, whether bring-up and production get separate images, and how the deck
+starts at boot.
 
 ## Open
 
@@ -165,20 +187,11 @@ clean side takes its ground reference. Not certain, but a continuity check on th
 bare board decides it rather than a vendor query. See `hardware.md`. Neither binds
 until the isolator goes in, at bring-up phase C.
 
-**7. What CUE does, and what happens at the end of a track.** Both are usage
-decisions, and both are currently unimplemented *because* no document answers them
-— left out rather than guessed at.
-
-*CUE.* `hardware.md` labels GPIO 25 "CUE / STOP" and `architecture.md` makes "what
-PLAY / CUE / FF / REW mean" the transport's job, but nothing says whether CUE sets
-a point, returns to one, or stops. The STOP half is covered by pause. Long-form
-material makes the "return to a marked point" reading the more useful one, since
-cues are the main way to navigate inside an 80-minute piece — but that is an
-argument, not an answer.
-
-*End of track.* The engine reports `EndOfTrack` and decides nothing. `hardware.md`
-already carries this as open under FF / REW: stopping is believed to be the usual
-default on DJ players, but that is recollection rather than a checked fact.
+**7. How the deck starts at boot.** Nothing in any document covers it. The only
+constraint on record is that the audio process needs `rtprio` and `memlock` and no
+root, so it would be a non-root service — but whether it is a `systemd` unit, what
+it does when no medium is present, and what happens if it dies mid-set are all
+unaddressed. Small, but it is the difference between a program and an appliance.
 
 ## Phases
 

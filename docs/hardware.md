@@ -244,7 +244,7 @@ display on I2C instead of SPI is what keeps this option open.
 | 22 | Encoder push — ENTER | v1 |
 | 23 | BACK | v1 |
 | 24 | PLAY / PAUSE | v1 |
-| 25 | CUE / STOP | v1 |
+| 25 | CUE — tap to set or jump, hold to preview | v1 |
 | 16 | REW — hold to seek back, tap for previous | v1 |
 | 26 | FF — hold to seek forward, tap for next | v1 |
 | 12, 13 | Jog encoder A / B | v2 |
@@ -317,7 +317,7 @@ audio boards — which is why the display needs no noise mitigation of its own.
 ## Controls
 
 **v1** — one detented rotary encoder (EC11 class; the clicks are an asset for
-menu stepping) plus five buttons: BACK, PLAY/PAUSE, CUE/STOP, FF, REW. ENTER is
+menu stepping) plus five buttons: BACK, PLAY/PAUSE, CUE, FF, REW. ENTER is
 the encoder's own push switch.
 
 Cheap encoder push switches bounce badly and wear out, and ENTER is the most-used
@@ -365,11 +365,66 @@ overkill but cheap and harmless.
 Use **stranded** wire anywhere it flexes between panel and board; solid wire
 work-hardens and breaks. 26-28 AWG is ample for a switch carrying microamps.
 
+### CUE
+
+Three behaviours on one button, taken from the **CDJ-350** operating instructions
+(Pioneer 389414-01U, p.18) rather than from memory. The 350 is the right reference:
+an entry-level single player, closer in scope to five buttons than a CDJ-3000X with
+its hot cues and touchscreen.
+
+| State | Tap CUE | The manual's name |
+|---|---|---|
+| Paused | **sets** the cue point at the paused position | Setting Cue |
+| Playing | **returns** to the cue point and pauses there | Back Cue |
+| Held at the cue point | **plays while held** | Cue Point Sampler |
+
+Four details worth having exactly, all quoted or paraphrased from that page:
+
+- **One cue point per track.** "When a new cue point is set, the previously set cue
+  point is canceled." So this is a single point, not a set of hot cues.
+- **Setting it makes no sound.** "No sound is output at this time." Which agrees
+  with FF/REW being a silent seek — nothing in v1 produces audio at a rate other
+  than unity.
+- **Back Cue pauses; it does not resume.** "The set immediately returns to the
+  currently set cue point and pauses." Playback restarts only when PLAY is pressed,
+  and it starts from the cue point.
+- **The preview really is momentary.** "Playback continues while the button is held
+  in" — so release means stop and return, and there is no latching.
+
+**There is no separate STOP, because a CDJ has none.** Returning to the cue point
+and standing by *is* stopping, which is why this button was labelled "CUE / STOP"
+and is really one function. It also means the hold gesture is free for preview
+instead of being spent on a stop the transport already has.
+
+No new mechanism is needed: hold is `r = 1.0`, release is `r = 0` with the position
+set back to the cue point. Both already exist.
+
+For long-form material this is the main way to navigate *inside* a track, not a
+mixing tool — which is why cue regions are pre-locked (see `architecture.md`).
+
+**Auto cue is deliberately not adopted.** The CDJ-350 has it: on load it skips the
+silent lead-in and places the cue point just before the sound starts, with eight
+selectable thresholds from -36 to -78 dB. For club material that is a convenience.
+For long-form ambient it is a hazard — a piece may open below -78 dB on purpose, and
+having the deck decide where the music "really" begins is exactly the kind of
+silent, well-meant alteration this project avoids. The cue point starts at frame
+zero unless set.
+
+Fine-adjusting the cue in single frames, which the 350 does with its SEARCH buttons
+while paused at the cue, would fall naturally to FF/REW in the same state. Not
+needed for v1, but the gesture is free if it is ever wanted.
+
 ### FF and REW
 
 Hold to seek, tap to change track. This is what makes long tracks usable: without
 it the only entry point into an 80-minute piece is the beginning, since the jog is
 v2.
+
+**This compresses two of the CDJ-350's controls into one pair, deliberately.** That
+player separates them: SEARCH (`◄◄ ►►`) scans within a track, TRACK SEARCH
+(`|◄◄ ►►|`) skips between tracks — four buttons where this deck has two. Tap versus
+hold is the compression the pin budget asks for, and it is worth knowing it is a
+compression rather than the idiom.
 
 It also removes a worse idea. The alternative was to overload the browse encoder —
 browsing in the list, seeking during playback — which puts a hidden mode on the
@@ -388,9 +443,8 @@ consequences worth knowing — the tap action fires on *release*, which is
 imperceptible for a track change; and the hold threshold (~300-500 ms) must sit
 well clear of the 30-50 ms debounce interval.
 
-Open: what a tap does at a folder boundary (stopping is the simple answer), and
-whether a track auto-advances when it ends. Stopping is believed to be the usual
-default on DJ players, but that is recollection, not a checked fact.
+Open: what a tap does at a folder boundary — stopping is the simple answer. A
+track reaching its end is settled: it stops, nothing advances on its own.
 
 **v2** — a non-detented *optical* encoder for the jog. Detents are disqualifying
 here: the notches are felt through the platter while scrubbing. 100-200 PPR
@@ -457,14 +511,16 @@ image before trusting the spelling.
 ```ini
 dtoverlay=gpio-key,gpio=23,keycode=158,label=BACK
 dtoverlay=gpio-key,gpio=24,keycode=164,label=PLAYPAUSE
-dtoverlay=gpio-key,gpio=25,keycode=128,label=STOP
+dtoverlay=gpio-key,gpio=25,keycode=128,label=CUE
 dtoverlay=gpio-key,gpio=22,keycode=28,label=ENTER
 dtoverlay=gpio-key,gpio=16,keycode=168,label=REW
 dtoverlay=gpio-key,gpio=26,keycode=208,label=FF
 ```
 
 168 and 208 are `KEY_REWIND` and `KEY_FASTFORWARD` — the *held* meaning, since one
-pin carries one keycode and the tap meaning is a userspace interpretation.
+pin carries one keycode and the tap meaning is a userspace interpretation. 128 is
+`KEY_STOP`, standing in for CUE because Linux has no cue keycode; the button's
+three behaviours are all userspace interpretation of one keycode.
 `KEY_PREVIOUSSONG` (165) and `KEY_NEXTSONG` (163) exist if the two meanings are
 ever split onto separate buttons. **Read all of these off `input-event-codes.h` on
 the actual image** rather than trusting the numbers here — the same caution as the
@@ -541,6 +597,11 @@ should be traceable to one of these; where it is not, the text says so.
 - **HiFiBerry Digi2 Pro datasheet** (last updated 2022-10-17) —
   <https://www.hifiberry.com/docs/data-sheets/datasheet-digi2-pro/>
   · index: <https://www.hifiberry.com/docs/>
+- **Pioneer CDJ-350 operating instructions** (389414-01U) —
+  <https://imagescdn.juno.co.uk/manual/389414-01U.pdf>
+  p.17-18 is the reference for CUE and for FF/REW: Setting Cue, Back Cue, Cue Point
+  Sampler, auto cue, and the SEARCH / TRACK SEARCH split. The right comparison for a
+  five-button single player, where a CDJ-3000X is not.
 - **Digi2 Pro board photo** —
   <https://www.hifiberry.com/wp-content/uploads/2021/02/board-parts.jpg>
   1200x1200 and readable. Source of the `JP1` designator beside the output

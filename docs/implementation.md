@@ -53,8 +53,14 @@ Two more facts from the same source, both useful:
 
 Source: `sound/soc/codecs/wm8804.c`, `sound/soc/bcm/bcm2835-i2s.c` and
 `sound/soc/bcm/rpi-wm8804-soundcard.c` in <https://github.com/raspberrypi/linux>.
-Confirm against the kernel actually installed — this was read from `rpi-6.18.y`.
-`alsacap` on the running board is still the check that matters.
+Read from `rpi-6.18.y`. With **Raspberry Pi OS Lite (64-bit)** now the chosen base,
+whatever kernel that image ships will be older, so this stops being a general
+caution and becomes a concrete first-boot task, alongside `alsacap` and
+`amixer -c N contents`:
+
+- confirm `WM8804_FORMATS` still excludes `S32_LE`
+- confirm the overlay still names `clock44-gpio` and `clock48-gpio`
+- confirm `snd_soc_dai_set_bclk_ratio(cpu_dai, 64)` still holds
 
 ## Testing it from both ends
 
