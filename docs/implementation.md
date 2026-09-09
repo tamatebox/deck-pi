@@ -61,8 +61,22 @@ Confirm against the kernel actually installed — this was read from `rpi-6.18.y
 Two tests, and they check different halves. Neither is sufficient alone.
 
 - **Null test — the software half.** Play a file, collect the buffers handed to
-  ALSA, assert byte equality with the source. This proves our read path, the ring
+  ALSA, and check them against the source. This proves our read path, the ring
   and the left-justification.
+
+  **Assert the ring's absolute values, not a byte round trip.** "Re-encode the
+  buffer and compare bytes with the source" is the obvious form and it is
+  **symmetric**, so a symmetric error cancels: with a logical shift where the
+  arithmetic one belongs, an int24 sample loses its sign bits going in and has
+  them restored coming out, and the bytes match. Measured on the real suite —
+  the byte-equality form caught 4 of the mutations, the absolute form caught 5.
+
+  So decode the source's data chunk independently — a few lines that do not
+  call libsndfile — and assert each ring sample equals
+  `source << left_justify_shift >> 8`. Keep the byte round trip as well; it is
+  the property the DAC depends on, just not the one that catches this. And
+  assert the sign separately: any signal without negative samples passes a
+  logical shift.
 - **`hw_params` — the hardware half.** While playing, read
   `/proc/asound/card0/pcm0p/sub0/hw_params`. It reports the rate, format, channel
   count and access mode actually in force. This proves ALSA accepted what we asked
@@ -229,8 +243,24 @@ statement about intent unless something checks it, and something can:
   `malloc` by hand, and this is the single strongest practical argument for the
   language choice.
 - **`rtrb`** — single-producer single-consumer, lock-free *and* wait-free, fixed
-  capacity allocated once at construction. This is the window-thread-to-callback
-  hand-off and the control-thread slot.
+  capacity allocated once at construction. This is the **control-thread slot**.
+
+  It is **not** the ring, and cannot be. `architecture.md` requires reads inside
+  the window to be "free in either direction" and the window to be filled ahead
+  of *and behind* the playhead; an SPSC FIFO's consumer only moves forward, and
+  what it has read is gone. v1 alone would be satisfied by a FIFO — playback
+  reads forward and FF/REW are a silent seek — which is exactly the trap: it
+  would work now and make v2's jog a rewrite instead of a substitution.
+
+  The ring is a fixed allocation of **`AtomicI32` slots accessed `Relaxed`**,
+  addressed by track frame index modulo capacity. Making the slots atomic is
+  what makes a concurrent read sound by construction rather than by argument,
+  and it is free on the target: a relaxed 32-bit atomic load or store on AArch64
+  is a plain `ldr` / `str`, no barrier and no lock instruction. The resident
+  span is published as `start`, `end` and a `generation` counter; the callback
+  loads `end` first and `start` last, which can only understate what is
+  resident, then re-checks both after copying and reports a miss rather than
+  emitting a stale or torn sample.
 - **`thread-priority`** / **`audio_thread_priority`** — the `SCHED_FIFO` plumbing.
 
 One language-specific hazard to know: dropping the last `Arc` to a buffer **inside
@@ -248,7 +278,7 @@ Useful as a health signal, not as a popularity one.
 | | Role | Health |
 |---|---|---|
 | `alsa` | Output | 21M, current |
-| `rtrb` | Ring, control slot | 11M, current |
+| `rtrb` | Control slot only — **not** the ring, see above | 11M, current |
 | `thread-priority` | `SCHED_FIFO` | 11M, current |
 | `embedded-graphics` | Drawing API | 2.6M, current |
 | `linux-embedded-hal` | Panel drivers onto `/dev/i2c`, `/dev/spidev` | 5.9M, current |
