@@ -7,14 +7,27 @@ use std::path::PathBuf;
 use deck_pi::engine::{Engine, Outcome};
 use deck_pi::file::{OpenError, Track, RING_CHANNELS};
 use deck_pi::ring::{self, Miss};
+use deck_pi::rt;
 use deck_pi::sink::{AudioSink, CaptureSink};
 use deck_pi::transport::Transport;
 use deck_pi::window::Window;
 
 fn main() {
     let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
+    if let Some(arg) = args
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .find(|s| s == "--rt-check" || s.starts_with("--rt-check="))
+    {
+        // `--rt-check=2` also exercises core pinning, which is the one part
+        // of the setup with nothing to read it back from except the affinity
+        // mask itself.
+        let cpu = arg.strip_prefix("--rt-check=").and_then(|c| c.parse().ok());
+        std::process::exit(rt_check(cpu));
+    }
     if args.is_empty() {
         eprintln!("usage: deck-pi [--drain] [--device=hw:...] <file>...");
+        eprintln!("       deck-pi --rt-check");
         eprintln!("  default          reports what the file layer makes of each path");
         eprintln!("  --drain          also pulls every frame through the window thread,");
         eprintln!("                   the ring and the callback into a capture sink");
@@ -22,6 +35,9 @@ fn main() {
         eprintln!("                   card exposes no mixer control and that");
         eprintln!("                   /proc/asound reports the rate and format asked for");
         eprintln!("                   (Linux only; hw: devices only, never plughw)");
+        eprintln!("  --rt-check[=N]   applies the realtime setup and reads back what the");
+        eprintln!("                   kernel actually granted; =N also pins to core N");
+        eprintln!("                   (Linux only)");
         std::process::exit(2);
     }
 
@@ -243,4 +259,71 @@ fn play_to_device(_path: &std::path::Path, device: &str) {
          Use --drain for the software path.",
         device
     );
+}
+
+/// Applies the realtime setup and prints what the kernel granted.
+///
+/// A separate mode rather than something the other paths do, because it
+/// changes the process: `mlockall` is process-wide and `SCHED_FIFO` would put
+/// the bring-up tool's own bookkeeping at realtime priority. On the deck it
+/// belongs at start-up on the audio thread; here it is a bring-up check, in
+/// the same spirit as `--device=` reading `hw_params` back.
+///
+/// Prints the limits first even when the setup succeeds, because "it worked"
+/// and "it worked because this user is root" are different answers.
+fn rt_check(cpu: Option<usize>) -> i32 {
+    match rt::limits() {
+        Ok(lim) => {
+            println!(
+                "limits: memlock {}  rtprio {}",
+                match lim.memlock_bytes {
+                    None => "unlimited".to_string(),
+                    Some(b) => format!("{} bytes ({} MiB)", b, b / (1024 * 1024)),
+                },
+                lim.rtprio
+            );
+        }
+        Err(e) => {
+            println!("limits: unreadable — {}", e);
+        }
+    }
+
+    // What `mlockall(MCL_FUTURE)` will have to cover: the ring, plus the
+    // process as it stands. Sized from the placeholder window because N is
+    // not chosen yet (architecture.md), and doubled because the behind and
+    // ahead halves are both in the same allocation and a track change
+    // overlaps two rings.
+    let needed = 2 * ring::WINDOW_BYTES_PLACEHOLDER as u64;
+    let req = rt::RtRequest {
+        cpu,
+        ..rt::RtRequest::default()
+    };
+    println!(
+        "asking:  SCHED_FIFO {}  memlock >= {} MiB  prefault {} KiB  cpu {:?}",
+        req.priority,
+        needed / (1024 * 1024),
+        req.stack_prefault_bytes / 1024,
+        req.cpu
+    );
+
+    let reached = rt::prefault_stack(req.stack_prefault_bytes);
+    println!(
+        "prefault: reached {} bytes of stack for a request of {}",
+        reached, req.stack_prefault_bytes
+    );
+
+    match rt::apply(&req, needed) {
+        Ok(got) => {
+            println!(
+                "in force: {} priority {}  VmLck {} kB  cpus {:?}",
+                got.policy, got.priority, got.locked_kib, got.cpus
+            );
+            println!("rt-check: OK");
+            0
+        }
+        Err(e) => {
+            println!("rt-check: FAILED\n{}", e);
+            1
+        }
+    }
 }

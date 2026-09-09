@@ -60,6 +60,7 @@ dependencies = [
  "alsa",
  "alsa-sys",
  "assert_no_alloc",
+ "libc",
  "pkg-config",
 ]
 

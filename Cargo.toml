@@ -21,6 +21,12 @@ assert_no_alloc = { version = "1.1", default-features = false, features = [
 [target.'cfg(target_os = "linux")'.dependencies]
 alsa = "0.12"
 alsa-sys = "0.6"
+# `mlockall`, `sched_setscheduler` and `sched_setaffinity`, plus the read-backs
+# that check they took. `thread-priority` is the crate `implementation.md`
+# named for the SCHED_FIFO half, but two of the three calls are not in it and
+# the verification needs the raw ones anyway — so this is one dependency
+# instead of two. See `src/rt.rs`.
+libc = "0.2"
 
 [build-dependencies]
 pkg-config = "0.3"

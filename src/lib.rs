@@ -4,12 +4,15 @@
 //! that constrains structure is the deadline, and exactly one thing has one —
 //! the audio callback (docs/architecture.md).
 //!
-//! Built so far: the file layer and the FFI beneath it. Both sit on the side
-//! of the line that is allowed to block.
+//! Built so far: the file layer and the FFI beneath it, the ring, the window
+//! thread, the transport, the callback, the output sink, and the realtime
+//! process setup that makes the callback's "cannot fault" true. Not started:
+//! browser, display, input, cue store, media watch.
 
 pub mod engine;
 pub mod file;
 pub mod ring;
+pub mod rt;
 pub mod sink;
 pub mod sndfile;
 pub mod transport;
