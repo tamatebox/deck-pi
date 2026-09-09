@@ -12,7 +12,7 @@
 //! behind**" the playhead, which sounds like it needs a way to write behind
 //! the oldest resident frame. It does not. The behind half accumulates on its
 //! own: frames the playhead has passed simply are not discarded until they
-//! fall more than `behind_target` back. So the steady state is the ± window
+//! fall more than the behind target back. So the steady state is the ± window
 //! the table describes, reached by only ever appending.
 //!
 //! The one case it does not cover is the instant after a cold seek, when the
@@ -20,6 +20,32 @@
 //! already states the cost of scrubbing past the window's edge as "an
 //! `sf_seek` and a refill", which is exactly what happens. Pre-locking cue
 //! regions is the separate mechanism for making a *cold seek* not stall.
+//!
+//! # The window's bias follows the direction of travel
+//!
+//! An append-only ring has one asymmetry that matters: what accumulates for
+//! free is whatever the playhead has *passed*. `ahead_target` and
+//! `behind_target` are therefore relative to the **direction of travel**, not
+//! to increasing frame number, and [`Window::above_target`] and
+//! [`Window::below_target`] are what map them onto the ring. Ascending, they
+//! map the obvious way; descending, they swap.
+//!
+//! Descending was measured as 12 relocations over 12 periods with **zero**
+//! periods served, because relocating to the playhead and appending forward
+//! lays the whole window out in the direction the playhead is leaving. So a
+//! descending relocation restarts at `playhead - below_target()` instead,
+//! which is what the `descending` flag below selects. Measured after the
+//! change: 12 of 12 served, and 1 relocation instead of 12 once the window is
+//! larger than the descent.
+//!
+//! **What this does not remove is one missed period per relocation.**
+//! Relocating discards the ring, and a descending playhead's next input lies
+//! at the *top* of the span about to be read — so it arrives last, and the
+//! callback asks for it before it is there. Reading is roughly two orders of
+//! magnitude faster than playback consumes, so the refill beats the next
+//! period comfortably and the miss is one period, not a stall. Removing it
+//! altogether would need the ring to accept writes *below* `start`, which is
+//! a ring change and is out of scope here.
 
 use std::path::Path;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
@@ -33,6 +59,18 @@ use crate::sndfile::SndFileError;
 /// irrelevant, small enough that one call cannot monopolise the thread while
 /// a seek is waiting to be serviced. Not tuned against anything measured.
 pub const CHUNK_FRAMES: usize = 8192;
+
+/// How much input must stay resident *below* a descending playhead before the
+/// window is rebuilt deeper.
+///
+/// It has to cover the most one output period can consume going backwards.
+/// `architecture.md` fixes the period at 128-256 frames and `transport.rs`
+/// fixes the seek rate at |r| = 4, so 1024 frames is the worst case; doubled
+/// for v2's resampler, which holds input in a delay line beyond what it has
+/// output. Small on purpose — it is subtracted from how far the playhead can
+/// descend before the next relocation, so a large value would spend the
+/// window on margin.
+const REVERSE_MARGIN: u64 = 2048;
 
 /// What one top-up pass did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -60,6 +98,12 @@ pub struct Window {
     /// ring's `end`, and asserted to be.
     cursor: u64,
     at_end: bool,
+    /// The playhead at the previous pass, for inferring the direction of
+    /// travel. `None` until the first pass has seen one.
+    last_playhead: Option<u64>,
+    /// Latched, so it survives passes where the playhead has not moved —
+    /// a pause mid-scrub must not silently re-bias the window forward.
+    descending: bool,
 }
 
 impl Window {
@@ -91,6 +135,8 @@ impl Window {
                 behind_target,
                 cursor: 0,
                 at_end: false,
+                last_playhead: None,
+                descending: false,
             },
             reader,
             info,
@@ -109,18 +155,79 @@ impl Window {
         self.writer.resident()
     }
 
+    /// True while the playhead is moving towards lower frame numbers — a
+    /// reverse jog in v2, or a held REW in v1.
+    pub fn descending(&self) -> bool {
+        self.descending
+    }
+
+    /// Frames wanted above the playhead: the ahead half when ascending, the
+    /// behind half when descending. See [`Window::below_target`].
+    fn above_target(&self) -> u64 {
+        if self.descending {
+            self.behind_target
+        } else {
+            self.ahead_target
+        }
+    }
+
+    /// [`REVERSE_MARGIN`], clamped to what the window can actually hold.
+    ///
+    /// Without the clamp a ring smaller than the margin could never satisfy
+    /// the room-below test and would relocate on every pass forever.
+    fn reverse_margin(&self) -> u64 {
+        REVERSE_MARGIN.min(self.below_target())
+    }
+
+    /// Frames wanted below the playhead — the mirror of [`Window::above_target`].
+    fn below_target(&self) -> u64 {
+        if self.descending {
+            self.ahead_target
+        } else {
+            self.behind_target
+        }
+    }
+
     /// Restarts the window at `frame`, discarding what is resident.
     ///
     /// Called for an explicit seek. A seek that lands *inside* the window
     /// needs none of this — the callback simply reads a different frame — so
-    /// the engine should only reach for it when [`fill_step`] reports it, or
-    /// when it knows the target is out of range.
+    /// the engine should only reach for it when [`Window::fill_step`] reports
+    /// it, or when it knows the target is out of range.
+    ///
+    /// **Clears the inferred direction of travel**, because an explicit seek
+    /// is a discontinuity rather than motion: a cue jump backwards must not
+    /// leave the window biased as though the playhead were scrubbing down.
+    /// The automatic relocation inside [`Window::fill_step`] keeps the
+    /// direction, which is what makes a held REW or a reverse jog work.
     pub fn relocate(&mut self, frame: u64) -> Result<(), SndFileError> {
+        self.descending = false;
+        self.last_playhead = None;
+        self.restart_at(frame)
+    }
+
+    fn restart_at(&mut self, frame: u64) -> Result<(), SndFileError> {
         let at = self.track.seek(frame)?;
         self.writer.relocate(at);
         self.cursor = at;
         self.at_end = false;
         Ok(())
+    }
+
+    /// Updates the latched direction of travel from a new playhead value.
+    ///
+    /// An unchanged playhead leaves it alone: `fill_step` is polled far more
+    /// often than the playhead moves, so treating "not descending this pass"
+    /// as ascending would flip the bias back on the very next poll.
+    fn observe(&mut self, playhead: u64) {
+        if let Some(prev) = self.last_playhead {
+            match playhead.cmp(&prev) {
+                std::cmp::Ordering::Less => self.descending = true,
+                std::cmp::Ordering::Greater => self.descending = false,
+                std::cmp::Ordering::Equal => {}
+            }
+        }
+        self.last_playhead = Some(playhead);
     }
 
     /// One top-up pass: trim what has fallen behind, then read forward until
@@ -131,24 +238,41 @@ impl Window {
     pub fn fill_step(&mut self) -> Result<Filled, SndFileError> {
         let mut out = Filled::default();
         let playhead = self.writer.playhead();
+        self.observe(playhead);
         let resident = self.writer.resident();
 
-        // Relocate if the playhead is not somewhere this window can reach.
-        // `playhead == resident.end` is not a relocation: it means the
-        // callback is right at the edge and filling forward will serve it.
-        let contiguous = resident.start <= playhead && playhead <= resident.end;
-        if !contiguous || resident.is_empty() {
-            self.relocate(playhead)?;
+        // Relocate if the playhead is not somewhere this window can serve.
+        //
+        // `playhead == resident.end` is not a relocation while ascending: it
+        // means the callback is right at the edge and appending forward will
+        // serve it. Descending, that same position serves nothing, because
+        // the next input lies *below* the playhead — so there has to be a
+        // second test, for room underneath.
+        let in_span = resident.start <= playhead && playhead <= resident.end;
+        let below = self.reverse_margin();
+        let room_below =
+            !self.descending || resident.start == 0 || resident.start + below <= playhead;
+        if !in_span || !room_below || resident.is_empty() {
+            // Ascending, restart at the playhead: appending forward serves
+            // the immediate need first and the behind half accumulates for
+            // free. Descending, neither is true — restart below the playhead
+            // so that what gets read is what the callback will ask for.
+            let target = if self.descending {
+                playhead.saturating_sub(self.below_target())
+            } else {
+                playhead
+            };
+            self.restart_at(target)?;
             out.relocated = true;
         }
 
-        // Discard what has fallen more than the behind window back. This is
-        // published before the slots are reused, which is what lets the
-        // callback notice if it is reading one of them.
+        // Discard what has fallen out of the window on the side the playhead
+        // came from. This is published before the slots are reused, which is
+        // what lets the callback notice if it is reading one of them.
         self.writer
-            .drop_before(playhead.saturating_sub(self.behind_target));
+            .drop_before(playhead.saturating_sub(self.below_target()));
 
-        let fill_to = playhead + self.ahead_target;
+        let fill_to = playhead + self.above_target();
         while !self.at_end {
             let end = self.writer.resident().end;
             debug_assert_eq!(

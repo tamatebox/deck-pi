@@ -456,48 +456,39 @@ fn allocating_a_full_size_ring_is_quick_enough_to_do_per_track() {
     );
 }
 
-#[test]
-fn scrubbing_backwards_thrashes_the_window_a_known_v2_gap() {
-    // `architecture.md` claims "the v1 read path, control-thread shape and
-    // rate variable are all built to accept [v2] without rework". The ring
-    // half of that is true — reads inside the window are free in either
-    // direction, which is tested above. The **filling policy** is not.
-    //
-    // `fill_step` relocates to the playhead and then only ever appends
-    // forward, so a playhead moving backwards past the window's start gets a
-    // window laid out entirely *ahead* of where it is going. Every period
-    // then relocates again and refills frames the callback will never ask
-    // for.
-    //
-    // This test asserts the present behaviour rather than the wanted one, so
-    // the gap is a recorded fact instead of a surprise when the jog is built.
-    // The fix is direction-aware relocation in `window.rs` — relocate to
-    // `playhead - ahead` when the playhead is descending — which is about
-    // twenty lines and needs no change to the ring.
-    let scratch = Scratch::new("window-backwards");
-    let frames = 40_000u64;
+/// Drives a backwards scrub and reports what the window managed to serve.
+///
+/// `fill_until_quiet` between periods is deliberate: it measures the filling
+/// *policy*, not the race between the window thread and the callback. The
+/// residual cost of a relocation — one missed period while the refill is in
+/// flight — is a timing property and is documented in `window.rs` rather than
+/// asserted here, because a test that raced would be a test that flaked.
+fn backwards_scrub(window_bytes: usize, periods: usize) -> (usize, usize, usize) {
+    // Named by the window size: the two callers run in parallel, and a shared
+    // scratch directory would have them writing the same fixture at once.
+    let scratch = Scratch::new(&format!("window-backwards-{}", window_bytes));
+    let frames = 400_000u64;
     let source = signal(Bits::S24, 2, frames as usize);
     let bytes = fixtures::build(Kind::Wav, &source, Bits::S24, 44_100, 2);
     let path = fixtures::write(&scratch.dir, "backwards", Kind::Wav, &bytes);
 
-    let (mut window, reader, _) =
-        Window::load(&path, SMALL_WINDOW_BYTES).expect("loads");
+    let (mut window, reader, _) = Window::load(&path, window_bytes).expect("loads");
     let block = 128u64;
     let jog_rate = 4u64; // |r| = 4, the documented seek rate
 
-    // Settle forwards around the middle of the track.
-    let mut playhead = 20_000u64;
+    // Settle forwards well inside the track, so the scrub has room below it.
+    let mut playhead = 300_000u64;
     reader.publish_playhead(playhead);
     fill_until_quiet(&mut window);
     assert!(reader.resident().contains(&playhead));
+    assert!(!window.descending(), "settling forwards must read as ascending");
 
-    // Now scrub backwards, as a jog would.
     let mut relocations = 0usize;
     let mut served = 0usize;
     let mut missed = 0usize;
     let mut buf = vec![0i32; block as usize * RING_CHANNELS];
 
-    for _ in 0..12 {
+    for _ in 0..periods {
         playhead = playhead.saturating_sub(block * jog_rate);
         reader.publish_playhead(playhead);
         let f = window.fill_step().expect("fill");
@@ -511,28 +502,102 @@ fn scrubbing_backwards_thrashes_the_window_a_known_v2_gap() {
         // Reading forward from the playhead is what a first version of this
         // test did, and it passed — because relocating to the playhead and
         // filling forward serves exactly that, and nothing else.
-        let need = playhead.saturating_sub(block);
+        let need = playhead.saturating_sub(block * jog_rate);
         match reader.read_block(need, &mut buf) {
             Ok(()) => served += 1,
             Err(_) => missed += 1,
         }
     }
+    assert!(window.descending(), "a descending playhead must read as such");
+    (relocations, served, missed)
+}
 
+#[test]
+fn scrubbing_backwards_is_served_by_a_direction_aware_window() {
+    // `architecture.md` claims "the v1 read path, control-thread shape and
+    // rate variable are all built to accept [v2] without rework". The ring
+    // half of that was always true — reads inside the window are free in
+    // either direction, which is tested above. The **filling policy** was
+    // not, and this test recorded the gap before it was closed: relocating
+    // to the playhead and appending forward laid the window out entirely
+    // *ahead* of a descending playhead, measured at 12 relocations over 12
+    // periods with **zero** periods served.
+    //
+    // `fill_step` now restarts below the playhead when it is descending, so
+    // what gets read is what the callback will ask for.
+    let periods = 12;
+    let (relocations, served, missed) = backwards_scrub(SMALL_WINDOW_BYTES, periods);
     println!(
-        "backwards scrub: {} relocations, {} periods served, {} missed",
+        "backwards scrub, 1024-frame ring: {} relocations, {} served, {} missed",
         relocations, served, missed
     );
-    // The window does relocate repeatedly, which is the thrash.
-    assert!(
-        relocations >= 6,
-        "expected the window to relocate on most periods, got {}",
-        relocations
+    assert_eq!(served, periods, "every period's input must be resident");
+    assert_eq!(missed, 0);
+}
+
+#[test]
+fn a_window_large_enough_to_coast_stops_relocating_every_period() {
+    // The test above still relocates on every period, and that is the ring's
+    // size rather than the policy: at 1024 frames the descent per period
+    // (512 = block x |r|) is exactly `below_target`, so there is nothing left
+    // to coast on. Give the window room and the relocations amortise, which
+    // is what makes the policy worth having rather than merely correct.
+    //
+    // Coast distance is `below_target - REVERSE_MARGIN`. At 16k frames that
+    // is 8192 - 2048 = 6144, or 12 periods of 512 — so twelve periods should
+    // cost one or two relocations, not twelve.
+    let periods = 12;
+    let big = SMALL_WINDOW_BYTES * 16; // 16,384 frames
+    let (relocations, served, missed) = backwards_scrub(big, periods);
+    println!(
+        "backwards scrub, 16384-frame ring: {} relocations, {} served, {} missed",
+        relocations, served, missed
     );
-    // And what it fills is ahead of the playhead, so the frames the callback
-    // wants next are never resident.
+    assert_eq!(served, periods);
+    assert_eq!(missed, 0);
     assert!(
-        missed > 0,
-        "expected backwards scrubbing to miss; if this now passes cleanly the \
-         gap has been fixed and this test should be inverted"
+        relocations <= 2,
+        "expected the descent to coast inside one window, got {} relocations \
+         over {} periods",
+        relocations,
+        periods
     );
+}
+
+#[test]
+fn an_explicit_seek_clears_the_direction_so_a_cue_jump_is_not_a_scrub() {
+    // A cue jump backwards moves the playhead down exactly as a scrub does,
+    // but playback afterwards is forward. Biasing the window below the
+    // landing point would then be wrong, so `relocate` — the explicit-seek
+    // entry point — clears the inferred direction where `fill_step`'s own
+    // relocation keeps it.
+    let scratch = Scratch::new("window-seek-direction");
+    let source = signal(Bits::S24, 2, 200_000);
+    let bytes = fixtures::build(Kind::Wav, &source, Bits::S24, 44_100, 2);
+    let path = fixtures::write(&scratch.dir, "seekdir", Kind::Wav, &bytes);
+
+    let (mut window, reader, _) = Window::load(&path, SMALL_WINDOW_BYTES).expect("loads");
+
+    // Scrub down far enough to latch the direction.
+    reader.publish_playhead(100_000);
+    fill_until_quiet(&mut window);
+    for i in 1..=4u64 {
+        reader.publish_playhead(100_000 - i * 512);
+        fill_until_quiet(&mut window);
+    }
+    assert!(window.descending(), "the scrub must latch");
+
+    // A cue jump. Lower than the scrub, so direction alone cannot tell them
+    // apart — only which entry point was used can.
+    window.relocate(50_000).expect("seek");
+    assert!(!window.descending(), "an explicit seek must clear the bias");
+
+    reader.publish_playhead(50_000);
+    fill_until_quiet(&mut window);
+    let resident = reader.resident();
+    assert_eq!(
+        resident.start, 50_000,
+        "a cleared bias must lay the window out ahead of the landing point"
+    );
+    assert_eq!(resident.end, 50_000 + window.ahead_target());
 }
