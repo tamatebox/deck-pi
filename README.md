@@ -6,9 +6,9 @@ samples reaching the DAC untouched.
 
 **Status.** The v1 read path is built and tested — libsndfile FFI, format vetting,
 the locked int32 ring, the window thread, the transport, the audio callback, the
-ALSA sink, the realtime process setup and the browser — with bit-perfection verified
-end to end across every container, depth and rate in scope. That is the software
-half only. **Not started: display, input, cue store, media watch.**
+ALSA sink, the realtime process setup, the browser and media watch — with
+bit-perfection verified end to end across every container, depth and rate in scope.
+That is the software half only. **Not started: display, input, cue store.**
 
 **Nothing has run on hardware.** The Pi and the boards are not assembled, so the
 ALSA sink has never opened a real device and the `hw_params` half of the null test
@@ -156,7 +156,7 @@ libsndfile is a system library, found through `pkg-config`:
 ```sh
 brew install libsndfile pkg-config          # macOS
 sudo apt install libsndfile1-dev pkg-config # Debian / Raspberry Pi OS
-cargo test    # 124 tests on Linux, 118 on macOS; green in debug and release
+cargo test    # 131 tests on Linux, 125 on macOS; green in debug and release
 ```
 
 Two tests are `#[ignore]`d and neither is a skipped assertion: one is the demo-file
@@ -176,6 +176,7 @@ cargo run -- <file>...              # what the file layer makes of each path
 cargo run -- --drain <file>         # pull every frame through window, ring, callback
 cargo run -- --device=hw:0,0 <file> # play for real (Linux; hw: only, never plughw)
 cargo run -- --rt-check[=CPU]       # apply the realtime setup, read back what took
+cargo run -- --media-check[=PATH]   # the medium's state, and its root folder
 ```
 
 The default prints one line per path — `PLAYS` with the container, rate, depth and

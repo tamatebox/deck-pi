@@ -203,7 +203,15 @@ Why each piece:
 - **`--automount=no`.** Automount is implied for removable devices, and it makes
   the mount point exist whether or not media is present — which destroys the
   simplest presence test. With it off, the path appears only when something is
-  mounted, so "No USB" versus the browser is one `stat`.
+  mounted.
+
+  **The presence test is still not existence**, though, and this bullet used to
+  say it was. Whether the *directory* is there additionally depends on systemd
+  removing it on unmount, and a failed unit or a stray `mkdir` leaves it behind —
+  at which point an existence test reports a stick that is not there. `src/media.rs`
+  compares the path's `st_dev` with its parent's instead: measured at 79 against 76
+  mounted, 76 against 76 with the directory left behind. One extra `stat`, and the
+  assumption goes away.
 - **`--no-block`** because udev rules must not wait, and **`--collect`** so failed
   transient units do not accumulate and need `systemctl reset-failed`.
 - **Numeric uid.** Both drivers parse it with `fsparam_uid`; a username does not
