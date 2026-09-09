@@ -6,9 +6,9 @@ samples reaching the DAC untouched.
 
 **Status.** The v1 read path is built and tested — libsndfile FFI, format vetting,
 the locked int32 ring, the window thread, the transport, the audio callback, the
-ALSA sink and the realtime process setup — with bit-perfection verified end to end
-across every container, depth and rate in scope. That is the software half only.
-**Not started: browser, display, input, cue store, media watch.**
+ALSA sink, the realtime process setup and the browser — with bit-perfection verified
+end to end across every container, depth and rate in scope. That is the software
+half only. **Not started: display, input, cue store, media watch.**
 
 **Nothing has run on hardware.** The Pi and the boards are not assembled, so the
 ALSA sink has never opened a real device and the `hw_params` half of the null test
@@ -156,7 +156,7 @@ libsndfile is a system library, found through `pkg-config`:
 ```sh
 brew install libsndfile pkg-config          # macOS
 sudo apt install libsndfile1-dev pkg-config # Debian / Raspberry Pi OS
-cargo test    # 104 tests on Linux, 98 on macOS; green in debug and release
+cargo test    # 124 tests on Linux, 118 on macOS; green in debug and release
 ```
 
 Two tests are `#[ignore]`d and neither is a skipped assertion: one is the demo-file

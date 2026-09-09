@@ -467,7 +467,7 @@ underneath.
 | **Mount** — *not ours* | A udev rule and `systemd-mount`. Zero application code; see `implementation.md`. |
 | **Media watch** | The fixed mount point appearing and disappearing, the volume UUID from blkid, and three states: nothing mounted, mounted but unreadable, browsable. |
 | **File layer** | The libsndfile FFI. Opens one file's header, and reads frames into the ring's layout. **Shared** — the browser needs it for length, rate and the four rejections; playback needs it to fill the ring. |
-| **Browser** | Walks the folder tree, caches headers by path, holds the selection. The model. |
+| **Browser** | Walks the folder tree, caches headers by path, holds the selection. The model. Built: `src/browser.rs`. **The row count is a parameter, not a constant** — `view(height)` takes the viewport height, because open question 1's candidates give two to twelve browsable rows and the module must not decide that. `view` is also the *only* thing that opens a file, which is what makes "reads ride the render" structural rather than a habit. |
 | **Display** | `embedded-graphics` over one panel driver, the redraw budget, the idle timers. The view. **Cuts across** — it renders browsing and transport alike. |
 | **Input** | evdev, the kernel-decoded encoder, tap-versus-hold for FF and REW. **Cuts across**, and deliberately knows nothing about either: it emits standard keycodes, and which GPIO produces which is a line in `config.txt`. |
 | **Transport** | The rate variable, the float64 position, and what PLAY / CUE / FF / REW mean. Writes the lock-free slot; never touches the ring. |
