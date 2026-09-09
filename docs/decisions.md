@@ -33,6 +33,7 @@ Design settled 2026-09-09. No code exists yet.
 | Treat the mount as fallible, but do not design around it | Removal is the dominant case and normally the only one: leave it plugged in and it stays. The two non-removal paths are USB re-enumeration after a power dip — which is exactly the bus-powered-large-drive risk noted above — and a bumped connector, USB having no latch, in a venue where things get knocked —
 which is confirmed as the use case, not assumed. Even so it does not change the
 code: handling it is free. Neither is worth engineering for, because handling it is free: `read_dir` returns a `Result`, so the requirement amounts to "do not `unwrap()`", and the only real decision is which UI state to show. The audio side already survives it by design. |
+| What the DAC accepts is out of scope — if it does not play, it does not play | S/PDIF is unidirectional, so a DAC that cannot lock goes silent and nothing comes back; the software cannot detect it, ever. Accepted rather than engineered around. The display already shows the rate in use, which is the whole diagnosis, and an unknown downstream is handled by not carrying rates you cannot guarantee. A configurable ceiling was proposed twice and dropped twice: the deck cannot tell which DAC is attached, so it would be a claim, and a stale claim sounds certain while being wrong. |
 | The UI distinguishes "no stick" from "stick I cannot read" | Showing only `No USB` for an unreadable filesystem makes a formatting mismatch look like broken hardware. Same principle as refusing a file on highlight and saying which of the four reasons applies: say *why*, not just *that*. |
 | A udev rule calls `systemd-mount`, at a **fixed path** | Nothing mounts removable media on a headless box — the kernel creates the block device and stops. `systemd-mount` from `RUN{program}+=` is the documented pattern, with an example in its own man page; it creates a transient `.mount` unit, so teardown on removal is automatic. Calling `mount` directly from `RUN=` would leave the mount unowned. `SYSTEMD_MOUNT_WHERE=` and `SYSTEMD_MOUNT_OPTIONS=` are udev properties made for exactly this, so the fixed path and the per-filesystem options need nothing hand-rolled. It also keeps the mount privilege out of the audio process, which otherwise needs only `rtprio` and `memlock` and no root at all. |
 | Match on `ID_FS_TYPE`, not "the first block device" | Correcting an earlier version of this row. A Mac drive initialised with a GUID partition map carries a vfat EFI System Partition, so taking `sda1` would have mounted that instead of the music; a flash stick formatted exFAT is often a single MBR partition where it would not. Matching only `exfat` and `hfsplus` does the partition selection as a side effect — and it is needed anyway, because the two filesystems take different option names so `-t auto` cannot supply them. |
@@ -112,13 +113,13 @@ need the club-width range as its worst case.
 **3. ENTER as its own button?** Cheap encoder push switches bounce and wear, and
 ENTER is the most-used control. Pin budget allows a dedicated button.
 
-**4. Two hardware facts still needing the physical boards.** Recorded in
-`docs/hardware.md` under Sources - Unverified.
+**4. One hardware fact still needing the boards.** Recorded in `docs/hardware.md`
+under Sources - Unverified.
 
-*The exact J12/J13 master-mode jumper values.* The manual's table is pictorial, its
-worked examples and its board silkscreen appear to disagree, and a third-party
-mirror reverses it. Silent when wrong, and a jumper in the wrong orientation can
-destroy the isolator.
+*The J12/J13 values are settled* — §F's table, read from a legible scan, agrees with
+all six worked examples: master is J13 shorted 1-2 and 3-4, J12 open, both shunts
+vertical. The manual was self-consistent all along; the apparent contradiction came
+from reading the board silkscreen off an oblique photo.
 
 *What the Digi2 Pro's "isolation ground jumper" does.* Undocumented, but the
 datasheet's mention of an output isolation transformer narrows it to bonding or
@@ -128,7 +129,8 @@ one to chase first.
 
 A third item, whether the Digi2 Pro has a pass-through GPIO header, is close to
 answered: the datasheet enumerates its connectors and none is a pass-through. Treat
-it as a terminating HAT, which means bring-up step 2 needs a breakout.
+it as a terminating HAT, which is why the controls wait for the isolator's J4 in
+bring-up phase C rather than needing a breakout earlier.
 
 **5. Enclosure vs. the 60 C soft limit.** The official guidance is that a case
 "should not be covered", and a sealed DJ enclosure covers it. A fan is an acoustic
@@ -140,10 +142,43 @@ as permanent (which the sizing already does). Depends on outcome 2.
 overlooked. `hardware.md` budgets the clean side and records J1's 3.3-5 V range,
 the 4.8 V floor and the GPIO-header input, but three things are unworked: the Pi
 side's own current budget, whether the clean supply's secondary must float (its
-ground reference arrives through the S/PDIF shield from the DAC, so an
-earth-bonded output could form a loop), and power-on order (the isolator driving
-SCK/LRCK into an unpowered Pi is the direction to worry about). None of it binds
-until bring-up step 3, which is when the isolator goes in.
+ground reference arrives through the S/PDIF shield from the DAC — which now depends
+on the Digi2 Pro's `JP1`, see `hardware.md`), and power-on order (the isolator
+driving SCK/LRCK into an unpowered Pi is the direction to worry about).
+
+**Power-on order is now answered, and the answer is that it does not matter.** The
+isolator IC reads as `CA-IS3760HW` on the board photo — a Chipanalog CA-IS376x, and
+the `H` suffix means outputs default *high* when their input side is unpowered. The
+manual's block diagram also shows the isolator's Pi-side rail coming from the Pi.
+Together: with the Pi off, the Pi-side output stage is off too and can drive nothing
+into the Pi, so the back-powering worry does not arise; with the clean side off,
+SCK/LRCK simply sit high and there is no audio. Neither order damages anything.
+Confirm the suffix on the actual chip, and note the block diagram implies more than
+one isolator.
+
+What is left is the grounding half plus the Pi-side current budget. The grounding
+half was recorded as hinging on the Digi2 Pro's `JP1`; that now looks wrong. The
+output transformer is a Pulse `T6074NL`, the **electrostatically shielded** variant,
+and a shield does nothing unless grounded — so `JP1` most likely grounds that
+internal shield, which is a noise-rejection choice and says nothing about where the
+clean side takes its ground reference. Not certain, but a continuity check on the
+bare board decides it rather than a vendor query. See `hardware.md`. Neither binds
+until the isolator goes in, at bring-up phase C.
+
+**7. What CUE does, and what happens at the end of a track.** Both are usage
+decisions, and both are currently unimplemented *because* no document answers them
+— left out rather than guessed at.
+
+*CUE.* `hardware.md` labels GPIO 25 "CUE / STOP" and `architecture.md` makes "what
+PLAY / CUE / FF / REW mean" the transport's job, but nothing says whether CUE sets
+a point, returns to one, or stops. The STOP half is covered by pause. Long-form
+material makes the "return to a marked point" reading the more useful one, since
+cues are the main way to navigate inside an 80-minute piece — but that is an
+argument, not an answer.
+
+*End of track.* The engine reports `EndOfTrack` and decides nothing. `hardware.md`
+already carries this as open under FF / REW: stopping is believed to be the usual
+default on DJ players, but that is recollection rather than a checked fact.
 
 ## Phases
 

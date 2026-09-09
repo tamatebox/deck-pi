@@ -9,8 +9,24 @@ IsolatorPi III, and out as S/PDIF to an external DAC. One Pi is one deck; a seco
 deck is a second Pi. Operation is entirely network-independent; Ethernet is for
 maintenance only.
 
-No code exists yet. The hardware and the software design are settled — read the
-docs before proposing changes to either.
+The hardware and the software design are settled — read the docs before proposing
+changes to either.
+
+**Status.** The v1 read path is built and tested: the libsndfile FFI, format
+vetting, the locked int32 ring, the window thread, the transport and the audio
+callback. 72 tests green in debug and release, clippy clean, and re-run on
+Linux/aarch64. Bit-perfection is verified end to end for every container and depth
+in scope at all six rates — **but only the software half.**
+
+**Not started, no file at all:** ALSA output, browser, display, input, cue store,
+media watch, and the realtime process setup (`mlockall`, `SCHED_FIFO`,
+`limits.conf`). **ALSA output is the blocking gap.** Nothing has run on hardware —
+the Pi and the boards are not assembled — so the `hw_params` half of the null test
+is unproven. Do not read "audio callback" as "sound comes out".
+
+`src/main.rs` is not the deck. It is a bring-up CLI: it reports what the file layer
+makes of a path, and `--drain` runs a file through the window thread, ring and
+callback and prints frames, waits and peak.
 
 - @docs/hardware.md — board stack, jumpers, GPIO map, assembly checklist
 - @docs/architecture.md — format scope, playback model, program shape, threading, v2 design
@@ -41,6 +57,12 @@ promote things from it into the design doc.
   each only after it had already become the foundation of later conclusions. If one
   is missing and needed, ask. If you must proceed without it, say in the text that
   it is an assumption, so it can be found and pulled back out.
+- **Another session may be in this tree.** Mid-edit states of tracked files are
+  readable by peers and get acted on: a section proposing a configured
+  output-rate ceiling was read and implemented while it briefly existed, then
+  reverted once the finished text said the idea had been dropped twice. Land doc
+  changes in coherent steps rather than leaving speculative sections sitting in
+  the tree, and check `ListAgents` before assuming you are alone in it.
 - Say whether a number is measured or estimated. The A53 resampler budget in
   `docs/architecture.md` is an estimate and is labelled as one; do not launder it
   into a fact. The same goes for a premise: an unlabelled one is indistinguishable
@@ -73,6 +95,10 @@ promote things from it into the design doc.
   GPIO6"), so removing the isolator does not free them. They choose between the
   44.1 and 48 kHz crystals, which is the ability to play either family exactly.
   Never assign them to buttons, encoders or a display.
+- **I2S is GPIO 18, 19, 20 *and* 21 — four pins.** GPIO 20 is PCM_DIN, unused for
+  playback but claimed by the interface anyway, and HiFiBerry's GPIO page says so
+  outright. A button was once assigned to it here because a table listed only three.
+  Take the reserved set from that page, not from what looks unused.
 - **The playback position accumulator is float64.** float32 has a 24-bit mantissa,
   so past 2^23 samples (~190 s at 44.1 kHz) the fractional part is gone and
   interpolation silently stops working.

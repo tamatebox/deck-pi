@@ -4,7 +4,12 @@ A bit-perfect single-deck DJ transport built on a Raspberry Pi 3B+. It reads a U
 stick, browses it by folder, and plays WAV/AIFF out as S/PDIF with the source
 samples reaching the DAC untouched.
 
-**Status: design only. No code yet.**
+**Status.** The v1 read path is built and tested — libsndfile FFI, format vetting,
+the locked int32 ring, the window thread, the transport, the audio callback — with
+bit-perfection verified end to end across every container, depth and rate in scope.
+That is the software half only. **Not started: ALSA output, browser, display, input,
+cue store, media watch, and the realtime process setup.** Nothing has run on
+hardware yet, so the `hw_params` half of the null test is unproven.
 
 ```
 USB stick or drive — exFAT or HFS+, mounted read-only

@@ -75,17 +75,27 @@ Three things are easy to get wrong and produce no error when wrong.
    oscillators generate SCK/LRCK and feed them back to the Pi, which then only
    generates DATA. **Audio plays either way**, so nothing surfaces the mistake.
 
-   **The jumper values are deliberately not written down here.** The manual's
-   table (§F) is a picture, not text. Its six worked examples agree with each
-   other and imply master = J13 shorted 1-2 and 3-4, J12 all open — but the board
-   silkscreen (§D) reads as SLAVE next to J13 and MASTER next to J12, and a
-   third-party mirror of the same manual transcribes the table the other way
-   round. Read the values off §F and off the board. The Digi2 Pro is WM8804-based,
-   so application example 1 — "any WM8804/5 based Transport/DAC" — is the one
-   that applies.
+   **Master mode is J13 shorted, J12 open.**
 
-   A second failure mode sits on top of the silent one: per §J, a jumper in the
-   wrong **orientation** can *damage* the board. Check before applying power.
+   | | J13 | J12 |
+   |---|---|---|
+   | Slave (default) | open | 1-2 and 3-4 shorted |
+   | **Master — use this** | **1-2 and 3-4 shorted** | **open** |
+
+   §F's table and all six of §I's worked examples agree on this, so the manual is
+   self-consistent. Application example 1 is the directly applicable one, being for
+   "any WM8804/5 based Transport/DAC" — which the Digi2 Pro is.
+
+   **Both jumpers go on vertically.** The pins are 3 and 1 across the top, 4 and 2
+   across the bottom, so `3-4` bridges the left column top-to-bottom and `1-2` the
+   right column. Two vertical shunts side by side. Placing them horizontally
+   (1-3, 2-4) is the wrong **orientation** that §J-4 warns can *damage* the board —
+   a harder failure than the silent one above, so check before applying power.
+
+   An earlier version of this file refused to record the values, because the board
+   silkscreen looked like it said `SLAVE` beside J13 and `MASTER` beside J12. That
+   reading came from an oblique photo and was wrong. Still worth a glance at the
+   flat board, but two independent sections of the manual agreeing outweigh it.
 
 2. **Feed J1 with clean 5 V, and never power the isolated side from the Pi.**
    J1 is the clean-side input; it regulates the isolator and passes the supply
@@ -97,6 +107,11 @@ Three things are easy to get wrong and produce no error when wrong.
    3.3 V — but those drive DACs that run on 3.3 V. Here it must be 5 V, because
    the same rail passes straight through J6 pins 2/4 to a Pi HAT that expects
    5 V.
+
+   J1 is a **green 2-pin screw terminal**, silkscreened `CLEAN POWER` with a `⊕`
+   marking the positive and `3.3/5V` beside it, and the kit ships red and black
+   pigtail leads for it. Read off the board photo in the Sources list, so no
+   guessing about polarity is needed.
 
 3. **Leave GPIO 5 and 6 free.** J6 pins 29/31 carry them through as the
    oscillator-select lines for master mode. The Digi2 Pro overlay names them
@@ -116,25 +131,40 @@ Fit the isolator **last**. This is not a preference — the IsolatorPi III manua
 *before* installing the isolator between the Pi and the audio card, because
 debugging is much harder once it is in.
 
-1. **Digi2 Pro direct onto the Pi, audio only.** The bundled M2.5x12 mm spacers
-   are the right length for this, so nothing extra is needed.
-   `dtoverlay=hifiberry-digi-pro` is already explicit, so `config.txt` does not
-   change later. Confirm S/PDIF out at every rate, `hw:` device, and the
-   byte-equality null test. **No controls at this stage** — the Digi2 Pro is a
-   terminating HAT, so it occupies the whole 40-pin header and there is nowhere to
-   put them.
-2. **Insert the IsolatorPi III.** Longer standoffs, J12/J13, clean 5 V on J1, and
-   the power topology all arrive here, and only here.
-3. **Add the controls, on the isolator's J4.** Their final home, wired once.
+The audio half and the control half are independent, and **neither waits for the
+other or for the isolator.** The only constraint is physical: the Digi2 Pro is a
+terminating HAT, so it fills the 40-pin header and the two halves cannot be on the
+Pi at the same time until J4 exists. So swap the HAT on and off and do them in
+whichever order the parts arrive in.
 
-The order of 2 and 3 matters, and an earlier version of this list had them
-reversed. Controls before the isolator would have meant buying a GPIO splitter to
-reach the header past the HAT, and then rewiring everything onto J4 afterwards.
-The isolator manual's insistence on validating first (§J-1) is about **audio**; it
-says nothing about controls, so nothing requires them to come earlier. This way
-costs one fewer part and one fewer round of wiring.
+**A — bare Pi, no audio hardware.** Buttons and the encoder wired straight to the
+40-pin header, a cheap panel on I2C, a stick in a USB port. This is the input path,
+the browser, the display, media watch, the cue store and the file layer — every
+module except the audio engine. It also settles open questions 1 (what fits in how
+many pixels) and 3 (whether ENTER wants its own button). Note that the null test
+needs no audio hardware either: it compares buffers against the source, so it runs
+here, or on any machine.
 
-Two things do *not* change between step 1 and step 3, and are easy to get wrong
+**B — Pi plus Digi2 Pro, audio only.** The bundled M2.5x12 mm spacers are the right
+length, so nothing extra is needed, and `dtoverlay=hifiberry-digi-pro` is already
+explicit so `config.txt` does not change later. Confirm S/PDIF out at every rate
+and the `hw:` device. No controls here — nowhere to put them.
+
+**C — Pi, isolator, Digi2 Pro.** Integration. Longer standoffs, J12/J13, clean 5 V
+on J1, the grounding question, and the controls moving to J4, wired once into their
+final home.
+
+Two notes on the ordering. Controls belong in C rather than before it: reaching the
+header past the HAT would need a GPIO splitter and then rewiring onto J4 afterwards,
+and the manual's insistence on validating first (§J-1) is about **audio**, not
+controls. And one integration risk appears only in C — the display and the WM8804
+share the I2C bus. In A the display has it to itself, so redraw timing that felt
+fine there can stumble once the codec is competing for the same bus.
+
+Open question 2, the libsoxr benchmark, needs none of this. Bare Pi, no HAT, no
+stick, no panel — so it can run before any of the three.
+
+Two things do *not* change between B and C, and are easy to get wrong
 by assuming they do:
 
 - **GPIO 5 and 6 stay reserved.** They are Pi GPIOs routed *through* the isolator
@@ -149,8 +179,8 @@ by assuming they do:
   improve sound quality" by itself; it makes a good clean supply and good clocks
   count for more.
 
-So step 1 is the whole v1 software stack, but it is **not** an audio-quality
-baseline. Anything measured or listened to there does not carry to step 3.
+So A and B together are the whole v1 software stack, but B is **not** an
+audio-quality baseline. Anything measured or listened to there does not carry to C.
 
 ## Power budget (clean side)
 
@@ -181,16 +211,26 @@ the low current makes a quiet supply easy rather than expensive.
 
 ## GPIO map
 
-**Reserved — 11 pins**
+**Reserved — 12 pins**
 
 | GPIO | Use |
 |---|---|
-| 0, 1 | HAT ID EEPROM |
+| 0, 1 | HAT ID EEPROM (physical pins 27/28 — *pins*, not GPIOs, a documented trap) |
 | 2, 3 | I2C — WM8804 control, and the display |
 | 5 | 44.1 kHz crystal enable (`clock44-gpio`) |
 | 6 | 48 kHz crystal enable (`clock48-gpio`) |
 | 14, 15 | Serial console (PL011, freed by `disable-bt`) |
-| 18, 19, 21 | I2S |
+| **18, 19, 20, 21** | I2S — **four** pins |
+
+**GPIO 20 is I2S, not spare.** HiFiBerry's own GPIO-usage page reserves 18-21
+(physical 12, 35, 38, 40) for the sound interface on the Digi2 Pro and says they
+cannot be used for anything else. An earlier version of this table listed only
+18/19/21 and left 20 free, and a button was assigned to it — the same mistake the
+GPIO 5/6 invariant exists to prevent, on a different pin. GPIO 20 is PCM_DIN;
+unused for playback-only, but claimed by the interface regardless.
+
+GPIO 16 *is* free here. HiFiBerry reserves it on the plain Digi+, but the Digi+
+Pro / Digi2 Pro entry replaces that with GPIO 5 and 6.
 
 **SPI0 (7, 8, 9, 10, 11) is held for a future ADC.** The v2 pitch fader is analog
 and the Pi has no ADC, so an MCP3008 or ADS1115 will be needed. Putting the
@@ -206,12 +246,68 @@ display on I2C instead of SPI is what keeps this option open.
 | 24 | PLAY / PAUSE | v1 |
 | 25 | CUE / STOP | v1 |
 | 16 | REW — hold to seek back, tap for previous | v1 |
-| 20 | FF — hold to seek forward, tap for next | v1 |
+| 26 | FF — hold to seek forward, tap for next | v1 |
 | 12, 13 | Jog encoder A / B | v2 |
-| 4, 26 | spare | |
+| 4 | spare | |
 
-Two spares remain, which is enough to cover open question 3 (a dedicated ENTER)
-and still leave one.
+**One spare, not two.** Losing GPIO 20 to I2S costs a pin, so open question 3 (a
+dedicated ENTER) would take the last one. If more are needed, the reserve is
+**GPIO 7** — it is SPI0's second chip select, and a single ADC needs only one, so
+7 can come out of the SPI0 block without giving up the v2 pitch fader.
+
+Three cautions from HiFiBerry's GPIO-usage page, all of which this build touches:
+
+- **"Do not use more than a few mA from the 3.3V line."** They ask for 5 V plus a
+  regulator instead. A small OLED at 10-25 mA is already past "a few"; the ILI9341
+  TFT option in open question 1, with a backlight, is far past it. So the display
+  gets 5 V and its own regulation, not the 3.3 V pin — and that is a constraint on
+  the panel choice, not an afterthought.
+- **The I2C bus is shared with the WM8804, and HiFiBerry does not recommend adding
+  slaves to it.** This design does exactly that. Their stated reason is pull-ups:
+  "there might or might not be the right pull-up resistors on every I2C slave".
+
+  The isolator largely answers that one, though. Its block diagram puts a Control
+  I2C Isolator between the two sides, and J6 carries dedicated pull-up pins (15/22,
+  4.7k to 3.3Vcc), so I2C is **two electrically separate segments** — the display on
+  J4 sits on the Pi's segment, the WM8804 on the isolated one, and neither loads the
+  other. Read from the block diagram and those pins rather than stated outright, so
+  still worth confirming with a scope on the real stack.
+
+  What does *not* go away is **bus time**: one logical bus from the Pi's controller,
+  so a 26 ms full frame still shares it with WM8804 commands. That is the reason for
+  the refresh discipline, not noise.
+- **The whole stack is outside HiFiBerry's supported configuration.** They do not
+  guarantee interoperability with other add-on cards, and the IsolatorPi III is an
+  interposer rather than a direct plug. Ian Canada's manual supports the Digi Pro
+  in master mode explicitly, so the combination is sound — but there is no vendor
+  support for it from either side of the sandwich.
+
+**Where J4 actually is.** `J4` is a reference designator silkscreened on the
+IsolatorPi III — `J` for connector, the numbers not sequential by position. The
+board carries three 40-pin connectors:
+
+```
+   ┌────────────────────────────────┐
+   │ J13   [U1 isolator]   J12      │
+   │         SLAVE      MASTER      │
+   │  ┌──────────────────────────┐  │
+   │  │ J6  ISOLATED GPIO        │  │  <- the Digi2 Pro plugs here
+   │  ├──────────────────────────┤  │
+   │  │ J4  NON-ISOLATED         │  │  <- controls and display here
+   │  └──────────────────────────┘  │
+   └────────────────────────────────┘
+        (J3, the socket onto the Pi, is on the underside)
+```
+
+J4 and J6 are two upward-facing male pin headers **side by side** in the lower half
+of the board, not stacked — the photo shows `J4 NON-ISOLATED` printed beside it with
+pin 39/40 at one end and 2 at the other. Being male pins facing up, whatever
+connects to J4 needs a female socket, which is what the IDC ribbon above provides.
+
+The isolator is **65.5 mm** deep against a standard HAT's 56 mm, and J4 sits at the
+outer edge, so J4 should fall outside the Digi2 Pro's footprint and stay reachable
+with the stack assembled. Deduced from the dimensions and the photo — confirm on the
+boards.
 
 Control peripherals connect to the IsolatorPi III's **J4**, the non-isolated 40-pin
 passthrough. The manual names rotary encoders as an intended use. Anything hung
@@ -232,6 +328,42 @@ seconds at a time, so pick switches that are comfortable to hold rather than
 crisp.
 
 Buttons pull to ground and use the internal pull-ups. No external resistors.
+
+### Wiring them
+
+Two wires per button: one terminal to its GPIO, the other to any ground pin — the
+header has eight. Grounds can be shared, so v1 is about **nine signal lines plus a
+ground**: encoder A/B, its push, and five buttons.
+
+**The numbering is the trap.** GPIO number is not physical pin number, as
+HiFiBerry's own page warns, and the physical pins alternate odd and even across the
+two rows:
+
+| GPIO | Pin | | GPIO | Pin |
+|---|---|---|---|---|
+| 17 encoder A | 11 | | 24 PLAY | 18 |
+| 27 encoder B | 13 | | 25 CUE | 22 |
+| 22 ENTER | 15 | | 16 REW | 36 |
+| 23 BACK | 16 | | 26 FF | 37 |
+
+Verify with **`evtest`** rather than assuming: it prints `/dev/input` events, so a
+press either produces the expected keycode or it does not, and the fault is either
+the wiring or the overlay.
+
+**Phase A** wants a labelled **GPIO breakout** to a breadboard — the printed pin
+names are what stop the miscount, and tactile switches sit in a breadboard properly
+where a jumper socket on a 2.54 mm leg does not.
+
+**Phase C** wants something that cannot shake loose, because the same lack of a
+latch that makes a knocked USB connector plausible applies to internal wiring. A
+**screw-terminal breakout** is the answer: panel wires screw in, no crimping, and
+it stays put. Take J4 out to it on a **40-pin IDC ribbon** and mount it elsewhere in
+the enclosure rather than stacking anything on J4 itself — see the note on J4's
+position below. Only about ten of the forty pins are used, so a full breakout is
+overkill but cheap and harmless.
+
+Use **stranded** wire anywhere it flexes between panel and board; solid wire
+work-hardens and breaks. 26-28 AWG is ample for a switch carrying microamps.
 
 ### FF and REW
 
@@ -328,7 +460,7 @@ dtoverlay=gpio-key,gpio=24,keycode=164,label=PLAYPAUSE
 dtoverlay=gpio-key,gpio=25,keycode=128,label=STOP
 dtoverlay=gpio-key,gpio=22,keycode=28,label=ENTER
 dtoverlay=gpio-key,gpio=16,keycode=168,label=REW
-dtoverlay=gpio-key,gpio=20,keycode=208,label=FF
+dtoverlay=gpio-key,gpio=26,keycode=208,label=FF
 ```
 
 168 and 208 are `KEY_REWIND` and `KEY_FASTFORWARD` — the *held* meaning, since one
@@ -368,6 +500,10 @@ manual (§J) says to touch J8 only when a DoP decoder is installed.
 - S/PDIF: 44.1-192 kHz, 24 bit max. The WM8804 driver actually advertises 32 and
   64 kHz as well, and both are exact integer divisions of the 48 kHz crystal, but
   they are below the board's stated interface floor and out of scope regardless.
+- The isolator IC is a **Chipanalog CA-IS376x** — the board photo reads
+  `CA-IS3760HW` (exact digits worth re-checking on the board). This is the part
+  needed to answer the power-on-order half of open question 6: what its outputs do
+  when one side is unpowered is a datasheet fact, not something to reason about.
 - Crystals are **22.5792 MHz** (44.1 family) and **24.576 MHz** (48 family). Not
   printed in the datasheet; derived from the driver's own arithmetic, which sets
   MCLK to `Fs x 128` above 96 kHz — exactly those two figures at 176.4 and 192 kHz.
@@ -387,7 +523,10 @@ should be traceable to one of these; where it is not, the text says so.
   ([direct PDF](https://raw.githubusercontent.com/iancanada/DocumentDownload/master/IsolatorPi/IsolatorPiIIIUsersManual.pdf)).
   §E connectors and J6 pinout, §F jumpers (J12/J13 master-slave, J8 DoP), §H LEDs,
   §J application notes. Same directory has `isolatorpiiii.dxf`, the board outline —
-  useful for the enclosure. Board is 65 x 65.5 mm.
+  useful for the enclosure — and **`IsolatorPiIII.jpg`**, a 1620x1080 board photo
+  readable enough to settle silkscreen questions. It is the source of J1's screw
+  terminal, the `CA-IS376x` isolator marking, and the J12/J13 `SLAVE`/`MASTER`
+  labels. Board is 65 x 65.5 mm.
 - **Raspberry Pi 3 Model B+ product brief** (Raspberry Pi Ltd, published
   2025-10) —
   <https://datasheets.raspberrypi.com/rpi3/raspberry-pi-3-b-plus-product-brief.pdf>
@@ -402,40 +541,84 @@ should be traceable to one of these; where it is not, the text says so.
 - **HiFiBerry Digi2 Pro datasheet** (last updated 2022-10-17) —
   <https://www.hifiberry.com/docs/data-sheets/datasheet-digi2-pro/>
   · index: <https://www.hifiberry.com/docs/>
+- **Digi2 Pro board photo** —
+  <https://www.hifiberry.com/wp-content/uploads/2021/02/board-parts.jpg>
+  1200x1200 and readable. Source of the `JP1` designator beside the output
+  transformer, `P3` for the 5 V input, the `P4` BNC footprint, `U1` as the WM8804,
+  and the board printing its own `dtoverlay=hifiberry-digi-pro` line. Marked
+  "HW 2.1".
+- **CA-IS376x datasheet** (Chipanalog) —
+  <https://e.chipanalog.com/Public/Uploads/uploadfile/files/20240611/CAIS376xdatasheetVersion1.06en.pdf>
+  Six-channel digital isolator. The `H`/`L` suffix sets the fail-safe output state
+  when a side is unpowered, which is what settles power-on order.
+- **GPIO usage of HiFiBerry boards** —
+  <https://www.hifiberry.com/docs/hardware/gpio-usage-of-hifiberry-boards/>
+  The authority for which pins the Digi2 Pro claims: GPIO 2/3, 5, 6 and **18-21**.
+  Also the source of the 3.3 V current limit and the warning against adding I2C
+  slaves. Read the per-board sections carefully — the Digi+ and the Digi+ Pro /
+  Digi2 Pro reserve *different* pins, and the EEPROM line says "pins 27 and 28",
+  meaning physical pins, not GPIOs.
 
 Ian Canada's manuals are also mirrored on third-party manual-aggregator sites.
 **Do not cite those** — one of them transcribes the J12/J13 table backwards.
 
 ### Unverified against the physical boards
 
-Neither manual answers these outright. The first is now close to settled by
-inference; the second is the one that still needs the board.
+One left, plus one that costs nothing either way.
 
-1. **A pass-through GPIO header — almost certainly absent.** The datasheet's
-   "Connectors and Jumpers" section *enumerates* the board's connectors: DSP
-   connector, 5 V power supply connector, TOSLink, RCA, isolation ground jumper,
-   optional BNC. No GPIO pass-through appears, and it would be a selling point if
-   it existed, so treat this as a terminating HAT and confirm by eye. This is why
-   bring-up fits the isolator before wiring the controls: with a terminating HAT and
-   no isolator, there is no header left to reach, and J4 does not exist yet. Fitting
-   the isolator first removes the need for a GPIO splitter entirely.
-2. **The Digi2 Pro's "isolation ground jumper" — the one that matters most.** The
-   datasheet lists it and describes it nowhere. But the same datasheet also lists an
-   **output isolation transformer**, and putting those together narrows it: on a
-   transformer-coupled S/PDIF output, a jumper of that name most plausibly selects
-   whether the output connector's ground and shield are bonded to board ground or
-   left floating. That is the standard arrangement.
+**Resolved, from a legible scan of §F:** the J12/J13 values. The table agrees with
+all six worked examples — master is J13 shorted, J12 open — so the manual is
+self-consistent and the apparent contradiction was a bad reading of the silkscreen
+from an oblique photo. See the assembly checklist.
 
-   **This is inference from the name and the topology, not documentation.** It needs
-   the board in hand or an answer from HiFiBerry. It is worth chasing because it
-   decides something already reasoned about in the power discussion: whether the
-   clean side takes its ground reference through the coax shield from the DAC, or
-   floats entirely on its own supply.
+1. **A pass-through GPIO header — reopened by the photo.** The datasheet's
+   "Connectors and Jumpers" section enumerates DSP connector, 5 V power supply,
+   TOSLink, RCA, isolation ground jumper and optional BNC, with no pass-through,
+   which argued for a terminating HAT. But the board photo shows structure at the
+   40-pin position on the *top* face that could be either solder tails or a stacking
+   header. A side-on view or the board itself settles it.
 
-   | Jumper | Clean-side ground reference |
+   What is at stake is convenience, not capability. With a pass-through, phases A
+   and B merge: no HAT swapping, and — more usefully — **browse and play can run
+   together before the isolator arrives.** That is the one thing neither phase covers
+   alone: the control-thread-to-callback path under real audio load, redraw timing
+   while audio runs, and the display sharing I2C with the WM8804. That last one is
+   currently deferred to C, and a pass-through would surface it earlier *and in a
+   harsher form*, because without the isolator there is no bus split and the
+   pull-ups really do parallel — HiFiBerry's own caution in its pure state. Finding
+   that early is worth more than finding it tidily.
+
+   Without one, nothing is blocked. Swap the HAT between A and B, or buy a GPIO
+   splitter (another unsupported interposer, and the isolator is coming anyway), or
+   let C do the integration. Not worth chasing — but if the header turns out to be
+   there, use it.
+3. **The Digi2 Pro's `JP1`, the "isolation ground jumper".** Two circumstantial
+   lines make the identification safe: the datasheet's connector list carries an
+   "isolation ground jumper", and the board photo shows `JP1` immediately beside the
+   output isolation transformer. What it *does* is still undocumented.
+
+   The transformer narrows it, though. Its marking reads **Pulse `T6074NL`**, which
+   is the **electrostatically shielded** variant of a 1:1 digital-audio transformer —
+   225 uH, 1500 Vrms. An electrostatic shield is a conductor between primary and
+   secondary with its own terminal, and it does nothing at all unless grounded. So
+   the likeliest function of a jumper sitting right next to it is:
+
+   > **grounding the transformer's electrostatic shield, or not.**
+
+   That would make it a noise-rejection option, not a grounding-topology one — and
+   it would mean **open question 6's grounding question does not depend on `JP1`
+   after all.** An earlier version of this file claimed it did, on the assumption
+   that `JP1` bonded the *output connector's* ground and shield to board ground.
+   That reading is not ruled out; the name reads both ways, since grounding a shield
+   improves the isolation while bonding the output ground would defeat it.
+
+   **A continuity check settles it — no vendor query needed.** With a meter on the
+   bare board:
+
+   | `JP1`'s pins connect to | Reading |
    |---|---|
-   | open | none from the DAC — the clean side floats on its own supply |
-   | closed | tied to the DAC's ground through the coax shield |
+   | the transformer's middle pin and board ground | grounds the electrostatic shield |
+   | the **RCA shell** and board ground | bonds the output ground |
 
    The advice that the clean supply's secondary should float rests on the second
    case. So this belongs to open question 6, not to a list of loose ends.

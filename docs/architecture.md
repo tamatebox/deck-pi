@@ -62,6 +62,23 @@ send it, the deck plays it.
 the header of the highlighted row and can refuse *before* PLAY is pressed. Nothing
 in this list can surprise you mid-set.
 
+### What the DAC accepts is not our problem
+
+S/PDIF is unidirectional. The Digi2 Pro sends whatever rate it was given and does
+not know what is downstream; a DAC that cannot lock to it goes silent, and nothing
+comes back, so the software **cannot detect this, ever**.
+
+That is accepted rather than engineered around. If it does not play, it does not
+play. The display already shows the rate and depth in use, so silence next to a
+visible "192 kHz" is as much diagnosis as exists or is needed, and where the
+downstream is unknown the answer is not to carry rates you cannot guarantee —
+converting when building the stick, like everything else the deck refuses.
+
+A configurable "my DAC does up to N kHz" ceiling was proposed here twice and
+dropped both times. The deck cannot tell which DAC is attached, so it would be a
+claim rather than a fact, and a stale claim asserts a capability that is not there
+while sounding certain. Not worth a setting for a failure that is this legible.
+
 Anything on this list that is wanted is converted on the preparing machine, where
 there is no deadline and the lossy decisions can be made deliberately. Same
 argument as the downconversion note below.
