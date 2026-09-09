@@ -1,0 +1,17 @@
+[package]
+name = "deck-pi"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Bit-perfect single-deck DJ transport"
+publish = false
+
+[dependencies]
+
+[build-dependencies]
+pkg-config = "0.3"
+
+[profile.release]
+# The audio callback must not be surprised by codegen; keep it inspectable.
+debug = 1
+overflow-checks = true

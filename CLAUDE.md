@@ -1,0 +1,94 @@
+# CLAUDE.md
+
+## Project
+
+Bit-perfect single-deck DJ transport on a Raspberry Pi 3B+. It plays WAV/AIFF
+**straight off removable USB media** — exFAT or HFS+, read-only, no import step,
+no database, browsed by folder tree — out to a HiFiBerry Digi2 Pro over I2S, galvanically isolated by an
+IsolatorPi III, and out as S/PDIF to an external DAC. One Pi is one deck; a second
+deck is a second Pi. Operation is entirely network-independent; Ethernet is for
+maintenance only.
+
+No code exists yet. The hardware and the software design are settled — read the
+docs before proposing changes to either.
+
+- @docs/hardware.md — board stack, jumpers, GPIO map, assembly checklist
+- @docs/architecture.md — format scope, playback model, program shape, threading, v2 design
+- @docs/implementation.md — ALSA specifics, libsndfile FFI, realtime setup, dependencies
+- @docs/decisions.md — decision log, reversed advice, open questions
+
+`architecture.md` is the design and should be stable. `implementation.md` is what
+to type and what fails silently, and it churns as crates and APIs move — do not
+promote things from it into the design doc.
+
+## Operating principles
+
+- Read `docs/decisions.md` before revisiting a design choice. Several decisions
+  were reversed during design and the superseded reasoning is still plausible
+  enough to be re-derived by accident; the log says why each was dropped.
+- Hardware facts — jumper positions, pin assignments, power feed — are
+  load-bearing and silent when wrong. Never guess one. Cite `docs/hardware.md`
+  or ask.
+- Before deferring something to "when the hardware arrives", check whether it is
+  actually a *driver* question. Formats, rates and pin roles are declared
+  statically in kernel source and can be settled now; the boards' own jumpers and
+  connectors cannot. Two open questions were closed this way — see
+  `docs/implementation.md`.
+- **Usage facts are the user's to supply, not yours to infer.** What material
+  exists and in what formats, what the medium is, where the deck gets used, how it
+  gets played — none of it is derivable from the code, the boards or the datasheets.
+  Five such premises were invented during design and every one had to be unwound,
+  each only after it had already become the foundation of later conclusions. If one
+  is missing and needed, ask. If you must proceed without it, say in the text that
+  it is an assumption, so it can be found and pulled back out.
+- Say whether a number is measured or estimated. The A53 resampler budget in
+  `docs/architecture.md` is an estimate and is labelled as one; do not launder it
+  into a fact. The same goes for a premise: an unlabelled one is indistinguishable
+  from a settled fact three turns later, which is exactly how the five above
+  survived as long as they did.
+- The 3B+ is specified at 1.4 GHz but **sizing is against 1.2 GHz**, because its
+  soft temperature limit drops the clock there at 60 C. Do not "correct" the
+  1.2 GHz figures upward — see `docs/hardware.md`.
+
+## Invariants
+
+- **No gain stage in the playback path, ever.** Bit-perfect output is the point
+  of the project. The Digi2 Pro deliberately exposes no volume control; software
+  must not add one, not even a "temporary" one for testing.
+- **Output sample rate follows the source file, per track.** Never resample to a
+  fixed output rate. At unity pitch the source samples must reach the DAC
+  untouched, and that is only possible when the rates already match.
+- **The audio callback allocates nothing, locks nothing, does no I/O, and cannot
+  fault.** It reads a locked int32 ring and nothing else. This holds from the first
+  commit, while the load is still trivial enough to get away with breaking it. The
+  no-fault half is what makes a stick pulled mid-set safe rather than a SIGBUS
+  inside the audio thread.
+- **Sources are int16 or int24 only, 44.1 to 192 kHz.** That is exactly what the
+  Digi2 Pro can send, so there is no second rule. It is also what makes v1's
+  bit-perfection unconditional: every supported conversion is a pure shift.
+  32-bit float would need a clipping or scaling decision, and scaling is a gain
+  stage — so it is out of scope rather than handled.
+- **GPIO 5 and 6 are reserved** for oscillator select. They are Pi pins routed
+  *through* the isolator to the audio card (J6 pins 29/31, "isolated GPIO5 and
+  GPIO6"), so removing the isolator does not free them. They choose between the
+  44.1 and 48 kHz crystals, which is the ability to play either family exactly.
+  Never assign them to buttons, encoders or a display.
+- **The playback position accumulator is float64.** float32 has a 24-bit mantissa,
+  so past 2^23 samples (~190 s at 44.1 kHz) the fractional part is gone and
+  interpolation silently stops working.
+
+## Language
+
+**Rust, everything, one process.** Engine, browser and display. Python owns nothing
+on the deck — it never could own the realtime path (GC pauses at these buffer
+sizes drop out), and the reasons for keeping it on the UI side dissolved: there is
+no database, no library management, and the browser needs libsndfile too, so a
+language boundary would mean binding it twice.
+
+**There is no Python in this project at all.** Preparing a stick is not a component
+of it: converting a file the deck refuses is done with `sox` or `ffmpeg`, on some
+other machine, and the deck cannot tell how a file was made. The project's only
+obligation there is that the UI says *why* a file will not play.
+
+The callback rules are machine-enforced, not aspirational: `assert_no_alloc` fails
+loudly on allocation inside the callback. Keep it that way from the first commit.
