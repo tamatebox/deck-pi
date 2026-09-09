@@ -271,15 +271,29 @@ Jog is unaffected: the ring is RAM, so reads inside it are free in either
 direction, and scrubbing past its edge means an `sf_seek` and a refill — exactly
 what a page fault would have cost.
 
-**True of the ring, and measured; not yet true of the filling policy.** Reads inside
-the window really are free in either direction. But the fill step relocates to the
-playhead and only ever appends *forward*, so a **descending** playhead gets a window
-laid out entirely ahead of where it is going: measured at 12 relocations over 12
-periods, 0 periods served. Backwards playback consumes input *below* the position,
-which a forward-only refill never provides. So "built to accept v2 without rework"
-holds for the ring and the rate variable, and the filling policy needs
-direction-aware relocation — inferable from successive playhead values, so no new
-plumbing. A test asserts the present behaviour and names it as a known v2 gap.
+**The filling policy is direction-aware, and it had to be made so.** Reads inside the
+window are free in either direction, but the fill step used to relocate to the
+playhead and only ever append *forward*, which gave a **descending** playhead a
+window laid out entirely ahead of where it was going: measured at 12 relocations
+over 12 periods with **0 periods served**. Backwards playback consumes input *below*
+the position, which a forward-only refill never provides.
+
+So the two window halves are defined **relative to the direction of travel** rather
+than to increasing frame number, and the direction is inferred from successive
+playhead values — no new plumbing, and an explicit seek clears it, because a cue
+jump backwards is a discontinuity rather than motion. Descending, the fill restarts
+*below* the playhead. Measured after the change: 12 of 12 periods served, and the
+relocations amortise once the window is larger than the descent — 1 relocation over
+the same 12 periods at 16k frames against 12 at 1k.
+
+**One cost does not go away, and it is the append-only ring's.** Relocating discards
+the window, and a descending playhead's next input sits at the *top* of the span
+about to be read, so it arrives last: the callback asks for it once per relocation
+before it is there. Reading is around two orders of magnitude faster than playback
+consumes, so that is one missed period rather than a stall, and it amortises over
+the coast distance. Removing it entirely would mean letting the ring accept writes
+below `start` — a prepending ring, which is a larger change than the policy and is
+not made. Being explicit: reverse playback is *served*, not gapless.
 
 Pulling the stick therefore behaves like a CDJ, and for the same reason: what is
 already resident keeps playing. The grace period is the forward half of the

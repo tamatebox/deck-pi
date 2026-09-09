@@ -14,6 +14,7 @@ Design settled 2026-09-09. No code exists yet.
 | WAV / AIFF sources only | Uncompressed, so no decoder ever runs on the Pi. RF64 and Wave64 too, which libsndfile reads at no extra cost and which lift the 2 GiB container ceiling. |
 | Native rate and depth per track | Upsampling costs space on the stick and CPU in v2 and buys nothing; matching rates is also what makes bit-perfect output possible. |
 | Locked int32 ring around the playhead | Decouples track length **and** sample rate from the 1 GB of RAM — cost is constant in both. Was mmap + mlock of file pages; see Reversed for why that changed. |
+| The window's two halves are relative to the **direction of travel** | Not to increasing frame number. An append-only ring accumulates for free only on the side the playhead has *passed*, so the useful half depends on which way it is moving — and a forward-only refill served a descending playhead **0 of 12 periods**, measured. Direction is inferred from successive playhead values, so nothing new is plumbed, and an explicit seek clears it because a cue jump backwards is a discontinuity rather than motion. Residual cost, stated rather than hidden: one missed period per relocation, because relocating discards the window and a descending playhead's next input is read *last*. Reverse playback is served, not gapless; making it gapless means a ring that can write below `start`, which is not built. |
 | Wireless off, Ethernet only | Fewer interrupts, and the 3B+ radio is dual-band, so this removes a 5 GHz transmitter as well as the 2.4 GHz one. Confirm wired access *before* disabling. |
 | Buttons and encoders on GPIO, kernel-decoded | No MIDI jitter, no USB polling interval. `gpio-key` / `rotary-encoder` overlays, never userspace polling. |
 | No LEDs | Keeps the GPIO wiring simple. Not a noise decision — a statically driven LED is DC and quieter than the display. The display shows state instead, and can show *why*, not just *that*. |
@@ -484,6 +485,11 @@ unaddressed. Small, but it is the difference between a program and an appliance.
 there is no other mode, so no resampler and no unity button. Encoder, three
 buttons, display.
 
-**v2** — pitch fader (needs an SPI ADC; the Pi has none), jog wheel, libsoxr, the
-unity button. The v1 read path, control-thread shape and rate variable are all
-built to accept this without rework.
+**v2** — pitch fader (the Pi has no ADC at all; whether it is SPI or I2C is open
+question 1's deciding axis), jog wheel, libsoxr, the unity button. The v1 read path,
+control-thread shape and rate variable accept this without rework. **The window's
+*filling policy* did not, and was the one thing that needed changing** — it appended
+forward only, so a descending playhead was served 0 of 12 periods. It is now
+direction-aware and serves 12 of 12. That is the whole of what "built to accept v2"
+turned out to cost, and it was found by writing the test rather than by reading the
+claim.

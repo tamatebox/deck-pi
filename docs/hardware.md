@@ -534,7 +534,11 @@ Resolution sets the feel, not the audio quality — the rate slew in the resampl
 absorbs coarse input. Below ~400 counts/rev, low-speed velocity estimation breaks
 down: events arrive too far apart to tell how fast the platter is moving.
 
-Plus a pitch fader, which needs the SPI ADC noted above.
+Plus a pitch fader, which needs **an** ADC — the Pi has none. Whether it is the SPI
+MCP3008 or the I2C ADS1115 is open, and it is the lever the button ceiling above and
+`decisions.md` open question 1 both turn on, so this line deliberately does not name
+one. An earlier version said "the SPI ADC", which decided the question by wording in
+the one place the analysis was not.
 
 ## Wireless
 
