@@ -459,6 +459,18 @@ Target ~5-10 ms output latency for v2 jog response: 128-256 frame periods, 2-3
 periods, plus `threadirqs` and `SCHED_FIFO` in the 70-80 range. A PREEMPT_RT
 kernel is likely unnecessary.
 
+**Those two ranges do not combine freely, and the bottom of the rate range is
+where it binds.** The same frame count is more time at a lower rate:
+
+| at 44.1 kHz | 2 periods | 3 periods |
+|---|---|---|
+| 128 frames | 5.8 ms | 8.7 ms |
+| 256 frames | **11.6 ms** | **17.4 ms** |
+
+So at 44.1 and 48 kHz only the 128-frame periods land inside the target; 256 frames
+is only free from 96 kHz upward. Read the range as "128 frames, and 256 becomes
+available at the higher rates", not as a free choice.
+
 ## Display
 
 `embedded-graphics` gives one drawing API behind a `DrawTarget` trait, and drivers

@@ -6,20 +6,34 @@
 //! owned by the callback, which is the only thing that advances it; the
 //! transport publishes intent, and reads the position back for the display.
 //!
-//! # What is deliberately missing
+//! # CUE is one button with three behaviours
 //!
-//! **CUE.** `hardware.md` gives GPIO 25 the label `CUE / STOP` and
-//! `architecture.md` makes "what PLAY / CUE / FF / REW mean" the transport's
-//! job, but no document says what CUE *does* — whether it sets a point,
-//! returns to one, or stops. That is a usage decision, not something derivable
-//! from the boards, so it is not implemented here rather than guessed at.
-//! [`Transport::pause`] covers the STOP half.
+//! Taken from the CDJ-350 operating instructions (Pioneer 389414-01U, p.18)
+//! and recorded in `decisions.md`, not from memory:
 //!
-//! **Auto-advance at the end of a track.** An open question in
-//! `hardware.md`: "whether a track auto-advances when it ends. Stopping is
-//! believed to be the usual default on DJ players, but that is recollection,
-//! not a checked fact." So the engine *reports* reaching the end and this
-//! module does nothing about it.
+//! | State | CUE | The manual's name |
+//! |---|---|---|
+//! | Paused, away from the cue point | **sets** the point there | Setting Cue |
+//! | Playing | **returns** to the point and pauses | Back Cue |
+//! | Paused **at** the point | **plays while held** | Cue Point Sampler |
+//!
+//! Four details that matter: one cue point per track, and setting a new one
+//! cancels the old; setting it makes no sound; Back Cue **pauses and does not
+//! resume**, so PLAY restarts from the point; and the preview is momentary,
+//! with no latching.
+//!
+//! **There is no separate STOP**, because a CDJ has none — returning to the
+//! cue point and standing by *is* stopping. So the `CUE / STOP` label on
+//! GPIO 25 is one function, and the hold gesture is free for the preview.
+//! None of it needs a new mechanism: hold is `r = 1.0`, release is `r = 0`
+//! with the position set back to the point.
+//!
+//! Auto cue is deliberately **not** implemented. The CDJ-350 skips the silent
+//! lead-in on load and places the cue where sound starts; `decisions.md`
+//! rejects that here, because a long-form piece may open below -78 dB on
+//! purpose and letting the deck decide where the music "really" begins is the
+//! kind of silent, well-meant alteration this project exists to avoid. The
+//! cue point starts at frame zero unless set.
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicU8, Ordering};
 
@@ -82,6 +96,13 @@ pub struct Transport {
     /// Published by the callback for the display and the window thread.
     position: AtomicU64,
     state: AtomicU8,
+    /// The track's single cue point, in frames. Frame zero until set — not
+    /// `None`, because `decisions.md` fixes the unset value at the start of
+    /// the file rather than at wherever sound begins.
+    cue: AtomicU64,
+    /// True while CUE is held down for the momentary preview, so releasing it
+    /// knows to stop and return rather than leaving the deck playing.
+    previewing: AtomicBool,
 }
 
 impl Default for Transport {
@@ -92,6 +113,8 @@ impl Default for Transport {
             seek_to: AtomicI64::new(-1),
             position: AtomicU64::new(0.0f64.to_bits()),
             state: AtomicU8::new(State::Stopped as u8),
+            cue: AtomicU64::new(0),
+            previewing: AtomicBool::new(false),
         }
     }
 }
@@ -147,6 +170,58 @@ impl Transport {
         } else {
             self.pause();
         }
+    }
+
+    /// CUE pressed. Which of the three behaviours happens is decided from
+    /// the current state, exactly as it is on the player.
+    ///
+    /// The one combination the manual does not cover is CUE pressed while FF
+    /// or REW is held. Treated here as Back Cue, on the grounds that anything
+    /// other than paused is "moving" and returning to the point is the
+    /// predictable answer; noted because it is a reading, not a quotation.
+    pub fn cue_down(&self) {
+        let paused = self.rate() == RATE_PAUSED;
+        let at_cue = self.position() == self.cue_point() as f64;
+
+        if paused && at_cue {
+            // Cue Point Sampler: plays while held.
+            self.previewing.store(true, Ordering::Relaxed);
+            self.play();
+        } else if paused {
+            // Setting Cue. "No sound is output at this time" — nothing here
+            // starts the transport, so that holds by construction.
+            self.cue.store(self.position() as u64, Ordering::Release);
+        } else {
+            // Back Cue: return to the point and pause. It does not resume;
+            // PLAY restarts from the point.
+            self.back_cue();
+        }
+    }
+
+    /// CUE released. Only meaningful after a preview, which is momentary.
+    pub fn cue_up(&self) {
+        if self.previewing.swap(false, Ordering::AcqRel) {
+            self.back_cue();
+        }
+    }
+
+    /// Returns to the cue point and pauses. Both halves already existed: a
+    /// one-shot seek request and `r = 0`.
+    pub fn back_cue(&self) {
+        self.previewing.store(false, Ordering::Relaxed);
+        self.pause();
+        self.request_seek(self.cue_point());
+    }
+
+    /// The track's cue point, in frames.
+    pub fn cue_point(&self) -> u64 {
+        self.cue.load(Ordering::Acquire)
+    }
+
+    /// Sets the cue point directly. For the cue store restoring a saved point
+    /// on load; the button goes through [`cue_down`](Self::cue_down).
+    pub fn set_cue_point(&self, frame: u64) {
+        self.cue.store(frame, Ordering::Release);
     }
 
     /// Ask the callback to jump. Absolute, in frames.
@@ -216,11 +291,16 @@ impl Transport {
     }
 
     /// Reports reaching the end of the track. Stops the rate so the position
-    /// does not run past the last frame; **does not** advance to another
-    /// track, because whether it should is an open question.
+    /// does not run past the last frame, and advances nothing.
+    ///
+    /// `decisions.md`: "A track that reaches its end stops. Nothing starts on
+    /// its own. In a venue, a next track beginning while attention is
+    /// elsewhere is worse than a silence, and PLAY is right there."
+    /// Auto-advance is a later addition if wanted, not an omission here.
     pub fn reached_end(&self) {
         self.rate.store(RATE_PAUSED.to_bits(), Ordering::Release);
         self.silent.store(false, Ordering::Relaxed);
+        self.previewing.store(false, Ordering::Relaxed);
         self.state.store(State::Paused as u8, Ordering::Relaxed);
     }
 }
@@ -305,6 +385,119 @@ mod tests {
             t.publish_position(v);
             assert_eq!(t.position(), v, "position {} did not round trip", v);
         }
+    }
+
+    #[test]
+    fn the_cue_point_starts_at_frame_zero() {
+        // Not at "where sound starts": auto cue is deliberately not adopted,
+        // because a long-form piece may open below -78 dB on purpose.
+        let t = Transport::new();
+        assert_eq!(t.cue_point(), 0);
+    }
+
+    #[test]
+    fn cue_while_paused_sets_the_point_and_makes_no_sound() {
+        let t = Transport::new();
+        t.pause();
+        t.publish_position(50_000.0);
+        t.cue_down();
+        assert_eq!(t.cue_point(), 50_000);
+        assert_eq!(t.rate(), RATE_PAUSED, "\"No sound is output at this time\"");
+        assert_eq!(t.take_seek(), None, "setting a point must not move the deck");
+        t.cue_up();
+        assert_eq!(t.rate(), RATE_PAUSED, "release after setting must do nothing");
+
+        // "When a new cue point is set, the previously set cue point is
+        // canceled." One point, not a set of hot cues.
+        t.publish_position(120_000.0);
+        t.cue_down();
+        assert_eq!(t.cue_point(), 120_000);
+    }
+
+    #[test]
+    fn cue_while_playing_returns_to_the_point_and_pauses_without_resuming() {
+        let t = Transport::new();
+        t.set_cue_point(1_000);
+        t.play();
+        t.publish_position(80_000.0);
+
+        t.cue_down();
+        assert_eq!(t.rate(), RATE_PAUSED, "Back Cue pauses; it does not resume");
+        assert_eq!(t.state(), State::Paused);
+        assert_eq!(t.take_seek(), Some(1_000), "returns to the cue point");
+        assert_eq!(t.cue_point(), 1_000, "Back Cue must not move the point");
+
+        // And PLAY restarts from the point, not from where it was.
+        t.play();
+        assert_eq!(t.rate(), RATE_UNITY);
+        assert_eq!(t.take_seek(), None, "PLAY queues no seek of its own");
+    }
+
+    #[test]
+    fn cue_held_at_the_point_previews_and_release_returns() {
+        // Cue Point Sampler. "Playback continues while the button is held in"
+        // — so release means stop and return, with no latching.
+        let t = Transport::new();
+        t.set_cue_point(4_410);
+        t.pause();
+        t.publish_position(4_410.0);
+
+        t.cue_down();
+        assert_eq!(t.rate(), RATE_UNITY, "plays while held");
+        assert_eq!(t.state(), State::Playing);
+        assert_eq!(t.take_seek(), None, "already at the point; nothing to seek");
+        assert_eq!(t.cue_point(), 4_410, "previewing must not re-set the point");
+
+        // Pretend the callback advanced during the preview.
+        t.publish_position(9_000.0);
+        t.cue_up();
+        assert_eq!(t.rate(), RATE_PAUSED, "release stops");
+        assert_eq!(t.take_seek(), Some(4_410), "and returns to the point");
+    }
+
+    #[test]
+    fn a_second_release_after_a_preview_does_nothing() {
+        // The latch is consumed, so a stray release cannot silently re-cue a
+        // deck the user has since started playing.
+        let t = Transport::new();
+        t.pause();
+        t.publish_position(0.0);
+        t.cue_down();
+        t.cue_up();
+        assert_eq!(t.take_seek(), Some(0));
+
+        t.play();
+        t.cue_up();
+        assert_eq!(t.rate(), RATE_UNITY, "a spurious release must not stop playback");
+        assert_eq!(t.take_seek(), None);
+    }
+
+    #[test]
+    fn cue_during_a_held_seek_is_treated_as_back_cue() {
+        // The manual does not cover this combination; this is the reading
+        // recorded in the module docs, asserted so it cannot drift silently.
+        let t = Transport::new();
+        t.set_cue_point(2_000);
+        t.play();
+        t.begin_seek(true);
+        t.publish_position(60_000.0);
+        t.cue_down();
+        assert_eq!(t.rate(), RATE_PAUSED);
+        assert!(!t.is_silent(), "back cue leaves the deck ready to play, not muted");
+        assert_eq!(t.take_seek(), Some(2_000));
+    }
+
+    #[test]
+    fn reaching_the_end_clears_a_latched_preview() {
+        // A preview that ran into the end of the track must not leave the
+        // latch set, or the next release would cue a deck nobody previewed.
+        let t = Transport::new();
+        t.pause();
+        t.publish_position(0.0);
+        t.cue_down();
+        t.reached_end();
+        t.cue_up();
+        assert_eq!(t.take_seek(), None, "the latch must have been cleared");
     }
 
     #[test]

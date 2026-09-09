@@ -17,6 +17,24 @@ if asked wrongly.
   picks the closest supported rate and **succeeds**. One function name apart, no
   error, wrong rate — the exact failure shape this project keeps running into.
   Fail the track load instead.
+
+  In the Rust binding this reads worse than it is: the exact setter is
+  `set_rate(rate, ValueOr::Nearest)`, where `Nearest` is the `dir` argument
+  meaning zero, **not** "pick a nearby rate". The trap is still `set_rate_near`,
+  which is simply never called. Confusable enough to be worth the sentence.
+- **The `alsa` crate's obvious write call allocates on the audio thread.**
+  `pcm.io_i32_s24()` verifies the format through `hw_params_current()`, which calls
+  `snd_pcm_hw_params_malloc` — once per period, in the callback's thread. Read in
+  alsa-0.12.1's `pcm.rs`. So "use the `alsa` crate" and "the callback allocates
+  nothing" are **not jointly satisfiable through the documented-looking call**.
+
+  The way out: verify the format **once at open**, which discharges the safety
+  obligation of `unsafe pcm.io_unchecked::<i32>()`, and let the hot path use that.
+  `assert_no_alloc` is what catches the mistake if anyone reverts it — which is the
+  clearest case yet for having it.
+- **`PCM::open_with_flags`** (unsafe, takes the mode bits) is how all four of
+  `NO_AUTO_RESAMPLE`, `NO_AUTO_CHANNELS`, `NO_AUTO_FORMAT` and `NO_SOFTVOL`
+  actually get passed. The safe `PCM::new` does not take them.
 - **`snd_pcm_hw_params_set_rate_resample(..., 0)`** explicitly, and open with
   `SND_PCM_NO_AUTO_RESAMPLE | NO_AUTO_FORMAT | NO_AUTO_CHANNELS | NO_SOFTVOL`.
   On `hw:` there are no plugins to disable, so this is belt and braces — but
@@ -83,6 +101,12 @@ Two tests, and they check different halves. Neither is sufficient alone.
   the property the DAC depends on, just not the one that catches this. And
   assert the sign separately: any signal without negative samples passes a
   logical shift.
+Two of these are now code rather than instructions: `read_proc_hw_params` parses
+the file below and `verify_in_force()` fails naming the field that differs, and
+`assert_no_mixer_controls(card)` enumerates the card's mixer and fails if anything
+is there — the `amixer` check. Both are one-shot at start and neither runs on the
+audio thread. `alsacap` is still the manual part.
+
 - **`hw_params` — the hardware half.** While playing, read
   `/proc/asound/card0/pcm0p/sub0/hw_params`. It reports the rate, format, channel
   count and access mode actually in force. This proves ALSA accepted what we asked
@@ -283,7 +307,7 @@ Useful as a health signal, not as a popularity one.
 
 | | Role | Health |
 |---|---|---|
-| `alsa` | Output | 21M, current |
+| `alsa` | Output | 21M, current — but see the allocation trap above |
 | `rtrb` | Control slot only — **not** the ring, see above | 11M, current |
 | `thread-priority` | `SCHED_FIFO` | 11M, current |
 | `embedded-graphics` | Drawing API | 2.6M, current |

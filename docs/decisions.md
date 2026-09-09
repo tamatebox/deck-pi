@@ -100,11 +100,28 @@ starts at boot.
 **1. Display.** Japanese filenames make 128x64 marginal — 12x12 is the practical
 floor for kanji, giving 10 characters per line at 128 px.
 
-| Option | Chars/line | Lines | Glyph size | Note |
-|---|---|---|---|---|
-| SSD1309 2.42" + Misaki 8x8 | 16 | 7 | 3.4 mm | Dense kanji blur; kana fine |
-| SSD1322 256x64 + 12x12 | 21 | 4 | 3.4 mm | Four visible entries is thin for browsing |
-| ILI9341 2.8" TFT + 16x16 | 20 | 13 | 2.9 mm | Best usability, cheapest, no burn-in — but backlit, not OLED |
+**The table used to omit the axis that decides it: the interface.** I2C costs no
+pins, sharing the bus the WM8804 is already on; SPI costs the SPI0 block plus DC and
+RESET, and collides with the v2 ADC. So a panel choice is also a pin-budget choice,
+and the ILI9341 looks like a clean win on the old columns while being the most
+expensive in pins.
+
+| Option | Bus | Extra pins | Chars/line | Lines | Glyph | Note |
+|---|---|---|---|---|---|---|
+| SSD1309 2.42" + Misaki 8x8 | **I2C** | **0** | 16 | 8 | 3.4 mm | Large but 8x8 is below the kanji floor — wrong shapes, not just soft |
+| SSD1309 2.42" + 12x12 | **I2C** | **0** | 10 | 5 | **5.1 mm** | Correct shapes, biggest glyphs — but four rows left after a header |
+| SSD1327 1.5" 128x128 + 12x12 | **I2C** | **0** | 10 | **10** | 2.5 mm | Correct shapes *and* enough rows; small |
+| SSD1322 256x64 + 12x12 | SPI | ~7 | 21 | 4 | 3.4 mm | Four visible entries is thin for browsing |
+| ILI9341 2.8" TFT + 16x16 | SPI | ~7 | 20 | 13 | 2.9 mm | Best on the old columns — usability, price, no burn-in — but backlit, and the most pins |
+
+**12x12 is the floor for kanji *shape*, independent of physical size.** So an 8x8
+glyph on a large panel is big and wrong, which is a different failure from small and
+right. That reframes the choice: among the I2C options it is the SSD1309's 5.1 mm
+over four browsable rows, against the SSD1327's 2.5 mm over ten.
+
+Which of those reads better at a glance in a dark room is not computable. Buying
+both settles it for a few thousand yen, and buying a 0.96 in panel to find out does
+not — its pitch is finer than either candidate, so it under-represents both.
 
 Fonts (all free, BDF): Misaki 8x8, Shinonome 12/16, k8x12 (8 px halfwidth /
 12 px fullwidth, a good middle for mixed filenames). Rust reads BDF via the `bdf`
@@ -112,7 +129,10 @@ family of crates, or bake the glyphs to a bitmap atlas off the deck — which is
 faster on an A53 and fits the project's own habit of moving work off the deadline.
 
 Suggested: prototype the UI on a cheap 0.96 in panel — unreadable, but it settles
-what fits in how many pixels — then choose. `embedded-graphics` keeps the choice
+what fits in how many pixels — then choose. That advice is now weakened: "what
+fits in how many pixels" is arithmetic, and the thing a cheap panel cannot tell you
+is legibility, which it misrepresents by being finer-pitched than the candidates.
+Prototype against a **candidate**, not a stand-in. `embedded-graphics` keeps the choice
 reversible: drivers exist for every controller listed above (ssd1306, ssd1309,
 ssd1322 including a 256x64 variant, ssd1327, ili9341, st7789), and
 `linux-embedded-hal` puts them on the Pi's `/dev/i2c` and `/dev/spidev`.
