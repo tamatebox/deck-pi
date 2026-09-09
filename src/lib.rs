@@ -5,10 +5,11 @@
 //! the audio callback (docs/architecture.md).
 //!
 //! Built so far: the file layer and the FFI beneath it, the ring, the window
-//! thread, the transport, the callback, the output sink, and the realtime
-//! process setup that makes the callback's "cannot fault" true. Not started:
-//! browser, display, input, cue store, media watch.
+//! thread, the transport, the callback, the output sink, the realtime process
+//! setup that makes the callback's "cannot fault" true, and the browser. Not
+//! started: display, input, cue store, media watch.
 
+pub mod browser;
 pub mod engine;
 pub mod file;
 pub mod ring;
