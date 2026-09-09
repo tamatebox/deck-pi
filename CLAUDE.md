@@ -15,13 +15,13 @@ changes to either.
 **Status.** The v1 read path is built and tested: the libsndfile FFI, format
 vetting, the locked int32 ring, the window thread, the transport, the audio
 callback, the ALSA sink behind an `AudioSink` trait, the realtime process setup and
-the browser and media watch. 131 tests green in debug and release on
-Linux/aarch64 (125 on macOS, where the Linux-only paths compile out), clippy clean
-on both. Bit-perfection is
+the browser, media watch and the cue store. 150 tests green in debug and release
+on Linux/aarch64 (144 on macOS, where the Linux-only paths compile out), clippy
+clean on both. Bit-perfection is
 verified end to end for every container and depth in scope at all six rates — **but
 only the software half.**
 
-**Not started, no file at all:** display, input, cue store.
+**Not started, no file at all:** display, input.
 **Nothing has run on hardware** — the Pi and the boards are not assembled — so the
 `hw_params` half of the null test is unproven and the ALSA sink has never opened a
 real device. Do not read "audio callback" or "ALSA sink" as "sound comes out".

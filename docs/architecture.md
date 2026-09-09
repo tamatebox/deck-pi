@@ -473,7 +473,7 @@ underneath.
 | **Input** | evdev, the kernel-decoded encoder, tap-versus-hold for FF and REW. **Cuts across**, and deliberately knows nothing about either: it emits standard keycodes, and which GPIO produces which is a line in `config.txt`. |
 | **Transport** | The rate variable, the float64 position, and what PLAY / CUE / FF / REW mean. Writes the lock-free slot; never touches the ring. |
 | **Audio engine** | The window thread that fills the ring, the callback that drains it, the per-track ALSA setup. |
-| **Cue store** | Cues on the SD card, keyed by volume UUID plus relative path. The only state the application persists. |
+| **Cue store** | Cues on the SD card, keyed by volume UUID plus relative path. The only state the application persists. Built: `src/cue.rs`. The key is the path *relative* to the mount point and held as raw bytes, so a remount elsewhere keeps its cues and two undecodable names cannot collide. Writes through on every set, atomically. |
 
 Threading below is a **different axis**, saying which of these run where and under
 what rules. A module is not a thread: the file layer is called from the window
