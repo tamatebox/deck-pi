@@ -5,11 +5,15 @@ stick, browses it by folder, and plays WAV/AIFF out as S/PDIF with the source
 samples reaching the DAC untouched.
 
 **Status.** The v1 read path is built and tested — libsndfile FFI, format vetting,
-the locked int32 ring, the window thread, the transport, the audio callback — with
-bit-perfection verified end to end across every container, depth and rate in scope.
-That is the software half only. **Not started: ALSA output, browser, display, input,
-cue store, media watch, and the realtime process setup.** Nothing has run on
-hardware yet, so the `hw_params` half of the null test is unproven.
+the locked int32 ring, the window thread, the transport, the audio callback and the
+ALSA sink — with bit-perfection verified end to end across every container, depth
+and rate in scope. That is the software half only. **Not started: browser, display,
+input, cue store, media watch, and the realtime process setup** (`mlockall`,
+`SCHED_FIFO`), which is the blocking gap.
+
+**Nothing has run on hardware.** The Pi and the boards are not assembled, so the
+ALSA sink has never opened a real device and the `hw_params` half of the null test
+is unproven. Do not read "audio callback" or "ALSA sink" as "sound comes out".
 
 ```
 USB stick or drive — exFAT or HFS+, mounted read-only
@@ -133,13 +137,77 @@ extra cost — so long-form work at high rates is a container choice, not a limi
 
 Rust, one process, one binary: engine, browser and display. The callback rules are
 machine-enforced rather than aspirational — `assert_no_alloc` fails loudly on an
-allocation inside the callback, which has no equivalent in C.
+allocation inside the callback, which has no equivalent in C. It wraps Rust's
+`GlobalAlloc`, though, so it cannot see a C library calling glibc directly: that
+costs nothing for libsndfile, which runs where allocation is allowed anyway, and it
+is exactly the blind spot v2's resampler sits in. Checking that needs an
+`LD_PRELOAD` interposer, and `implementation.md` carries the one configuration
+requirement that came out of doing so.
 
 Files are read through a hand-written libsndfile FFI, about forty lines of
 `extern "C"`. `sf_readf_int`'s documented convention already does the byte swap
 and the 24-bit unpack, so neither is our code; the ring then holds the result
 shifted right 8 to match `S24_LE`, the only useful output format the drivers
 offer. Every step is a shift, so nothing costs a bit.
+
+## Building and running it
+
+libsndfile is a system library, found through `pkg-config`:
+
+```sh
+brew install libsndfile pkg-config          # macOS
+sudo apt install libsndfile1-dev pkg-config # Debian / Raspberry Pi OS
+cargo test                                  # 89 tests, green in debug and release
+```
+
+Two tests are `#[ignore]`d and neither is a skipped assertion: one is the demo-file
+generator below, and the other is the *subject* of a negative control — the test
+that proves the no-allocation enforcement actually aborts spawns it deliberately,
+so running it directly would abort the harness.
+
+**Most of it builds and is tested off the target.** The ALSA sink is Linux-only and
+sits behind an `AudioSink` trait, so on a Mac the same engine drives a capture sink
+instead — the file layer, ring, transport, callback and the null test all run there.
+What cannot run off the Pi is the half that needs the hardware.
+
+`src/main.rs` is **not the deck.** It is a bring-up CLI:
+
+```sh
+cargo run -- <file>...              # what the file layer makes of each path
+cargo run -- --drain <file>         # pull every frame through window, ring, callback
+cargo run -- --device=hw:0,0 <file> # play for real (Linux; hw: only, never plughw)
+```
+
+The default prints one line per path — `PLAYS` with the container, rate, depth and
+window, or `REFUSED` with which of the four reasons applies. `--drain` adds frames,
+waits, underruns and peak. `--device=` additionally checks that the card exposes no
+mixer control and that `/proc/asound` reports back the rate and format asked for.
+
+Test files come from the same hand-written writers the null test uses, rather than
+from `sox` or `ffmpeg`, so the fixtures are not trusting another implementation of
+the thing under test:
+
+```sh
+DECK_PI_DEMO_DIR=/tmp/deck-demo cargo test --test emit_demo -- --ignored
+```
+
+That writes six playable files across the containers, depths and rates in scope,
+two that must be refused, and one that is not audio at all.
+
+### tools/panel-compare
+
+A standalone crate, not part of the build. It renders the same folder listing with
+real Japanese filenames at all six candidate panel geometries, at true physical
+size at 300 dpi with a 10 mm rule, and asserts that every derived glyph size
+reproduces the figures in `decisions.md`:
+
+```sh
+cd tools/panel-compare && cargo run   # writes out/, which is not committed
+```
+
+It exists because open question 1 was being argued from arithmetic. Print the sheet
+at 100 % and measure the rule before trusting any millimetre figure — a frame on a
+monitor is at whatever scale the monitor makes it.
 
 ## Later
 
@@ -154,8 +222,15 @@ track plays bit-perfect at unity, without pitch, rather than not playing. So the
 open benchmark decides which rates get pitch and jog, not whether the board is
 viable.
 
-The v1 read path, control thread and rate variable are built to accept this
-without rework. See [docs/architecture.md](docs/architecture.md).
+The v1 read path, control thread and rate variable accept this without rework. One
+thing did not, and it was found by writing the test rather than by reading the
+claim: the window's *filling policy* appended forward only, so a **descending**
+playhead — a reverse jog, or a held REW — was served 0 of 12 periods. The window's
+two halves are now defined relative to the direction of travel rather than to
+increasing frame number, which serves 12 of 12. One cost remains and is stated
+rather than hidden: reverse playback misses one period per relocation, because an
+append-only ring reads a descending playhead's next input *last*. Reverse playback
+is served, not gapless. See [docs/architecture.md](docs/architecture.md).
 
 ## Docs
 
@@ -167,3 +242,20 @@ without rework. See [docs/architecture.md](docs/architecture.md).
 Several design decisions were reversed while working this out, and the superseded
 reasoning is plausible enough to re-derive by accident. `decisions.md` records why
 each was dropped; read it before revisiting a choice.
+
+**The labels in those documents are load-bearing, so read them.** A figure says
+whether it is *measured* or *estimated*, a premise says whether it was *supplied* or
+*assumed*, and a hardware fact says whether it was confirmed against the boards, the
+vendor's own document, or kernel source. The distinction is not politeness: an
+unlabelled estimate is indistinguishable from a fact three turns later, which is how
+several wrong premises survived as long as they did — each recorded in `decisions.md`
+with what it changed on the way out.
+
+Two consequences for anyone quoting this work:
+
+- **Nothing here has been checked against the physical boards**, which are not
+  assembled. `hardware.md` marks what still needs them. The jumper settings matter
+  most, because getting master mode wrong still produces audio — through the
+  high-jitter PLL path the whole build exists to avoid.
+- **The A53 resampler budget is an estimate** and is labelled as one throughout. It
+  decides which rates get pitch in v2, and it has not been run.
