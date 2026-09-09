@@ -6,6 +6,8 @@ use std::path::PathBuf;
 
 use deck_pi::engine::{Engine, Outcome};
 use deck_pi::file::{OpenError, Track, RING_CHANNELS};
+use deck_pi::browser::{Browser, Row, Verdict};
+use deck_pi::media::{self, Medium};
 use deck_pi::ring::{self, Miss};
 use deck_pi::rt;
 use deck_pi::sink::{AudioSink, CaptureSink};
@@ -14,6 +16,16 @@ use deck_pi::window::Window;
 
 fn main() {
     let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
+    if let Some(arg) = args
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .find(|s| s == "--media-check" || s.starts_with("--media-check="))
+    {
+        let path = arg
+            .strip_prefix("--media-check=")
+            .unwrap_or(media::MOUNT_POINT);
+        std::process::exit(media_check(std::path::Path::new(path)));
+    }
     if let Some(arg) = args
         .iter()
         .map(|a| a.to_string_lossy().into_owned())
@@ -35,6 +47,8 @@ fn main() {
         eprintln!("                   card exposes no mixer control and that");
         eprintln!("                   /proc/asound reports the rate and format asked for");
         eprintln!("                   (Linux only; hw: devices only, never plughw)");
+        eprintln!("  --media-check[=P] reports the medium's state at P, and lists the root");
+        eprintln!("                   folder through the browser if it is browsable");
         eprintln!("  --rt-check[=N]   applies the realtime setup and reads back what the");
         eprintln!("                   kernel actually granted; =N also pins to core N");
         eprintln!("                   (Linux only)");
@@ -324,6 +338,62 @@ fn rt_check(cpu: Option<usize>) -> i32 {
         Err(e) => {
             println!("rt-check: FAILED\n{}", e);
             1
+        }
+    }
+}
+
+/// Reports the medium's state, and browses it if it is there.
+///
+/// The bring-up check phase A wants: a stick in a USB port and nothing else
+/// on the Pi. It prints the mount-point test in full rather than just the
+/// verdict, because "the directory exists but nothing is mounted" is the case
+/// an existence test gets wrong and this is where it would be seen.
+fn media_check(path: &std::path::Path) -> i32 {
+    println!("mount point: {}", path.display());
+    match media::is_mount_point(path) {
+        Ok(true) => println!("  mount test: something is mounted here"),
+        Ok(false) => println!(
+            "  mount test: nothing mounted{}",
+            if path.exists() {
+                " — but the directory exists, which an existence test would call a stick"
+            } else {
+                ""
+            }
+        ),
+        Err(e) => println!("  mount test: {}", e),
+    }
+
+    let state = media::examine(path);
+    println!("  state: {}", state);
+
+    match &state {
+        Medium::Absent => 1,
+        Medium::Unreadable { .. } => 1,
+        Medium::Browsable { .. } => {
+            let mut b = match Browser::open(path) {
+                Ok(b) => b,
+                Err(e) => {
+                    println!("  browser: {}", e);
+                    return 1;
+                }
+            };
+            let rows = b.view(64);
+            println!("  root folder: {} entries", rows.len());
+            for row in &rows {
+                match row {
+                    Row::Folder { name, .. } => println!("    [dir]  {}", name),
+                    Row::File { name, verdict, .. } => match verdict {
+                        Verdict::Plays(i) => println!(
+                            "    PLAYS  {}  {} {} Hz {}",
+                            name, i.container, i.rate, i.depth
+                        ),
+                        Verdict::Refused(r) => println!("    refuse {}  {}", name, r),
+                        Verdict::Unreadable(m) => println!("    ??     {}  {}", name, m),
+                    },
+                }
+            }
+            println!("  headers read: {}", b.headers_read());
+            0
         }
     }
 }
