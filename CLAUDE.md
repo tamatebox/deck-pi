@@ -14,17 +14,16 @@ changes to either.
 
 **Status.** The v1 read path is built and tested: the libsndfile FFI, format
 vetting, the locked int32 ring, the window thread, the transport, the audio
-callback and the ALSA sink behind an `AudioSink` trait. 89 tests green in debug and
-release, clippy clean, and re-run on Linux/aarch64. Bit-perfection is verified end
+callback, the ALSA sink behind an `AudioSink` trait, and the realtime process setup.
+104 tests green in debug and release on Linux/aarch64 (98 on macOS, where the
+Linux-only paths compile out), clippy clean on both. Bit-perfection is verified end
 to end for every container and depth in scope at all six rates — **but only the
 software half.**
 
-**Not started, no file at all:** browser, display, input, cue store, media watch,
-and the realtime process setup (`mlockall`, `SCHED_FIFO`, `limits.conf`) — which is
-now the blocking gap. **Nothing has run on hardware** — the Pi and the boards are
-not assembled — so the `hw_params` half of the null test is unproven and the ALSA
-sink has never opened a real device. Do not read "audio callback" or "ALSA sink" as
-"sound comes out".
+**Not started, no file at all:** browser, display, input, cue store, media watch.
+**Nothing has run on hardware** — the Pi and the boards are not assembled — so the
+`hw_params` half of the null test is unproven and the ALSA sink has never opened a
+real device. Do not read "audio callback" or "ALSA sink" as "sound comes out".
 
 `src/main.rs` is not the deck. It is a bring-up CLI: it reports what the file layer
 makes of a path, and `--drain` runs a file through the window thread, ring and

@@ -247,15 +247,56 @@ application's own, so it does not need to.
 ## Process setup
 
 The callback rules are not only about what the callback does; the process has to
-be set up so they can hold.
+be set up so they can hold. **This is `src/rt.rs` now, not instructions** — and it
+is `deck-pi --rt-check` on the bring-up CLI, which applies the setup and prints
+what the kernel granted.
 
-- `mlockall(MCL_CURRENT | MCL_FUTURE)`, **and pre-fault the stack and heap**.
-  Locking future pages is not enough on its own — a page touched for the first
-  time inside the callback still faults.
+- `mlockall(MCL_CURRENT | MCL_FUTURE)`, **and pre-fault the stack**. Locking future
+  pages is not enough on its own — a page touched for the first time inside the
+  callback still faults.
 - Open `memlock` and `rtprio` in `/etc/security/limits.conf`. Without this,
   `SCHED_FIFO` and `mlockall` fail at runtime rather than at build time.
 - No locks in the callback at all, so priority inversion cannot arise and
   `PTHREAD_PRIO_INHERIT` is not needed.
+
+**Every one of the three calls fails silently, which is why each is read back.**
+`mlockall` without the limit returns `ENOMEM` and the process runs unlocked;
+`sched_setscheduler` without it returns `EPERM` and the thread runs at normal
+priority; `sched_setaffinity` to a core that does not exist returns `EINVAL` and
+the thread runs unpinned. Audio comes out in all three cases, and on an idle desk
+it comes out fine. So `rt::apply` verifies against `sched_getscheduler`,
+`sched_getparam`, `VmLck` in `/proc/self/status` and `sched_getaffinity`, and fails
+naming the field — the same discipline as `verify_in_force` for `hw_params`.
+
+Two of the three can be answered *before* trying, from `getrlimit`, which is better
+than an errno: it prints the missing `limits.conf` line rather than a number.
+Measured in a Linux/aarch64 container, all four paths:
+
+| | Result |
+|---|---|
+| no privileges | refused, naming `rtprio 80` and `memlock unlimited` |
+| `--ulimit memlock=8M` | refused **before** the syscall, with both figures |
+| `rtprio=99`, `memlock=-1` | `SCHED_FIFO` 75, `VmLck` 8,560 kB |
+| `--rt-check=2` | affinity reads back as `[2]` |
+| `--rt-check=999` | `sched_setaffinity` refused, `EINVAL` |
+
+**Two corrections to what this section used to say.**
+
+**The heap does not need pre-faulting**, and saying it did invited code that
+pretends to do something. The callback allocates nothing, so it touches no new heap
+page; the one large heap object in the audio path is the ring, and the window thread
+writes every byte of it while filling, which faults it off the deadline. Growing
+glibc's arena and hoping `free` does not hand it back is where the withdrawn
+`mallopt` note came from.
+
+**The stack pre-fault has to recurse, and it has to measure itself.** A loop over
+one local array touches the same page every time and prefaults nothing — that was
+the first version, and it leaves the invariant reading as satisfied: the call is
+there, it returns, the pages are untouched. `rt::prefault_stack` therefore returns
+the stack depth it actually reached, and `apply` refuses if the reach is less than
+half the request. Measured at 266,244 bytes reached for a 262,144-byte request in
+`--release` on aarch64, so `write_volatile` plus `black_box` survives optimisation —
+which is the thing that had to be checked, not assumed.
 
 The rules themselves are wider than "no malloc, no lock, no I/O". Also excluded:
 anything worse than O(1), anything whose working set varies, and any third-party
@@ -307,7 +348,11 @@ statement about intent unless something checks it, and something can:
   loads `end` first and `start` last, which can only understate what is
   resident, then re-checks both after copying and reports a miss rather than
   emitting a stale or torn sample.
-- **`thread-priority`** / **`audio_thread_priority`** — the `SCHED_FIFO` plumbing.
+- **`libc`** — the `SCHED_FIFO` plumbing, and the other two calls with it.
+  `thread-priority` was the crate named here, and it is not used: two of the three
+  calls (`mlockall`, `sched_setaffinity`) are not in it, and the verification needs
+  the raw ones regardless — so it would have been a second dependency wrapping one
+  of the four calls `src/rt.rs` already makes directly.
 
 One language-specific hazard to know: dropping the last `Arc` to a buffer **inside
 the callback** frees memory on the audio thread. Keep ownership outside the
@@ -378,7 +423,7 @@ Useful as a health signal, not as a popularity one.
 |---|---|---|
 | `alsa` | Output | 21M, current — but see the allocation trap above |
 | `rtrb` | Control slot only — **not** the ring, see above | 11M, current |
-| `thread-priority` | `SCHED_FIFO` | 11M, current |
+| `libc` | `mlockall`, `sched_setscheduler`, `sched_setaffinity` and the read-backs | 400M+, current |
 | `embedded-graphics` | Drawing API | 2.6M, current |
 | `linux-embedded-hal` | Panel drivers onto `/dev/i2c`, `/dev/spidev` | 5.9M, current |
 | `assert_no_alloc` | Enforcement, not runtime | 4.3M but stale since 2021 |

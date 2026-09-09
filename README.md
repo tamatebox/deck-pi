@@ -5,11 +5,10 @@ stick, browses it by folder, and plays WAV/AIFF out as S/PDIF with the source
 samples reaching the DAC untouched.
 
 **Status.** The v1 read path is built and tested — libsndfile FFI, format vetting,
-the locked int32 ring, the window thread, the transport, the audio callback and the
-ALSA sink — with bit-perfection verified end to end across every container, depth
-and rate in scope. That is the software half only. **Not started: browser, display,
-input, cue store, media watch, and the realtime process setup** (`mlockall`,
-`SCHED_FIFO`), which is the blocking gap.
+the locked int32 ring, the window thread, the transport, the audio callback, the
+ALSA sink and the realtime process setup — with bit-perfection verified end to end
+across every container, depth and rate in scope. That is the software half only.
+**Not started: browser, display, input, cue store, media watch.**
 
 **Nothing has run on hardware.** The Pi and the boards are not assembled, so the
 ALSA sink has never opened a real device and the `hw_params` half of the null test
@@ -157,7 +156,7 @@ libsndfile is a system library, found through `pkg-config`:
 ```sh
 brew install libsndfile pkg-config          # macOS
 sudo apt install libsndfile1-dev pkg-config # Debian / Raspberry Pi OS
-cargo test                                  # 89 tests, green in debug and release
+cargo test    # 104 tests on Linux, 98 on macOS; green in debug and release
 ```
 
 Two tests are `#[ignore]`d and neither is a skipped assertion: one is the demo-file
@@ -176,12 +175,19 @@ What cannot run off the Pi is the half that needs the hardware.
 cargo run -- <file>...              # what the file layer makes of each path
 cargo run -- --drain <file>         # pull every frame through window, ring, callback
 cargo run -- --device=hw:0,0 <file> # play for real (Linux; hw: only, never plughw)
+cargo run -- --rt-check[=CPU]       # apply the realtime setup, read back what took
 ```
 
 The default prints one line per path — `PLAYS` with the container, rate, depth and
 window, or `REFUSED` with which of the four reasons applies. `--drain` adds frames,
 waits, underruns and peak. `--device=` additionally checks that the card exposes no
 mixer control and that `/proc/asound` reports back the rate and format asked for.
+
+`--rt-check` is separate because it changes the process: `mlockall` is process-wide
+and `SCHED_FIFO` would put the tool's own bookkeeping at realtime priority. It
+prints the limits, applies the setup, and reads back the policy, priority, locked
+memory and affinity — so an unprivileged run says which `/etc/security/limits.conf`
+line is missing rather than that something was refused.
 
 Test files come from the same hand-written writers the null test uses, rather than
 from `sox` or `ffmpeg`, so the fixtures are not trusting another implementation of
