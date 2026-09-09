@@ -6,10 +6,11 @@
 //!
 //! Built so far: the file layer and the FFI beneath it, the ring, the window
 //! thread, the transport, the callback, the output sink, the realtime process
-//! setup that makes the callback's "cannot fault" true, the browser and media
-//! watch. Not started: display, input, cue store.
+//! setup that makes the callback's "cannot fault" true, the browser, media watch
+//! and the cue store. Not started: display, input.
 
 pub mod browser;
+pub mod cue;
 pub mod engine;
 pub mod file;
 pub mod media;
