@@ -444,8 +444,15 @@ What matters is that risk sits in the right places. The crates that are **hard t
 replace are the healthy ones**; the ones that are stale or thin have surfaces small
 enough to own — a libsndfile FFI is forty lines, a panel driver is an init sequence
 and a `DrawTarget` impl, and `assert_no_alloc` is a build-time tool whose failure
-costs enforcement rather than function. `evdev` is convenient but not required at
-all: an input event is a fixed 24-byte struct.
+costs enforcement rather than function. `evdev` is convenient and is not used: an
+input event is a small fixed-layout struct, and `src/input.rs` reads it directly.
+
+**"A fixed 24-byte struct" was not quite right, and the code no longer says it.**
+Measured against `linux/input.h` on aarch64: `sizeof(struct input_event)` is 24 with
+`type` at 16, `code` at 18 and `value` at 20 — 24 **because `timeval` is 16 on a
+64-bit build**. A 32-bit userspace makes `timeval` 8 bytes and the struct 16. So the
+figure is a property of the base `decisions.md` chose rather than of the struct, and
+the layout is derived from `size_of::<libc::timeval>()` instead of hardcoded.
 
 The reversibility that keeps open question 1 open rests on `embedded-graphics`,
 which is healthy — not on any individual panel driver, which is what a naive read
