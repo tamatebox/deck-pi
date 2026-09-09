@@ -455,3 +455,84 @@ fn allocating_a_full_size_ring_is_quick_enough_to_do_per_track() {
         elapsed
     );
 }
+
+#[test]
+fn scrubbing_backwards_thrashes_the_window_a_known_v2_gap() {
+    // `architecture.md` claims "the v1 read path, control-thread shape and
+    // rate variable are all built to accept [v2] without rework". The ring
+    // half of that is true — reads inside the window are free in either
+    // direction, which is tested above. The **filling policy** is not.
+    //
+    // `fill_step` relocates to the playhead and then only ever appends
+    // forward, so a playhead moving backwards past the window's start gets a
+    // window laid out entirely *ahead* of where it is going. Every period
+    // then relocates again and refills frames the callback will never ask
+    // for.
+    //
+    // This test asserts the present behaviour rather than the wanted one, so
+    // the gap is a recorded fact instead of a surprise when the jog is built.
+    // The fix is direction-aware relocation in `window.rs` — relocate to
+    // `playhead - ahead` when the playhead is descending — which is about
+    // twenty lines and needs no change to the ring.
+    let scratch = Scratch::new("window-backwards");
+    let frames = 40_000u64;
+    let source = signal(Bits::S24, 2, frames as usize);
+    let bytes = fixtures::build(Kind::Wav, &source, Bits::S24, 44_100, 2);
+    let path = fixtures::write(&scratch.dir, "backwards", Kind::Wav, &bytes);
+
+    let (mut window, reader, _) =
+        Window::load(&path, SMALL_WINDOW_BYTES).expect("loads");
+    let block = 128u64;
+    let jog_rate = 4u64; // |r| = 4, the documented seek rate
+
+    // Settle forwards around the middle of the track.
+    let mut playhead = 20_000u64;
+    reader.publish_playhead(playhead);
+    fill_until_quiet(&mut window);
+    assert!(reader.resident().contains(&playhead));
+
+    // Now scrub backwards, as a jog would.
+    let mut relocations = 0usize;
+    let mut served = 0usize;
+    let mut missed = 0usize;
+    let mut buf = vec![0i32; block as usize * RING_CHANNELS];
+
+    for _ in 0..12 {
+        playhead = playhead.saturating_sub(block * jog_rate);
+        reader.publish_playhead(playhead);
+        let f = window.fill_step().expect("fill");
+        if f.relocated {
+            relocations += 1;
+        }
+        fill_until_quiet(&mut window);
+        // Backwards playback consumes input *below* the position, not above
+        // it: at r = -4 an output period starting at p reads down to
+        // p - 4*block. So this is the block the callback would actually need.
+        // Reading forward from the playhead is what a first version of this
+        // test did, and it passed — because relocating to the playhead and
+        // filling forward serves exactly that, and nothing else.
+        let need = playhead.saturating_sub(block);
+        match reader.read_block(need, &mut buf) {
+            Ok(()) => served += 1,
+            Err(_) => missed += 1,
+        }
+    }
+
+    println!(
+        "backwards scrub: {} relocations, {} periods served, {} missed",
+        relocations, served, missed
+    );
+    // The window does relocate repeatedly, which is the thrash.
+    assert!(
+        relocations >= 6,
+        "expected the window to relocate on most periods, got {}",
+        relocations
+    );
+    // And what it fills is ahead of the playhead, so the frames the callback
+    // wants next are never resident.
+    assert!(
+        missed > 0,
+        "expected backwards scrubbing to miss; if this now passes cleanly the \
+         gap has been fixed and this test should be inverted"
+    );
+}
