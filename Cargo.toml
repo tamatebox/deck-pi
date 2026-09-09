@@ -7,6 +7,13 @@ description = "Bit-perfect single-deck DJ transport"
 publish = false
 
 [dependencies]
+# Enforcement, not runtime: a global allocator wrapper that makes an
+# allocation inside a marked region fail loudly. CLAUDE.md requires the
+# callback discipline to hold from the first commit, and this is what turns
+# that from intent into a check.
+assert_no_alloc = { version = "1.1", default-features = false, features = [
+  "warn_release",
+] }
 
 [build-dependencies]
 pkg-config = "0.3"
