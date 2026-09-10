@@ -15,6 +15,19 @@ use deck_pi::window::{Command, Event, Window};
 
 /// Small enough to make the window's edges reachable in a test, expressed in
 /// bytes because that is the unit the design sizes in.
+/// **1,024 frames — smaller than one `CHUNK_FRAMES` read, and that hid a bug.**
+///
+/// Small windows make the policy easy to see, which is why nearly every test
+/// here uses this. But a window under one chunk is always filled by a single
+/// read, so any defect in *incremental* filling is invisible at this size —
+/// and one was: bounding `fill_step` to a chunk per call turned the
+/// relocation test into a live loop, because it compared the playhead against
+/// what was resident rather than against what the window could reach. All
+/// seventeen tests here passed while it looped.
+///
+/// So when something is about the window catching up rather than about which
+/// frames it chooses, size it well above 8,192 —
+/// `cost_of_a_backwards_jump` uses 262,144.
 const SMALL_WINDOW_BYTES: usize = 64 * ring::RING_FRAME_BYTES * 16; // 1024 frames
 
 fn expected(v: i32, depth: Depth) -> i32 {
@@ -666,4 +679,85 @@ fn a_file_with_a_header_and_no_audio_reports_the_end_once_and_stops() {
     let seen = events.lock().unwrap().clone();
     let ends = seen.iter().filter(|e| **e == Event::EndOfTrack).count();
     assert_eq!(ends, 1, "events were {seen:?}");
+}
+
+/// Frames read before `cue` becomes resident after a backwards jump to it.
+///
+/// `told` chooses whether the app loop does its job: `Command::Relocate` is
+/// what says "this was a jump, not a scrub". `Window::relocate` is the same
+/// operation the command arm performs, called directly so the measurement
+/// needs no thread and no timing.
+fn cost_of_a_backwards_jump(tag: &str, told: bool) -> usize {
+    let scratch = Scratch::new(tag);
+    let frames = 1_000_000usize;
+    let source = signal(Bits::S16, 2, frames);
+    let bytes = fixtures::build(Kind::Wav, &source, Bits::S16, 44_100, 2);
+    let path = fixtures::write(&scratch.dir, "long", Kind::Wav, &bytes);
+
+    // **The window has to be much larger than `CHUNK_FRAMES` for this to
+    // measure anything**, because the cost being measured is "how much of
+    // `below_target()` must be read before the wanted frame arrives" and a
+    // window of one or two chunks hides it entirely. A first version used
+    // 8,192 frames and reported 4,096 against 5,096 — a real difference,
+    // buried. The deck's own window is 64 MiB, hundreds of chunks.
+    const WINDOW: usize = 262_144 * ring::RING_FRAME_BYTES;
+    let (mut window, reader, _) = Window::load(&path, WINDOW).expect("loads");
+
+    // Play forward to somewhere in the middle.
+    let playing_at = 700_000u64;
+    for p in (0..=playing_at).step_by(8192) {
+        reader.publish_playhead(p);
+        fill_until_quiet(&mut window);
+    }
+
+    // Back Cue to a point far below, and **outside the resident span** — a
+    // cue point still inside the window is served from RAM and measures
+    // nothing, which an earlier version of this helper did. This is one jump,
+    // not a scrub: the playhead does not pass through the frames in between.
+    let cue = 300_000u64;
+    assert!(
+        !window.resident().contains(&cue),
+        "the cue must be outside the window or there is nothing to measure: {:?}",
+        window.resident()
+    );
+    if told {
+        window.relocate(cue).expect("relocate");
+    }
+    reader.publish_playhead(cue);
+
+    let mut read = 0usize;
+    let mut buf = vec![0i32; 256 * RING_CHANNELS];
+    for _ in 0..10_000 {
+        if reader.read_block(cue, &mut buf).is_ok() {
+            return read;
+        }
+        read += window.fill_step().expect("fill").frames;
+    }
+    panic!("[{tag}] the cue point {cue} never became resident; resident {:?}, read {read}", window.resident());
+}
+
+#[test]
+fn a_cue_jump_that_says_it_is_a_jump_costs_a_fraction_of_one_that_does_not() {
+    // **What `Command::Relocate` is worth, and nothing sends it.**
+    //
+    // Told, the window restarts *at* the cue point and the very first chunk
+    // contains it. Not told, the window sees only that the playhead moved
+    // down, infers a scrub, and rebuilds itself *below* the new position — so
+    // the frame the callback is waiting for is the **last** one read, behind
+    // the whole of `below_target()`.
+    //
+    // At the production window size that is 2.6M frames, an estimated 0.4-0.8 s
+    // of silence from a USB stick, on the gesture a DJ deck exists for:
+    // press CUE, then PLAY. `decisions.md` calls a cue jump "a discontinuity
+    // rather than motion" and says an explicit seek clears the direction —
+    // the mechanism is here, and no caller uses it.
+    let told = cost_of_a_backwards_jump("window-jump-told", true);
+    let guessed = cost_of_a_backwards_jump("window-jump-guessed", false);
+
+    println!("told {told} frames, not told {guessed} frames");
+    assert!(
+        told * 4 < guessed,
+        "telling the window it was a jump must be much cheaper: \
+         told {told} frames, not told {guessed}"
+    );
 }

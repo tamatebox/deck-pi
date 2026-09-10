@@ -38,14 +38,33 @@
 //! change: 12 of 12 served, and 1 relocation instead of 12 once the window is
 //! larger than the descent.
 //!
-//! **What this does not remove is one missed period per relocation.**
-//! Relocating discards the ring, and a descending playhead's next input lies
-//! at the *top* of the span about to be read — so it arrives last, and the
-//! callback asks for it before it is there. Reading is roughly two orders of
-//! magnitude faster than playback consumes, so the refill beats the next
-//! period comfortably and the miss is one period, not a stall. Removing it
-//! altogether would need the ring to accept writes *below* `start`, which is
-//! a ring change and is out of scope here.
+//! **What this does not remove is a gap after every descending relocation,
+//! and it is far larger than one period.** Relocating discards the ring, and
+//! a descending playhead's next input lies at the *top* of the span about to
+//! be read — so it arrives **last**. The callback must therefore wait for the
+//! whole of `below_target()` to be read, not for one chunk of it.
+//!
+//! An earlier version of this paragraph called it "one missed period", which
+//! confused throughput with latency: reading is indeed two orders of
+//! magnitude faster than playback consumes, and that is the wrong comparison.
+//! At 64 MiB and 44.1 kHz `below_target()` is 2.646M frames — 60 s of audio —
+//! so at 100x realtime the callback waits about **0.6 s**, not 2.9 ms.
+//! Measured on a warm page cache: a backwards cue jump read 2,654,208 frames
+//! before the cue point was resident, against 8,192 for a forward jump of the
+//! same distance; from a USB 2.0 stick at 20-35 MB/s that is an estimated
+//! 0.4-0.8 s of silence.
+//!
+//! The "12 of 12 served" figure above does not contradict this and does not
+//! measure it: `window_test.rs` calls `fill_until_quiet` synchronously between
+//! periods, on 1k- and 16k-frame rings, so it measures the **policy** — that
+//! the right frames are fetched — and never the time they take to arrive.
+//!
+//! Removing the gap altogether would need the ring to accept writes *below*
+//! `start`, which is a ring change and is out of scope here. Shortening it
+//! does not: a descending relocation could read its span top-down so the
+//! frames the callback wants arrive first. That is a change to `restart_at`,
+//! not to the ring, and it is not made here either — but it is the cheaper of
+//! the two and nothing in this module rules it out.
 
 use std::path::Path;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
@@ -248,7 +267,17 @@ impl Window {
         // serve it. Descending, that same position serves nothing, because
         // the next input lies *below* the playhead — so there has to be a
         // second test, for room underneath.
-        let in_span = resident.start <= playhead && playhead <= resident.end;
+        // **Against what the window can *reach*, not what it currently holds.**
+        // Filling one chunk per call means the resident span trails the
+        // playhead while it catches up, and testing against `resident.end`
+        // then relocates on every pass: restart, read one chunk, discard it,
+        // restart again. Measured as a live loop — resident stuck at 8,192
+        // frames wide and 81.9M frames read without ever arriving.
+        //
+        // A window anchored at `resident.start` will hold everything up to
+        // `start + capacity`, so that is the span it can serve without moving.
+        let reach = resident.start + self.writer.capacity();
+        let in_span = resident.start <= playhead && playhead <= reach;
         let below = self.reverse_margin();
         let room_below =
             !self.descending || resident.start == 0 || resident.start + below <= playhead;
@@ -289,29 +318,37 @@ impl Window {
         self.writer
             .drop_before(playhead.saturating_sub(self.below_target()));
 
+        // **At most one chunk per call**, so `run` gets back to the channel.
+        // This used to loop until the half-window was full, which made
+        // `CHUNK_FRAMES`'s "one call cannot monopolise the thread while a seek
+        // is waiting" false by a wide margin: at the production window size
+        // one call reads 2.6M frames, and a queued `Command::Relocate` waited
+        // behind all of it. `run` calls straight back when a pass made
+        // progress, so throughput is unchanged — what changes is that a
+        // command is now at most one read away instead of one refill.
         let fill_to = playhead + self.above_target();
-        while !self.at_end {
+        if !self.at_end {
             let end = self.writer.resident().end;
             debug_assert_eq!(
                 end, self.cursor,
                 "the libsndfile cursor and the ring's end must advance together"
             );
-            if end >= fill_to {
-                break;
+            let room = if end >= fill_to {
+                0
+            } else {
+                self.writer.writable().min(fill_to - end).min(CHUNK_FRAMES as u64)
+            };
+            if room > 0 {
+                let want = room as usize * RING_CHANNELS;
+                let got = self.track.read_into_ring(&mut self.scratch[..want])?;
+                if got == 0 {
+                    self.at_end = true;
+                } else {
+                    self.writer.append(&self.scratch[..got * RING_CHANNELS]);
+                    self.cursor += got as u64;
+                    out.frames += got;
+                }
             }
-            let room = self.writer.writable().min(fill_to - end).min(CHUNK_FRAMES as u64);
-            if room == 0 {
-                break;
-            }
-            let want = room as usize * RING_CHANNELS;
-            let got = self.track.read_into_ring(&mut self.scratch[..want])?;
-            if got == 0 {
-                self.at_end = true;
-                break;
-            }
-            self.writer.append(&self.scratch[..got * RING_CHANNELS]);
-            self.cursor += got as u64;
-            out.frames += got;
         }
 
         out.at_end = self.at_end;
@@ -335,6 +372,21 @@ impl Window {
 pub enum Command {
     /// Restart the window at this frame. Only needed for a seek that lands
     /// outside it.
+    ///
+    /// **Nothing sends this.** `grep` finds no sender anywhere in `src/`, and
+    /// that is the whole of why a backwards cue jump is expensive: without it
+    /// the window sees only that the playhead moved down, infers a scrub, and
+    /// rebuilds itself *below* the new position — so the cue point, which is
+    /// what the callback wants first, is read last. The module doc has the
+    /// measurement.
+    ///
+    /// Whoever owns the app loop must send this whenever it makes the
+    /// transport seek outside the resident span, from the control thread. It
+    /// cannot come from the engine: `fill` runs on the audio thread and a
+    /// channel send is not allowed there. `relocate` also clears the latched
+    /// direction, which is the point — `decisions.md` calls a cue jump "a
+    /// discontinuity rather than motion", and that distinction exists only if
+    /// something says so.
     Relocate(u64),
     Shutdown,
 }
@@ -355,7 +407,13 @@ pub enum Event {
 /// How long the thread waits for a command before topping up again.
 ///
 /// A bound, not a period: the loop returns immediately from `fill_step` once
-/// the window is full, so this is only how stale the trim can be.
+/// the window is full, so this is how stale the trim can be — **and also how
+/// long an out-of-window seek waits to be noticed.** The playhead is only read
+/// inside `fill_step`, so once the window is full and the thread is parked on
+/// the channel, nothing observes a jump until this expires or a command
+/// arrives. At 128-frame periods that is up to 3-4 periods of silence for a
+/// seek that sends no `Command::Relocate`, which today is every seek — see
+/// that variant.
 const POLL: Duration = Duration::from_millis(10);
 
 impl Window {
