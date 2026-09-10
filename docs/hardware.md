@@ -1,5 +1,8 @@
 # Hardware
 
+The boards, the pins, and what to check. `decisions.md` has why; the issues have
+what is still open.
+
 ## Board stack
 
 ```
@@ -12,16 +15,13 @@ HiFiBerry Digi2 Pro   <- WM8804, dual-domain clock, master mode
 external DAC
 ```
 
-**The board's own block diagram is §C of the manual**, and it is better than
-anything redrawn from these sentences: it shows the MUX, the optional DoP decoder,
-three separate isolators — I2S/DSD, Control I2C, GPIO — and the two power domains
-either side of the physical gap. Read that rather than a paraphrase. An earlier
-version of this section carried a hand-drawn flowchart of the same thing, which was
-a software notation applied to a circuit and a redraw of a document nobody had
-opened.
+**Read §C of the manual for the board's own block diagram** — the MUX, the optional
+DoP decoder, three separate isolators (I2S/DSD, Control I2C, GPIO) and the two power
+domains. Better than anything redrawn from these sentences, and redrawing a circuit
+in a software notation is how this file used to get it wrong.
 
-What the manual does not do is name which pin is which **on the Pi's numbering**,
-so that mapping is what this file adds. §E's J6 table, transcribed:
+What the manual does *not* do is map its pins onto the Pi's numbering, which is what
+this file adds. §E's J6 table, transcribed:
 
 | J6 pin | Signal | |
 |---|---|---|
@@ -34,27 +34,23 @@ so that mapping is what this file adds. §E's J6 table, transcribed:
 | 29, 31 | XO selection | "isolated GPIO5 and GPIO6" |
 | all others | **NC** | not connected |
 
-Two things fall out of that last row and are easy to miss. **Physical pin 38 —
-GPIO 20, PCM_DIN — is NC**, so it does not reach the audio card at all; it stays
-reserved because the Pi's own I2S interface claims it, which is a different
-connector's problem. And **J1 is wired directly to J6 pins 2 and 4**, which the
-manual states outright, so the clean supply can equally be fed in at either — the
-screw terminal is a convenience, not the only route.
+Two things fall out of the last row. **Physical pin 38 — GPIO 20, PCM_DIN — is NC**,
+so it never reaches the audio card; it stays reserved because the Pi's own I2S
+interface claims it, which is a different connector's problem. And **J1 is wired
+directly to J6 pins 2 and 4**, so the clean supply can be fed at either.
 
-**J4 parallels the input connector pin-for-pin**, all power and all signals. So the
-controls and the display sit on the same forty conductors the Pi drives, on the
-near side of the gap. §J-3 is the rule that matters there, in the manual's
-capitals: *do not make any link or connection between the input side and the output
-side.* Doing so defeats the ground isolation and produces no other symptom.
+**J4 parallels the input connector pin-for-pin**, so the controls and display sit on
+the same forty conductors, on the near side of the gap. §J-3 is the rule that
+matters: *do not make any link between the input side and the output side.* Doing so
+defeats the isolation and produces no other symptom.
 
-The Digi2 Pro's bundled M2.5x12 mm spacers assume it mounts straight onto a Pi.
-The IsolatorPi III sits between them, so longer standoffs are needed.
+The Digi2 Pro's bundled M2.5x12 mm spacers assume it mounts straight onto a Pi. The
+isolator sits between them, so longer standoffs are needed.
 
 ## The Pi
 
-Raspberry Pi 3 Model B+. Same 40-pin header and the same mechanical footprint as
-the 3B, so the GPIO map, the HAT stack and the standoff plan do not depend on
-which of the two it is.
+Raspberry Pi 3 Model B+ — same header and footprint as a 3B, so nothing here depends
+on which it is.
 
 | | |
 |---|---|
@@ -66,201 +62,97 @@ which of the two it is.
 | Power in | 5 V / 2.5 A micro-USB, **or 5 V via the GPIO header**; PoE needs a separate HAT |
 | Operating temp | 0-50 C |
 
-Supply voltage must stay **above 4.8 V** for reliable operation, and the official
-docs warn that some USB supplies sag to 4.2 V because they are designed to charge
-a 3.7 V LiPo rather than run a computer. `vcgencmd get_throttled` reports
+Supply voltage must stay **above 4.8 V**; some USB supplies sag to 4.2 V, being built
+to charge a LiPo rather than run a computer. `vcgencmd get_throttled` reports
 undervoltage, but only after it has happened.
 
-### 1.4 GHz is a sprint clock, not the planning number
+### 1.2 GHz is the planning number, not 1.4
 
-The 3B+ (with the 3A+) is the only model with a **soft** temperature limit, and it
-exists specifically to bound how long the board holds its headline clock:
+The 3B+ has a **soft** temperature limit — 60 C by default — that drops the clock
+from 1.4 to 1.2 GHz to trade a short sprint for a longer run. `temp_soft_limit`
+raises it to 70 at most, and the docs say that "might cause instability".
 
-> When the soft limit is reached, the clock speed is reduced from 1.4 GHz to
-> 1.2 GHz, and the operating voltage is reduced slightly. ... we trade a short
-> period at 1.4 GHz for a longer period at 1.2 GHz. By default, the soft limit
-> is **60 C**.
+A deck runs a continuous realtime load, in a box, for the length of a set, so
+**1.2 GHz is the steady state** and what `architecture.md` sizes against. Going 3B to
+3B+ buys thermal mass and Gigabit Ethernet; it does *not* buy 17% of resampler
+headroom. It also settles how the v2 libsoxr benchmark must run: **thermally soaked**,
+or it reports a clock the board will not hold and passes a part that fails twenty
+minutes into a set.
 
-`temp_soft_limit` raises it, but to 70 at most, and the documentation says that
-"might cause instability". The hard limit is unchanged — progressive throttling
-from 80 C, Arm and GPU throttled at 85 C.
-
-A deck runs a continuous realtime load, inside a box, for the length of a set.
-The steady state is therefore **1.2 GHz**, and that is the figure
-`architecture.md` sizes against. Not because the board is a 3B — because 1.4 GHz
-is not sustained. Going 3B to 3B+ buys thermal mass and Gigabit Ethernet; it does
-**not** buy 17% of resampler headroom.
-
-It also settles how the v2 libsoxr benchmark must be run: **thermally soaked, at
-the throttled clock.** Started from cold it reports the sprint figure, and would
-pass a board that fails twenty minutes into a set — this project's usual failure
-shape, silent and late.
-
-Set against that, the official case guidance: "if used inside a case, the case
-should not be covered." A sealed DJ enclosure is in tension with it, and a fan is
-both an acoustic and an electrical noise source. Open — see `decisions.md`.
+Official case guidance is that a case "should not be covered", which a sealed DJ
+enclosure is in tension with — [#6](https://github.com/tamatebox/deck-pi/issues/6).
 
 ## Assembly checklist
 
 Three things are easy to get wrong and produce no error when wrong.
 
-1. **Set J12 / J13 on the IsolatorPi III to master mode.** The default is *slave*,
-   in which the Pi generates the I2S clock from its own PLL — the high-jitter path
-   this whole build exists to avoid. In master mode the Digi2 Pro's two crystal
-   oscillators generate SCK/LRCK and feed them back to the Pi, which then only
-   generates DATA. **Audio plays either way**, so nothing surfaces the mistake.
-
-   Which is easier to check against a picture than against a sentence, because
-   **two of the three I2S lines point at the Pi**:
-
-   ```mermaid
-   flowchart LR
-     PI["Raspberry Pi 3B+"]
-     DIGI["Digi2 Pro<br/>two crystals — clock master"]
-
-     PI   -- "PCM_DOUT · GPIO 21 · pin 40" --> DIGI
-     DIGI -- "SCK · GPIO 18 · pin 12" --> PI
-     DIGI -- "LRCK · GPIO 19 · pin 35" --> PI
-     PI   -- "GPIO 5 / 6 → J6 pins 29 / 31 · clock44 / clock48" --> DIGI
-     PI   -- "I2C · GPIO 2 / 3 → WM8804" --> DIGI
-   ```
-
-   Those cross the isolator, whose channels are **one-directional**. That is the
-   whole reason J12/J13 exist: they are not a quality setting, they tell the board
-   which way the clocks flow. §F says it in the manual's own words — "in slave mode
-   the RPi generates the **three** I2S signals (SCK, LRCK and DATA)"; in master mode
-   the audio card's two XOs generate SCK and LRCK and "these two I2S clock signals
-   are fed back into the RPi", which then generates DATA from them instead of from
-   its internal clock.
-
-   **Three, not four — and an earlier version of this diagram drew four.** It had
-   `PCM_DIN`/GPIO 20 crossing to the Pi alongside them. It does not cross at all:
-   §E's J6 table lists exactly three I2S pins — **12 SCK/BCK, 35 LRCK/DL, 40
-   DATA/DR** — and everything not in that table is "NC — not connected", pin 38
-   included. So GPIO 20 is claimed by the Pi's own I2S interface, per HiFiBerry, and
-   simultaneously goes nowhere through the isolator. Both facts are true and they
-   are about different connectors; the pin stays reserved for the first reason.
-
-   The figure above is therefore **derived**, not a source: it maps §E's J6 signals
-   onto this build's GPIO and physical pin numbers, which is the part no vendor
-   document does. For the board's own internals read §C's block diagram, which shows
-   the MUX, the separate I2S / I2C / GPIO isolators and the two power domains
-   directly.
-
-   **Master mode is J13 shorted, J12 open.**
+**1. Set J12 / J13 to master mode.** The default is *slave*, in which the Pi
+generates the I2S clock from its own PLL — the high-jitter path this build exists to
+avoid. **Audio plays either way**, so nothing surfaces the mistake.
 
    | | J13 | J12 |
    |---|---|---|
    | Slave (default) | open | 1-2 and 3-4 shorted |
    | **Master — use this** | **1-2 and 3-4 shorted** | **open** |
 
-   §F's table and all six of §I's worked examples agree on this, so the manual is
-   self-consistent. Application example 1 is the directly applicable one, being for
-   "any WM8804/5 based Transport/DAC" — which the Digi2 Pro is.
+§F's table and all six of §I's worked examples agree, so the manual is
+self-consistent; example 1 is the directly applicable one. In master mode the Digi2
+Pro's two crystals generate SCK and LRCK and feed them back, and the Pi generates
+only DATA — which is why the jumpers exist at all: the isolator's channels are
+one-directional and have to be told which way the clocks flow. §E lists exactly
+**three** I2S pins crossing J6 — 12 SCK, 35 LRCK, 40 DATA — pin 38 being NC.
 
-   **Both jumpers go on vertically.** The pins are 3 and 1 across the top, 4 and 2
-   across the bottom, so `3-4` bridges the left column top-to-bottom and `1-2` the
-   right column. Two vertical shunts side by side. Placing them horizontally
-   (1-3, 2-4) is the wrong **orientation** that §J-4 warns can *damage* the board —
-   a harder failure than the silent one above, so check before applying power.
+**Both jumpers go on vertically.** Pins are 3 and 1 across the top, 4 and 2 across
+the bottom, so each shunt bridges one column top-to-bottom. Placing them horizontally
+is the wrong orientation §J-4 warns can *damage* the board — check before applying
+power.
 
-   An earlier version of this file refused to record the values, because the board
-   silkscreen looked like it said `SLAVE` beside J13 and `MASTER` beside J12. That
-   reading came from an oblique photo and was wrong. Still worth a glance at the
-   flat board, but two independent sections of the manual agreeing outweigh it.
+**2. Feed J1 with clean 5 V, and never power the isolated side from the Pi.** J1
+regulates the isolator and passes the supply through to J6 pins 2/4. Powering from
+both sides bridges the isolation and defeats the build; the Digi2 Pro's own 5 V
+connector goes unused. J1's stated range is 3.3-5 V and Ian's examples feed 3.3 V,
+but those drive 3.3 V DACs — here the same rail reaches a 5 V HAT. It is a green
+2-pin screw terminal marked `CLEAN POWER` with `⊕` for positive.
 
-2. **Feed J1 with clean 5 V, and never power the isolated side from the Pi.**
-   J1 is the clean-side input; it regulates the isolator and passes the supply
-   through to the audio board on J6 pins 2 and 4. Powering from both sides bridges
-   the isolation and defeats the build. The Digi2 Pro's own 5 V connector is then
-   unused.
-
-   J1's stated range is **3.3-5 V**, and Ian's own application examples feed it
-   3.3 V — but those drive DACs that run on 3.3 V. Here it must be 5 V, because
-   the same rail passes straight through J6 pins 2/4 to a Pi HAT that expects
-   5 V.
-
-   J1 is a **green 2-pin screw terminal**, silkscreened `CLEAN POWER` with a `⊕`
-   marking the positive and `3.3/5V` beside it, and the kit ships red and black
-   pigtail leads for it. Read off the board photo in the Sources list, so no
-   guessing about polarity is needed.
-
-3. **Leave GPIO 5 and 6 free.** J6 pins 29/31 carry them through as the
-   oscillator-select lines for master mode. The Digi2 Pro overlay names them
-   outright — `clock44-gpio = <&gpio 5 0>` and `clock48-gpio = <&gpio 6 0>` — so
-   **GPIO 5 enables the 44.1 kHz crystal and GPIO 6 the 48 kHz one**, and the
-   machine driver switches them from `hw_params` on every rate change.
-
-   The failure mode is worse than "oscillator select stops working". If the driver
-   cannot get those GPIOs it falls back to `sysclk_freq = 27000000`, and 27 MHz is
-   the WM8804's **PLL** reference. So audio still plays — through the PLL, which is
-   the high-jitter path this whole build exists to avoid. Silent, again.
+**3. Leave GPIO 5 and 6 free.** J6 pins 29/31 carry them through as the
+oscillator-select lines; the overlay names them `clock44-gpio` and `clock48-gpio`,
+and the machine driver switches them on every rate change. **The failure mode is
+worse than "oscillator select stops working":** if the driver cannot get those GPIOs
+it falls back to `sysclk_freq = 27000000`, which is the WM8804's **PLL** reference —
+so audio still plays, through the jitter path the build exists to avoid.
 
 ## Bring-up order
 
-Fit the isolator **last**. This is not a preference — the IsolatorPi III manual
-(§J-1) says to validate that the hardware and software work and produce audio
-*before* installing the isolator between the Pi and the audio card, because
-debugging is much harder once it is in.
+Fit the isolator **last**: §J-1 says to prove the hardware and software produce audio
+*before* inserting it, because debugging is much harder afterwards. The audio half and
+the control half are independent and neither waits for the other; the only constraint
+is that the Digi2 Pro is a terminating HAT, so swap it on and off.
 
-The audio half and the control half are independent, and **neither waits for the
-other or for the isolator.** The only constraint is physical: the Digi2 Pro is a
-terminating HAT, so it fills the 40-pin header and the two halves cannot be on the
-Pi at the same time until J4 exists. So swap the HAT on and off and do them in
-whichever order the parts arrive in.
+- **A — bare Pi, no audio hardware.** Controls straight to the header, a panel on
+  SPI0, a stick in a USB port. Everything except the audio engine, and it settles
+  [#2](https://github.com/tamatebox/deck-pi/issues/2) and
+  [#4](https://github.com/tamatebox/deck-pi/issues/4). The null test needs no audio
+  hardware either.
+- **B — Pi plus Digi2 Pro, audio only.** Bundled spacers are right and the overlay is
+  already explicit, so `config.txt` does not change later. Mostly one command:
+  `deck-pi --device=hw:X,Y <file>` opens at the track's own rate, prints the period
+  geometry ALSA granted, checks the mixer is empty, plays through the whole chain and
+  reads `hw_params` back. `plughw:` is refused before ALSA is touched.
+- **C — Pi, isolator, Digi2 Pro.** Integration: longer standoffs, J12/J13, clean 5 V
+  on J1, the grounding question, and the controls moving to J4.
 
-**A — bare Pi, no audio hardware.** Buttons and the encoder wired straight to the
-40-pin header, a cheap panel on I2C, a stick in a USB port. This is the input path,
-the browser, the display, media watch, the cue store and the file layer — every
-module except the audio engine. It also settles what fits in how many pixels
-([#2](https://github.com/tamatebox/deck-pi/issues/2)) and whether ENTER wants its own button
-([#4](https://github.com/tamatebox/deck-pi/issues/4)). Note that the null test
-needs no audio hardware either: it compares buffers against the source, so it runs
-here, or on any machine.
+Controls belong in C rather than earlier — reaching the header past the HAT needs a
+splitter and then rewiring onto J4 — and §J-1 is about *audio*, not controls. **The
+integration risk that used to sit here is gone**: it was the display sharing I2C with
+the WM8804, and the panel is on SPI now, so A's redraw timing carries to C. The
+libsoxr benchmark ([#3](https://github.com/tamatebox/deck-pi/issues/3)) needs none of
+the three.
 
-**B — Pi plus Digi2 Pro, audio only.** The bundled M2.5x12 mm spacers are the right
-length, so nothing extra is needed, and `dtoverlay=hifiberry-digi-pro` is already
-explicit so `config.txt` does not change later. Confirm S/PDIF out at every rate
-and the `hw:` device. No controls here — nowhere to put them.
-
-Most of this is one command: `deck-pi --device=hw:X,Y <file>` opens at the track's
-own rate, prints the period geometry ALSA actually granted and the resulting
-latency, checks the card's mixer is empty, plays the track through the window
-thread, ring, callback and ALSA, and reads `hw_params` back. `plughw:` is refused
-before ALSA is touched, with the reason. What it does not cover is `alsacap`, which
-enumerates what the card offers rather than confirming one setting took.
-
-**C — Pi, isolator, Digi2 Pro.** Integration. Longer standoffs, J12/J13, clean 5 V
-on J1, the grounding question, and the controls moving to J4, wired once into their
-final home.
-
-Two notes on the ordering. Controls belong in C rather than before it: reaching the
-header past the HAT would need a GPIO splitter and then rewiring onto J4 afterwards,
-and the manual's insistence on validating first (§J-1) is about **audio**, not
-controls. And one integration risk appears only in C — the display and the WM8804
-share the I2C bus. In A the display has it to itself, so redraw timing that felt
-fine there can stumble once the codec is competing for the same bus.
-
-Open question 2, the libsoxr benchmark, needs none of this. Bare Pi, no HAT, no
-stick, no panel — so it can run before any of the three.
-
-Two things do *not* change between B and C, and are easy to get wrong
-by assuming they do:
-
-- **GPIO 5 and 6 stay reserved.** They are Pi GPIOs routed *through* the isolator
-  to the audio card — J6 pins 29/31 are documented as "XO selection — isolated
-  GPIO5 and GPIO6". Removing the isolator does not free them. `decisions.md`
-  records this being got wrong once already.
-- **Clock ownership.** The Digi2 Pro's crystals are the clock master either way.
-  J12/J13 exist because the isolator's channels are one-directional and have to
-  be told which way the clocks flow; with the board direct-mounted there is
-  nothing to select. What the isolator adds is ground and power separation, not
-  clock purity — the manual is blunt about this in §J-2: the isolator "MAY NOT
-  improve sound quality" by itself; it makes a good clean supply and good clocks
-  count for more.
-
-So A and B together are the whole v1 software stack, but B is **not** an
-audio-quality baseline. Anything measured or listened to there does not carry to C.
+Two things that do *not* change between B and C: **GPIO 5 and 6 stay reserved**, being
+Pi pins routed *through* the isolator, so removing it does not free them; and **the
+Digi2 Pro's crystals are the clock master either way** — what the isolator adds is
+ground and power separation, not clock purity, which §J-2 is blunt about. So A and B
+together are the whole v1 software stack, but B is **not** an audio-quality baseline.
 
 ## Power budget (clean side)
 
@@ -270,48 +162,34 @@ audio-quality baseline. Anything measured or listened to there does not carry to
 | Digi2 Pro | <0.3 W (~60 mA) | datasheet |
 | **Total** | **under 200 mA at 5 V** | neither figure is measured here |
 
-That 100 mA is the only current number the IsolatorPi III manual gives, and it is
-quoted for the board **with the DoP decoder daughter board fitted** — which this
-build deliberately does not fit. The bare board draws less, and the manual does
-not say how much less. So the budget errs in the safe direction, but it is not a
-measurement of this configuration.
+That 100 mA is the manual's only current figure and it is quoted **with the DoP
+daughter board fitted**, which this build does not fit — so the budget errs safe but
+is not a measurement of this configuration. J6 also offers an isolated regulated
+**3.3 V / 200 mA** on pins 1/17 and 4.7 k pull-ups on 15/22; neither is used here.
+The isolator's own **D1** lights when the Pi side has power and **D3** when clean
+power is present, which is a free answer to "is the clean side up?". 0.5 A is ample,
+and both boards regulate their own input, so a plain linear supply is enough.
 
-J6 also offers an **isolated, regulated 3.3 V / 200 mA output** on pins 1 and 17,
-and 4.7 k pull-ups to 3.3 V on pins 15 and 22 for audio cards that need them.
-Neither is used here; both are worth knowing before adding anything clean-side.
+## The header
 
-The isolator carries two indicator LEDs of its own, which the "no LEDs" decision
-does not remove: **D1** lights when the Pi side has power, **D3** when clean
-power is present at J1 or J6. D3 is a free answer to "is the clean side actually
-up?", which is otherwise invisible.
-
-0.5 A is ample. Both boards regulate their own input (the Digi2 Pro has an onboard
-low-noise linear regulator), so a plain good-quality linear 5 V supply is enough —
-the low current makes a quiet supply easy rather than expensive.
-
-## GPIO map
-
-**The physical header, as it is laid out.** Odd pins down the left, even down the
-right, exactly as they sit on the board. This is the format pinout.xyz established
-and the one every Pi reader already parses at a glance; it is kept here because it
-is the **anti-miscount artifact**. The two tables below say what each GPIO is
-*for*; only this one says what is *next to* what, and both mistakes this section
-records — a button on GPIO 20, and GPIO number read as physical pin number — are
-invisible in a table sorted by GPIO and obvious in this one.
+**The physical header, as it is laid out** — odd pins down the left, even down the
+right, the format pinout.xyz established. This is the **anti-miscount artifact**: the
+tables below say what each GPIO is *for*, and only this one says what is *next to*
+what.
 
 | Use | GPIO | odd | even | GPIO | Use |
 |---|---|---:|:---|---|---|
 | — | 3V3 | 1 | 2 | 5V | — |
 | **I2C SDA** | **2** | 3 | 4 | 5V | — |
 | **I2C SCL** | **3** | 5 | 6 | GND | — |
-| spare | 4 | 7 | 8 | **14** | **UART TXD** |
+| held — source | 4 | 7 | 8 | **14** | **UART TXD** |
 | — | GND | 9 | 10 | **15** | **UART RXD** |
 | encoder A | 17 | 11 | 12 | **18** | **I2S** |
 | encoder B | 27 | 13 | 14 | GND | — |
 | ENTER | 22 | 15 | 16 | 23 | BACK |
 | — | 3V3 | 17 | 18 | 24 | PLAY / PAUSE |
 | SPI0 MOSI | 10 | 19 | 20 | GND | — |
-| SPI0 MISO | 9 | 21 | 22 | 25 | CUE |
+| panel DC *(MISO)* | 9 | 21 | 22 | 25 | CUE |
 | SPI0 SCLK | 11 | 23 | 24 | 8 | SPI0 CE0 |
 | — | GND | 25 | 26 | 7 | *unity (v2)* |
 | **ID EEPROM** | **0** | 27 | 28 | **1** | **ID EEPROM** |
@@ -322,49 +200,42 @@ invisible in a table sorted by GPIO and obvious in this one.
 | FF | 26 | 37 | 38 | **20** | **I2S — PCM_DIN** |
 | — | GND | 39 | 40 | **21** | **I2S** |
 
-**bold** — hard-reserved, not reassignable. *italic* — v2. Ground is eight pins:
-6, 9, 14, 20, 25, 30, 34 and 39, and they are interchangeable.
+**bold** — hard-reserved. *italic* — v2. Ground is 6, 9, 14, 20, 25, 30, 34, 39, all
+interchangeable.
 
-Two things this view makes visible that the semantic tables cannot. **GPIO 20 sits
-at physical pin 38**, between FF and the I2S pin at 40 — surrounded by the
-interface that claims it, which is what the flat table failed to show when a button
-was assigned there. And **the I2S four are 12, 35, 38, 40**: one of them is nowhere
-near the other three, so "the I2S block" is not a contiguous region anyone can
-avoid by staying away from one end of the header.
+Two things this makes visible that a table sorted by GPIO cannot. **GPIO 20 sits at
+physical pin 38**, between FF and the I2S pin at 40 — surrounded by the interface that
+claims it, which is what the flat table failed to show when a button was assigned
+there. And **the I2S four are 12, 35, 38, 40**: one is nowhere near the others, so
+"the I2S block" is not a region you can avoid by staying away from one end.
 
-Read this table as the layout and the two below as the reasons. Where they
-disagree, one of them is wrong and it must be resolved, not averaged.
-
+Where this table and the two below disagree, one of them is wrong and it must be
+resolved, not averaged.
 
 **Reserved — 12 pins**
 
 | GPIO | Use |
 |---|---|
 | 0, 1 | HAT ID EEPROM (physical pins 27/28 — *pins*, not GPIOs, a documented trap). Also **I2C0**, a second controller — see below |
-| 2, 3 | I2C — WM8804 control, and the display |
+| 2, 3 | I2C — WM8804 control, and the v2 ADC |
 | 5 | 44.1 kHz crystal enable (`clock44-gpio`) |
 | 6 | 48 kHz crystal enable (`clock48-gpio`) |
 | 14, 15 | Serial console (PL011, freed by `disable-bt`) |
 | **18, 19, 20, 21** | I2S — **four** pins |
 
-**GPIO 20 is I2S, not spare.** HiFiBerry's own GPIO-usage page reserves 18-21
-(physical 12, 35, 38, 40) for the sound interface on the Digi2 Pro and says they
-cannot be used for anything else. An earlier version of this table listed only
-18/19/21 and left 20 free, and a button was assigned to it — the same mistake the
-GPIO 5/6 invariant exists to prevent, on a different pin. GPIO 20 is PCM_DIN;
-unused for playback-only, but claimed by the interface regardless.
+**GPIO 20 is I2S, not spare.** HiFiBerry reserves 18-21 for the sound interface on
+the Digi2 Pro and says they cannot be used for anything else. An earlier version of
+this table left 20 free and a button was assigned to it. GPIO 16 *is* free: HiFiBerry
+reserves it on the plain Digi+, but the Digi2 Pro entry replaces that with 5 and 6.
 
-GPIO 16 *is* free here. HiFiBerry reserves it on the plain Digi+, but the Digi+
-Pro / Digi2 Pro entry replaces that with GPIO 5 and 6.
-
-**SPI0 (7, 8, 9, 10, 11) is held for a future ADC.** The v2 pitch fader is analog
-and the Pi has no ADC, so an MCP3008 or ADS1115 will be needed. Putting the
-display on I2C instead of SPI is what keeps this option open.
-
-**Read that as one claimant, not a priority.** SPI0 is wanted by two things — the
-ADC and an SPI display — and exactly one of them can be made to want I2C instead.
-Choosing the I2C ADC frees the block *for* a display rather than merely conceding
-it; see [#1](https://github.com/tamatebox/deck-pi/issues/1), where the same lever decides the panel.
+**SPI0 (7, 8, 9, 10, 11) carries the display panel.** Two things wanted this block —
+the v2 fader's ADC and an SPI panel — and exactly one could be made to want I2C
+instead. The ADC went there. The panel takes four: SCLK, MOSI, CE0, and **GPIO 9 as
+DC**, a write-only panel having no use for MISO. Neither GPIO 9 nor unity's GPIO 7 is
+free by default — plain SPI0 claims all five — and one overlay line releases both:
+`dtoverlay=spi0-1cs,no_miso`, whose `cs1_pin` defaults to 7 and whose `no_miso`
+"don't claim and use the MISO pin (9)". Read from the overlay README. **`config.txt`
+carries no SPI line at all yet.**
 
 **Assignment**
 
@@ -379,106 +250,65 @@ it; see [#1](https://github.com/tamatebox/deck-pi/issues/1), where the same leve
 | 26 | FF — hold to seek forward, tap for next | v1 |
 | 12, 13 | Jog encoder A / B | v2 |
 | 7 | **Unity** — passthrough on/off | v2 |
-| 4 | spare | |
+| 4 | **Held** for a source toggle — this deck's USB, or a peer deck's over the network | not scheduled |
 
-**Seven switches, and one pin left.** BACK, PLAY/PAUSE, CUE, FF, REW, the encoder's
-push as ENTER, and unity in v2. That is 27 of the header's 28 GPIOs, with GPIO 4
-free.
+**This table is the assignment, and two other places follow it.**
+`implementation.md`'s `gpio-key` lines and `src/input.rs`'s keycodes repeat it. The
+Rust pair is guarded by a bijection test; nothing guards either against `config.txt`.
+Said plainly because this section already records two pins assigned wrongly for want
+of a table showing what another table showed.
 
-Unity takes **GPIO 7**, SPI0's second chip select: one ADC needs one, not two, and
-both claimants on that block — the ADC and this button — are v2, which makes the
-trade self-consistent. An earlier version of this table had no row for unity at all,
-even though `architecture.md` requires it to be a button rather than a deadband on
-the fader; it was the only control in either phase without a pin.
+**Seven switches, and the last pin is held rather than free** — BACK, PLAY/PAUSE, CUE,
+FF, REW, the encoder's push as ENTER, and unity in v2. GPIO 4 is held for a source
+toggle, raised tentatively rather than decided. Read that as "no room", not "one
+spare": the panel's four SPI pins have taken everything else. Unity takes **GPIO 7**,
+SPI0's second chip select — one ADC needs one, not two.
+**[#4](https://github.com/tamatebox/deck-pi/issues/4) is a swap, not an addition**,
+and with nothing spare a swap is the only shape of change the header can absorb.
 
-**Open question 3 is a swap, not an addition.** A dedicated ENTER would take GPIO 4
-and leave the encoder's push switch unused, freeing GPIO 22. Either way exactly one
-pin is spare.
+### What the header has left
 
-### The button ceiling
+Subtract from 28: ten hard-reserved (EEPROM, I2C, the two crystal selects, I2S), two
+for the serial console, four for the encoders, four for the panel. That leaves
+**eight** — seven used, the eighth held.
 
-| Assumption | Buttons possible |
-|---|---|
-| As planned — SPI ADC, serial console kept, v2 jog | **8** |
-| **Pitch fader on an I2C ADC instead** | **12** |
-| Also give up the serial console | 14 |
-| Also give up the v2 jog | 16 |
+**Freeing SPI0 is not the same as leaving it empty.** A write-only panel takes SCLK,
+MOSI, CS and DC, the same four an SPI ADC would have taken, which is why the figure is
+eight and not twelve. `decisions.md` records the version of this arithmetic that spent
+the same saving twice, and
+[#1](https://github.com/tamatebox/deck-pi/issues/1) the branches not taken.
 
-Subtract from 28: ten pins hard-reserved (EEPROM, I2C, the two crystal selects,
-I2S), two for the serial console, four for the encoders, four for an SPI ADC.
-
-**The ADC choice is the whole lever.** This file already names "an MCP3008 or
-ADS1115"; the first is SPI and costs four pins, the second is I2C and costs none.
-So which ADC the v2 pitch fader uses decides whether there are eight buttons or
-twelve. Bus time is not the objection — a two-byte read at 100 Hz is about 1% of a
-400 kHz bus.
-
-**It also decides the display, which was missed here.** This section identified the
-lever and then applied it to one axis only. An I2C ADC leaves SPI0 free for a panel,
-and I2C's 44.4 kB/s caps an I2C panel at 128x64 monochrome; an SPI ADC takes the
-block and fixes the panel at that ceiling.
-
-**But twelve buttons and a larger display are alternatives, not the same choice —
-this line used to say the opposite.** Freeing SPI0 is not the same as leaving it
-empty. A write-only panel takes SCLK, MOSI and CS on 11, 10 and 8, plus DC, which
-is the same four pins the SPI ADC would have taken, so the twelve exists only if
-the display stays on I2C. Three outcomes, not two: an SPI ADC gives 8 buttons and a
-128x64 panel; an I2C ADC gives *either* 8 buttons and an SPI panel *or* 12 buttons
-and a 128x64 one. The first of those three is beaten outright by the second — same
-buttons, a 320x240 colour panel instead of 128x64 mono, and 16 bits instead of 10 —
-**unless the panel's RESET needs a GPIO**, which costs a fifth pin and one button.
-[#1](https://github.com/tamatebox/deck-pi/issues/1) carries the arithmetic. The ADS1115 is 16-bit against the
-MCP3008's 10-bit and 860 SPS is ample for a fader at ~100 Hz, so nothing is traded
-away for the pins themselves.
-
-Past those ceilings the only route is an I2C port expander, or dropping something.
+**The tally balancing at zero is the finding, not the ceiling.** It promotes two
+properties of a panel nobody has bought to load-bearing, both in
+[#2](https://github.com/tamatebox/deck-pi/issues/2): that **RESET is tied high** and
+takes no GPIO, and that the **backlight needs no PWM pin**. Either one costs a
+control. Past that, the routes are the serial console's two pins, the v2 jog's two, an
+I2C port expander, or dropping something.
 
 Three cautions from HiFiBerry's GPIO-usage page, all of which this build touches:
 
 - **"Do not use more than a few mA from the 3.3V line."** They ask for 5 V plus a
-  regulator instead. A small OLED at 10-25 mA is already past "a few"; the ILI9341
-  TFT option in [#2](https://github.com/tamatebox/deck-pi/issues/2), with a backlight, is far past it. So the display
-  gets 5 V and its own regulation, not the 3.3 V pin — and that is a constraint on
-  the panel choice, not an afterthought.
-- **The I2C bus is shared with the WM8804, and HiFiBerry does not recommend adding
-  slaves to it.** This design does exactly that. Their stated reason is pull-ups:
-  "there might or might not be the right pull-up resistors on every I2C slave".
+  regulator. A small OLED at 10-25 mA is already past "a few" and a backlit TFT far
+  past it, so the display gets 5 V and its own regulation.
+- **They do not recommend adding I2C slaves** alongside the WM8804, their reason being
+  uncertain pull-ups. The isolator largely answers it: a Control I2C Isolator sits
+  between the two sides and J6 carries dedicated pull-up pins, so I2C is **two
+  electrically separate segments** — read from the block diagram rather than stated,
+  so worth a scope on the real stack. What does not go away is **bus time**, one
+  logical bus from one controller; the v2 ADC is cheap there, a two-byte read at
+  100 Hz being about 1% of a 400 kHz bus. That ceiling is the codec's: the WM8804
+  datasheet (v4.5, Table 5) caps SCLK at **400 kHz**. The BCM2837 does have a second
+  controller, I2C0 on GPIO 0/1, but three things about using it are unknown and all
+  silent when wrong — see [#2](https://github.com/tamatebox/deck-pi/issues/2).
+- **The whole stack is outside HiFiBerry's supported configuration.** No guarantee of
+  interoperability with other cards, and the isolator is an interposer. Ian Canada's
+  manual supports the Digi Pro in master mode explicitly, so the combination is sound
+  — but neither vendor supports it.
 
-  The isolator largely answers that one, though. Its block diagram puts a Control
-  I2C Isolator between the two sides, and J6 carries dedicated pull-up pins (15/22,
-  4.7k to 3.3Vcc), so I2C is **two electrically separate segments** — the display on
-  J4 sits on the Pi's segment, the WM8804 on the isolated one, and neither loads the
-  other. Read from the block diagram and those pins rather than stated outright, so
-  still worth confirming with a scope on the real stack.
+## Where J4 is
 
-  What does *not* go away is **bus time**: one logical bus from the Pi's controller,
-  so a 26 ms full frame still shares it with WM8804 commands. That is the reason for
-  the refresh discipline, not noise.
-
-  **The clock follows the same logic, and it is capped by the codec.** One controller
-  means one rate, so the display's segment cannot be clocked faster than the WM8804's
-  tolerates — and its datasheet (v4.5, Table 5) caps SCLK at **400 kHz**, `tSCY`
-  minimum 2500 ns. There is no 1 MHz option while they share a controller.
-
-  **They need not share one.** The BCM2837 has two: I2C1 on GPIO 2/3, and **I2C0 on
-  GPIO 0/1** — the EEPROM pins above, already reserved, and already not depended on
-  because `config.txt` names the overlay explicitly. A panel there would have its own
-  controller and its own clock, taking display frames off the codec's bus entirely.
-  Not adopted: three things are unknown and all are silent when wrong — whether
-  `dtparam=i2c_vc=on` exposes GPIO 0/1 as `/dev/i2c-0` on a **3B+** (i2c0 is also the
-  VideoCore's bus and serves the camera and display connectors on this generation),
-  whether those two lines carry the pull-ups a panel needs, and whether the firmware's
-  boot-time EEPROM probe at 0x50 disturbs a panel answering at 0x3C. See
-  [#2](https://github.com/tamatebox/deck-pi/issues/2), which also says what this does **not** buy.
-- **The whole stack is outside HiFiBerry's supported configuration.** They do not
-  guarantee interoperability with other add-on cards, and the IsolatorPi III is an
-  interposer rather than a direct plug. Ian Canada's manual supports the Digi Pro
-  in master mode explicitly, so the combination is sound — but there is no vendor
-  support for it from either side of the sandwich.
-
-**Where J4 actually is.** `J4` is a reference designator silkscreened on the
-IsolatorPi III — `J` for connector, the numbers not sequential by position. The
-board carries three 40-pin connectors:
+`J4` is a reference designator silkscreened on the IsolatorPi III; the numbers are not
+sequential by position. The board carries three 40-pin connectors:
 
 ```
    ┌────────────────────────────────┐
@@ -493,460 +323,204 @@ board carries three 40-pin connectors:
         (J3, the socket onto the Pi, is on the underside)
 ```
 
-J4 and J6 are two upward-facing male pin headers **side by side** in the lower half
-of the board, not stacked — the photo shows `J4 NON-ISOLATED` printed beside it with
-pin 39/40 at one end and 2 at the other. Being male pins facing up, whatever
-connects to J4 needs a female socket, which is what the IDC ribbon above provides.
-
-The isolator is **65.5 mm** deep against a standard HAT's 56 mm, and J4 sits at the
-outer edge, so J4 should fall outside the Digi2 Pro's footprint and stay reachable
-with the stack assembled. Deduced from the dimensions and the photo — confirm on the
-boards.
-
-Control peripherals connect to the IsolatorPi III's **J4**, the non-isolated 40-pin
-passthrough. The manual names rotary encoders as an intended use. Anything hung
-there is on the near side of the isolation gap, so its noise never reaches the
-audio boards — which is why the display needs no noise mitigation of its own.
+J4 and J6 are upward-facing male headers **side by side**, not stacked, so whatever
+connects to J4 needs a female socket. The isolator is **65.5 mm** deep against a
+standard HAT's 56 mm and J4 sits at the outer edge, so it should stay reachable with
+the stack assembled — deduced from the dimensions and the photo, so confirm on the
+boards. Anything hung there is on the near side of the gap, which is why the display
+needs no noise mitigation of its own; the manual names rotary encoders as an intended
+use.
 
 ## Controls
 
-**v1** — one detented rotary encoder (EC11 class; the clicks are an asset for
-menu stepping) plus five buttons: BACK, PLAY/PAUSE, CUE, FF, REW. ENTER is
-the encoder's own push switch.
+**v1** — one detented rotary encoder (EC11 class; the clicks are an asset for menu
+stepping) plus five buttons: BACK, PLAY/PAUSE, CUE, FF, REW. ENTER is the encoder's
+own push. **What each one does is `controls.md`;** this section is how many, of what
+kind, and wired how.
 
-Cheap encoder push switches bounce badly and wear out, and ENTER is the most-used
-control. Either raise the debounce interval to 30-50 ms or give ENTER its own
-button — the pin budget allows it. PLAY takes the most abuse and deserves a
-switch with real travel; BACK can be a small tactile. FF and REW get held down for
-seconds at a time, so pick switches that are comfortable to hold rather than
-crisp.
+**v2** — a non-detented *optical* encoder for the jog, detents being disqualifying
+because the notches are felt through the platter while scrubbing. 100-200 PPR
+(400-800 counts/rev after x4 decoding) is enough with no scratching; below ~400,
+low-speed velocity estimation breaks down. Plus a pitch fader, which needs an ADC —
+**on I2C**, which is what left SPI0 for the panel.
 
-Buttons pull to ground and use the internal pull-ups. No external resistors.
+### How many of what
+
+Counts and kinds, deliberately without part numbers: **a part you own is a fact; a
+part you might buy is a constraint.** `WM8804` and `CA-IS376x` are named throughout
+this file because they are on the bench; nothing below is.
+
+| | n | GPIO | What the kind has to be |
+|---|---|---|---|
+| Browse encoder, with push switch | 1 | 17, 27, 22 | Detented. The clicks step the menu, and the push is ENTER |
+| PLAY / PAUSE | 1 | 24 | Real travel. Takes the most abuse of anything here |
+| CUE | 1 | 25 | Real travel |
+| BACK | 1 | 23 | A small tactile is fine |
+| FF | 1 | 26 | Comfortable **held** for seconds, not crisp |
+| REW | 1 | 16 | Same |
+| UNITY — v2 | 1 | 7 | Set apart from PLAY, and different to the finger. A mis-press changes the audio path and the handover is cross-faded, so **it makes no sound** |
+| Source toggle — USB or a peer deck | **0 or 1** | 4 | Held, not scheduled. The only control asked for beyond the set above, and asked for tentatively |
+| Jog encoder — v2 | 1 | 12, 13 | **Non**-detented, optical, 100-200 PPR |
+| Pitch fader — v2 | 1 | via the ADC | Linear taper, and a **centre detent**: it is what makes UNITY's "near centre" gate a physical fact rather than an inference. Detented slide pots run out around 60 mm of travel, which at ±10% is 3 mm per 1% and ample |
+| Display panel | 1 | 11, 10, 8, 9 | SPI (9 is DC). **RESET tied high and no PWM backlight** — both load-bearing, see *What the header has left* |
+| ADC | 1 | on I2C | 16-bit is available for nothing and costs no pins |
+
+**Seven switches counting the encoder's push. Two encoders. One fader.** That is the
+whole control surface, and the pin tally balances at zero spare.
+
+Also needed, none of it a control: a 5 V regulator for the panel, a 40-pin IDC ribbon
+and a screw-terminal breakout for J4, four standoffs longer than the bundled
+M2.5x12 mm, a clean linear 5 V supply for J1, an enclosure, and stranded 26-28 AWG
+wire wherever it flexes.
+
+**One temperature constraint crosses all of it**, and it belongs to the enclosure
+rather than to any part: commodity slide potentiometers are commonly rated to
+**+50 °C** while the Pi's soft limit is **60 °C**, so an enclosure hot enough to
+throttle the Pi is already outside a panel component's rating. A floor on the box,
+not a spec of a part — [#6](https://github.com/tamatebox/deck-pi/issues/6).
+
+**Cheap encoder push switches bounce badly and wear out, and ENTER is the most-used
+control** — the substance of [#4](https://github.com/tamatebox/deck-pi/issues/4):
+raise the debounce interval to 30-50 ms, or give ENTER its own button and free
+GPIO 22.
 
 ### Wiring them
 
-Two wires per button: one terminal to its GPIO, the other to any ground pin — the
-header has eight. Grounds can be shared, so v1 is about **nine signal lines plus a
-ground**: encoder A/B, its push, and five buttons.
+Two wires per button, one terminal to its GPIO and the other to any ground pin.
+Grounds can be shared, so v1 is **nine signal lines plus a ground**. Buttons pull to
+ground and use the internal pull-ups — no external resistors.
 
-**The numbering is the trap.** GPIO number is not physical pin number, as
-HiFiBerry's own page warns, and the physical pins alternate odd and even across the
-two rows. **Take the pin numbers from the header map in `GPIO map` above** — this
-subsection deliberately no longer carries a second copy.
+**The numbering is the trap.** GPIO number is not physical pin number, and the pins
+alternate odd and even across the two rows. **Take the pin numbers from the header map
+above**, which is deliberately the only copy.
 
-It used to, as a four-row grid of `GPIO | Pin` pairs wrapped into two columns, and
-that grid was worse than nothing on the very axis this paragraph warns about: its
-two columns were a *line wrap*, not the header's two rows, so a reader looking for
-odd-and-even adjacency found a layout that resembled it and meant something else.
-One table, laid out the way the connector is.
+Verify rather than assume: **`evtest`** prints `/dev/input` events, so a press either
+produces the expected keycode or it does not, and **`pinout`** (ships with gpiozero)
+prints the running board's own header as ASCII — the table above is a document, that
+is the machine.
 
-Verify with **`evtest`** rather than assuming: it prints `/dev/input` events, so a
-press either produces the expected keycode or it does not, and the fault is either
-the wiring or the overlay.
-
-And verify the header itself with **`pinout`**, which ships with gpiozero on
-Raspberry Pi OS and prints the running board's own layout as ASCII. The table
-above is a document; that is the machine.
-
-**Phase A** wants a labelled **GPIO breakout** to a breadboard — the printed pin
-names are what stop the miscount, and tactile switches sit in a breadboard properly
-where a jumper socket on a 2.54 mm leg does not.
-
-**Phase C** wants something that cannot shake loose, because the same lack of a
-latch that makes a knocked USB connector plausible applies to internal wiring. A
-**screw-terminal breakout** is the answer: panel wires screw in, no crimping, and
-it stays put. Take J4 out to it on a **40-pin IDC ribbon** and mount it elsewhere in
-the enclosure rather than stacking anything on J4 itself — see the note on J4's
-position below. Only about ten of the forty pins are used, so a full breakout is
-overkill but cheap and harmless.
-
-Use **stranded** wire anywhere it flexes between panel and board; solid wire
-work-hardens and breaks. 26-28 AWG is ample for a switch carrying microamps.
-
-### CUE
-
-Three behaviours on one button, taken from the **CDJ-350** operating instructions
-(Pioneer 389414-01U, p.18) rather than from memory. The 350 is the right reference:
-an entry-level single player, closer in scope to five buttons than a CDJ-3000X with
-its hot cues and touchscreen.
-
-| State | Tap CUE | The manual's name |
-|---|---|---|
-| Paused | **sets** the cue point at the paused position | Setting Cue |
-| Playing | **returns** to the cue point and pauses there | Back Cue |
-| Held at the cue point | **plays while held** | Cue Point Sampler |
-
-Four details worth having exactly, all quoted or paraphrased from that page:
-
-- **One cue point per track.** "When a new cue point is set, the previously set cue
-  point is canceled." So this is a single point, not a set of hot cues.
-- **Setting it makes no sound.** "No sound is output at this time." Which agrees
-  with FF/REW being a silent seek — nothing in v1 produces audio at a rate other
-  than unity.
-- **Back Cue pauses; it does not resume.** "The set immediately returns to the
-  currently set cue point and pauses." Playback restarts only when PLAY is pressed,
-  and it starts from the cue point.
-- **The preview really is momentary.** "Playback continues while the button is held
-  in" — so release means stop and return, and there is no latching.
-
-**CUE during a held FF or REW is Back Cue.** The manual does not cover the
-combination, so this is a chosen interpretation rather than a quotation: anything
-not paused counts as moving, and returning to the point is the predictable answer.
-Ignoring the press would be worse — a control that sometimes does nothing is harder
-to trust than one that always does the same thing.
-
-**There is no separate STOP, because a CDJ has none.** Returning to the cue point
-and standing by *is* stopping, which is why this button was labelled "CUE / STOP"
-and is really one function. It also means the hold gesture is free for preview
-instead of being spent on a stop the transport already has.
-
-No new mechanism is needed: hold is `r = 1.0`, release is `r = 0` with the position
-set back to the cue point. Both already exist.
-
-**It is both, because the material is both.** For dance it is a mixing tool, which
-is the CDJ's own use of it; for sustained work it is the main way to navigate
-*inside* a track, where the alternative is starting from the beginning. Cue regions
-are pre-locked either way (see `architecture.md`), so the mechanism does not care —
-but an earlier version of this line said "not a mixing tool", which was deciding what
-is on the stick.
-
-**Auto cue is deliberately not adopted.** The CDJ-350 has it: on load it skips the
-silent lead-in and places the cue point just before the sound starts, with eight
-selectable thresholds from -36 to -78 dB. **The rejection stands; the reason it used
-to give does not.** That reason was "a convenience for club material, a hazard for
-long-form ambient" — but the deck plays both, so the split settles nothing. What
-settles it is that **one** piece opening below the threshold on purpose is enough:
-having the deck decide where the music "really" begins is exactly the kind of silent,
-well-meant alteration this project avoids, and a rule must hold for everything on the
-stick rather than for most of it. The cue point starts at frame zero unless set.
-
-Fine-adjusting the cue in single frames, which the 350 does with its SEARCH buttons
-while paused at the cue, would fall naturally to FF/REW in the same state. Not
-needed for v1, but the gesture is free if it is ever wanted.
-
-### FF and REW
-
-Hold to seek, tap to change track. **A tap loads the next track and waits at its
-head — it does not start playing, even if the deck was playing.**
-
-**This is a departure from the CDJ-350, and an earlier version of this paragraph
-said the opposite.** Read off the manual rather than recalled: TRACK SEARCH there
-keeps playing, and pausing at the start happens **only with auto cue on** — p.17,
-"when auto cue is turned on, the set searches for the beginning of the track and
-pauses there". Selecting a track with the rotary selector is more emphatic still:
-"the track is loaded and playback begins."
-
-Taking the pause anyway is deliberate, and it separates the two halves of auto cue
-rather than adopting it. What `decisions.md` rejects is auto cue **deciding where
-the music begins** — the -36 to -78 dB threshold, an alteration this project will
-not make. Auto cue's other half is simply *pausing on arrival*, which decides
-nothing about the audio. So the deck takes the pause and not the threshold, and
-the rule it buys is one line for the whole panel: **nothing produces sound that
-the operator did not press PLAY for**, whether a track ended by itself or was
-changed on purpose.
-
-It also means a track change always has a pause in it, which the software design
-leans on — see `architecture.md`.
-
-**Each half earns its keep on different
-material.** Hold-to-seek is what makes a long track usable at all — without it the
-only entry point into an 80-minute piece is the beginning, since the jog is v2.
-Tap-for-next carries more weight across a folder of short tracks, where changing
-track is the frequent action. Both are wanted, which is an argument for the
-tap-versus-hold compression rather than against it.
-
-**This compresses two of the CDJ-350's controls into one pair, deliberately.** That
-player separates them: SEARCH (`◄◄ ►►`) scans within a track, TRACK SEARCH
-(`|◄◄ ►►|`) skips between tracks — four buttons where this deck has two. Tap versus
-hold is the compression the pin budget asks for, and it is worth knowing it is a
-compression rather than the idiom.
-
-It also removes a worse idea. The alternative was to overload the browse encoder —
-browsing in the list, seeking during playback — which puts a hidden mode on the
-most-used control. Two dedicated buttons cost two spare pins and no mode.
-
-**Seeking is silent in v1.** Position advances while held and the display follows,
-but no audio is produced. This is not a UX preference: an audible scan needs the
-resampler, which would give v1 a second mode and break the unconditional
-bit-perfection `architecture.md` claims for it. In v2 it becomes `r = 4` on the
-existing rate variable, and the unity button already owns the mode question.
-
-Tap-versus-hold is discriminated in userspace, which does **not** contradict the
-kernel-decoding rule below: that rule is about a poll loop quantising jog velocity
-and dropping steps, whereas this is a one-shot timer per keypress. Two
-consequences worth knowing — the tap action fires on *release*, which is
-imperceptible for a track change; and the hold threshold (~300-500 ms) must sit
-well clear of the 30-50 ms debounce interval.
-
-Open — [#12](https://github.com/tamatebox/deck-pi/issues/12): what a tap does at a
-folder boundary. Stopping is the simple answer. A track reaching its end is settled:
-it stops, nothing advances on its own.
-
-**v2** — a non-detented *optical* encoder for the jog. Detents are disqualifying
-here: the notches are felt through the platter while scrubbing. 100-200 PPR
-(400-800 counts/rev after x4 decoding) is enough since there is no scratching.
-Resolution sets the feel, not the audio quality — the rate slew in the resampler
-absorbs coarse input. Below ~400 counts/rev, low-speed velocity estimation breaks
-down: events arrive too far apart to tell how fast the platter is moving.
-
-Plus a pitch fader, which needs **an** ADC — the Pi has none. Whether it is the SPI
-MCP3008 or the I2C ADS1115 is open, and it is the lever the button ceiling above and
-[#1](https://github.com/tamatebox/deck-pi/issues/1) both turn on, so this line deliberately does not name
-one. An earlier version said "the SPI ADC", which decided the question by wording in
-the one place the analysis was not.
-
-## Wireless
-
-Off. Ethernet is the only network path, so **confirm wired connectivity before
-disabling anything** — the web-free UI is local, but SSH is the only way in.
-
-```ini
-dtoverlay=disable-wifi
-dtoverlay=disable-bt
-```
-
-```sh
-sudo systemctl disable --now hciuart bluetooth
-```
-
-On a Pi 3B+, Bluetooth occupies PL011, the good UART, leaving the serial console
-on the mini-UART — whose baud rate tracks the core clock. `disable-bt` moves
-PL011 to GPIO 14/15, so turning Bluetooth off and getting a solid serial console
-are the same action. The 3B+ radio is dual-band, so this drops a 5 GHz
-transmitter as well as the 2.4 GHz one.
-
-The older note here — that `enable_uart=1` pins `core_freq` to 250 MHz — **is not
-confirmed for the 3B+**; the current `enable_uart` documentation does not mention
-`core_freq` at all. It also matters less once PL011 is in use, since PL011 does
-not take its baud rate from the core clock. What *does* still ride the core clock
-is **I2C**, and that bus carries both the WM8804 and the display.
-`core_freq_fixed=1` is the documented lever — it "ensures that any peripherals
-that use the core clock will maintain a consistent speed". A candidate, not a
-decision, until measured.
-
-During development, toggle with `rfkill` (state persists across reboots via
-systemd-rfkill) and only commit to the overlays once measured. `config.txt` lives
-on the FAT partition, so a mistake there is recoverable by reading the card on a
-Mac; a mistake in the ext4 rootfs is not.
-
-## config.txt
-
-```ini
-dtoverlay=hifiberry-digi-pro
-dtoverlay=disable-wifi
-dtoverlay=disable-bt
-enable_uart=1
-gpu_mem=16
-```
-
-Set the Digi2 Pro overlay explicitly rather than relying on HAT auto-detection —
-the ID EEPROM lines may not survive the isolator.
-
-`gpu_mem=16` reclaims ~50 MB on a headless box.
-
-Button and encoder overlays are one instance per device; check parameter names
-with `dtoverlay -h gpio-key` and `dtoverlay -h rotary-encoder` on the actual
-image before trusting the spelling.
-
-```ini
-dtoverlay=gpio-key,gpio=23,keycode=158,label=BACK
-dtoverlay=gpio-key,gpio=24,keycode=164,label=PLAYPAUSE
-dtoverlay=gpio-key,gpio=25,keycode=128,label=CUE
-dtoverlay=gpio-key,gpio=22,keycode=28,label=ENTER
-dtoverlay=gpio-key,gpio=16,keycode=168,label=REW
-dtoverlay=gpio-key,gpio=26,keycode=208,label=FF
-```
-
-168 and 208 are `KEY_REWIND` and `KEY_FASTFORWARD` — the *held* meaning, since one
-pin carries one keycode and the tap meaning is a userspace interpretation. 128 is
-`KEY_STOP`, standing in for CUE because Linux has no cue keycode; the button's
-three behaviours are all userspace interpretation of one keycode.
-`KEY_PREVIOUSSONG` (165) and `KEY_NEXTSONG` (163) exist if the two meanings are
-ever split onto separate buttons. **Read all of these off `input-event-codes.h` on
-the actual image** rather than trusting the numbers here — the same caution as the
-overlay parameter names above.
-
-Standard Linux input codes, so `/dev/input` events read as what they mean.
-Decode encoders and debounce buttons **in the kernel**, never by polling from
-userspace — polling quantises jog velocity to the poll interval and drops steps.
+**Phase A** wants a labelled GPIO breakout to a breadboard; the printed names are what
+stop the miscount. **Phase C** wants a **screw-terminal breakout** on a 40-pin IDC
+ribbon, mounted away from J4 rather than stacked on it — the same absence of a latch
+that makes a knocked USB connector plausible applies to internal wiring. Only about
+ten of the forty pins are used. Use **stranded** wire anywhere it flexes; solid wire
+work-hardens and breaks.
 
 ## Output
 
-Use the **RCA coax** output, not TOSLink: the datasheet itself warns that not all
-DACs manage 96/192 kHz optically. 75 ohm output impedance, so use 75 ohm cable.
+Use the **RCA coax** output, not TOSLink: the datasheet warns that not all DACs manage
+96/192 kHz optically. 75 ohm out, so use 75 ohm cable. The output is
+**transformer-coupled**, which is what makes the isolation ground jumper meaningful.
+An optional **BNC** is electrically better — a true 75 ohm connector where RCA is not
+impedance-matched at all — but depends on the DAC's input, which is almost always RCA.
 
-The output is **transformer-coupled** — the datasheet lists an output isolation
-transformer — which is good practice and is also what makes the isolation ground
-jumper above meaningful.
-
-There is also an **optional BNC connector**. Electrically it is the better choice:
-BNC is a true 75 ohm connector where RCA is not impedance-matched at all. Whether
-it is worth fitting depends entirely on the DAC's input, which is almost always
-RCA.
-
-Do not fit the Digi2 Pro's optional DSP — it would break bit-perfect. Do not fit
-the IsolatorPi III's DoP decoder daughter board — the source is PCM, and it would
-put DSD signals onto the non-isolated GPIO where the controls live.
-
-Because the DoP board is not fitted, **leave J8 at its factory default** — the
-manual (§J) says to touch J8 only when a DoP decoder is installed.
+Do not fit the Digi2 Pro's optional DSP: it would break bit-perfect. Do not fit the
+isolator's DoP decoder: the source is PCM, and it would put DSD onto the non-isolated
+GPIO where the controls live. Because it is not fitted, **leave J8 at its factory
+default** — §J says to touch J8 only when a DoP decoder is installed.
 
 ## Interfaces and limits
 
-- S/PDIF: 44.1-192 kHz, 24 bit max. The WM8804 driver actually advertises 32 and
-  64 kHz as well, and both are exact integer divisions of the 48 kHz crystal, but
-  they are below the board's stated interface floor and out of scope regardless.
-- The isolator IC is a **Chipanalog CA-IS376x** — the board photo reads
-  `CA-IS3760HW` (exact digits worth re-checking on the board). This is the part
-  needed to answer the power-on-order half of [#7](https://github.com/tamatebox/deck-pi/issues/7): what its outputs do
-  when one side is unpowered is a datasheet fact, not something to reason about.
-- Crystals are **22.5792 MHz** (44.1 family) and **24.576 MHz** (48 family). Not
-  printed in the datasheet; derived from the driver's own arithmetic, which sets
-  MCLK to `Fs x 128` above 96 kHz — exactly those two figures at 176.4 and 192 kHz.
-- Output format is **S24_LE**; `S32_LE` is not available. See
-  `implementation.md`.
-- Isolator: 150 MHz, 768 kHz I2S / DSD512 — no bandwidth concern at any rate here
-- Digi2 Pro has no volume or tone control by design; it passes what the
-  application sends
+- S/PDIF: **44.1-192 kHz, 24 bit max.** The driver also advertises 32 and 64 kHz, both
+  exact divisions of the 48 kHz crystal, but they are below the board's stated floor
+  and out of scope regardless. Output format is **S24_LE**; `S32_LE` is not available.
+- Crystals are **22.5792 MHz** and **24.576 MHz** — not printed in the datasheet,
+  derived from the driver setting MCLK to `Fs x 128` above 96 kHz.
+- The isolator IC is a **Chipanalog CA-IS376x** (photo reads `CA-IS3760HW`, worth
+  re-checking on the board). Its `H`/`L` suffix sets the fail-safe output state when
+  one side is unpowered, which is what settles power-on order —
+  [#7](https://github.com/tamatebox/deck-pi/issues/7).
+- Isolator bandwidth is 150 MHz / 768 kHz I2S, so no concern at any rate here. The
+  Digi2 Pro has no volume or tone control by design.
 
-## Sources
+## Unverified against the physical boards
 
-Primary documents for the two off-the-shelf boards. Every hardware fact above
-should be traceable to one of these; where it is not, the text says so.
+**A pass-through GPIO header** —
+[#13](https://github.com/tamatebox/deck-pi/issues/13). The datasheet's connector list
+has none, which argued for a terminating HAT, but the board photo shows structure at
+the 40-pin position on the *top* face that could be solder tails or a stacking header.
+A side-on view settles it. What is at stake is convenience, not capability: with one,
+phases A and B merge and **browse and play can run together before the isolator
+arrives** — the control-thread-to-callback path under real audio load, and redraw
+timing while audio runs. Without one, nothing is blocked.
 
-- **IsolatorPi III User's Guide** (Ian Canada, 2024) —
-  <https://github.com/iancanada/DocumentDownload/tree/master/IsolatorPi>
-  ([direct PDF](https://raw.githubusercontent.com/iancanada/DocumentDownload/master/IsolatorPi/IsolatorPiIIIUsersManual.pdf)).
-  §E connectors and J6 pinout, §F jumpers (J12/J13 master-slave, J8 DoP), §H LEDs,
-  §J application notes. Same directory has `isolatorpiiii.dxf`, the board outline —
-  useful for the enclosure — and **`IsolatorPiIII.jpg`**, a 1620x1080 board photo
-  readable enough to settle silkscreen questions. It is the source of J1's screw
-  terminal, the `CA-IS376x` isolator marking, and the J12/J13 `SLAVE`/`MASTER`
-  labels. Board is 65 x 65.5 mm.
-- **Raspberry Pi 3 Model B+ product brief** (Raspberry Pi Ltd, published
-  2025-10) —
-  <https://datasheets.raspberrypi.com/rpi3/raspberry-pi-3-b-plus-product-brief.pdf>
-  Specification and input-power table, operating temperature, case warnings.
-- **Frequency management and thermal control** —
-  <https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#frequency-management-and-thermal-control>
-  and `temp_soft_limit` / `core_freq_fixed` under
-  <https://www.raspberrypi.com/documentation/computers/config_txt.html#overclocking-options>.
-  Source of the 60 C soft limit and the 4.8 V figure. Docs source is
-  <https://github.com/raspberrypi/documentation> if the rendered pages are hard
-  to quote.
-- **HiFiBerry Digi2 Pro datasheet** (last updated 2022-10-17) —
-  <https://www.hifiberry.com/docs/data-sheets/datasheet-digi2-pro/>
-  · index: <https://www.hifiberry.com/docs/>
-- **Pioneer CDJ-350 operating instructions** (389414-01U) —
-  <https://imagescdn.juno.co.uk/manual/389414-01U.pdf>
-  p.17-18 is the reference for CUE and for FF/REW: Setting Cue, Back Cue, Cue Point
-  Sampler, auto cue, and the SEARCH / TRACK SEARCH split. The right comparison for a
-  five-button single player, where a CDJ-3000X is not.
-- **Digi2 Pro board photo** —
-  <https://www.hifiberry.com/wp-content/uploads/2021/02/board-parts.jpg>
-  1200x1200 and readable. Source of the `JP1` designator beside the output
-  transformer, `P3` for the 5 V input, the `P4` BNC footprint, `U1` as the WM8804,
-  and the board printing its own `dtoverlay=hifiberry-digi-pro` line. Marked
-  "HW 2.1".
-- **WM8804 datasheet** (Wolfson, now Cirrus Logic; v4.5) —
-  <https://statics.cirrus.com/pubs/proDatasheet/WM8804_v4.5.pdf>
-  Table 5, "Control Interface Timing - 2-Wire Serial Control Mode", is the authority
-  for the **400 kHz** I2C ceiling: SCLK frequency max 400 kHz, `tSCY` min 2500 ns —
-  exactly 1/400 kHz, so the table is self-consistent. Cirrus's own CDN, Cirrus having
-  acquired Wolfson, so this is the vendor. Mouser's copy of the same file sits behind
-  bot protection and returns HTML instead of the PDF.
-- **CA-IS376x datasheet** (Chipanalog) —
-  <https://e.chipanalog.com/Public/Uploads/uploadfile/files/20240611/CAIS376xdatasheetVersion1.06en.pdf>
-  Six-channel digital isolator. The `H`/`L` suffix sets the fail-safe output state
-  when a side is unpowered, which is what settles power-on order.
-- **GPIO usage of HiFiBerry boards** —
-  <https://www.hifiberry.com/docs/hardware/gpio-usage-of-hifiberry-boards/>
-  The authority for which pins the Digi2 Pro claims: GPIO 2/3, 5, 6 and **18-21**.
-  Also the source of the 3.3 V current limit and the warning against adding I2C
-  slaves. Read the per-board sections carefully — the Digi+ and the Digi+ Pro /
-  Digi2 Pro reserve *different* pins, and the EEPROM line says "pins 27 and 28",
-  meaning physical pins, not GPIOs.
-- **Raspberry Pi GPIO pinout** — <https://pinout.xyz/>
-  The source of the header map's physical layout, and of the two-column convention
-  it is drawn in. The layout is common to every 40-pin Pi, so it is not 3B+
-  specific — but it is a *recalled-shaped* fact of exactly the kind this project
-  gets wrong, so **confirm it on the image rather than against this table**:
-  `pinout` ships with gpiozero on Raspberry Pi OS and prints the actual board's
-  header, for the actual board, as ASCII. One command, and it is the machine's own
-  answer instead of a document's.
-
-Ian Canada's manuals are also mirrored on third-party manual-aggregator sites.
-**Do not cite those** — one of them transcribes the J12/J13 table backwards.
-
-### Unverified against the physical boards
-
-One left, plus one that costs nothing either way.
-
-**Resolved, from a legible scan of §F:** the J12/J13 values. The table agrees with
-all six worked examples — master is J13 shorted, J12 open — so the manual is
-self-consistent and the apparent contradiction was a bad reading of the silkscreen
-from an oblique photo. See the assembly checklist.
-
-1. **A pass-through GPIO header — reopened by the photo.**
-   [#13](https://github.com/tamatebox/deck-pi/issues/13). The datasheet's
-   "Connectors and Jumpers" section enumerates DSP connector, 5 V power supply,
-   TOSLink, RCA, isolation ground jumper and optional BNC, with no pass-through,
-   which argued for a terminating HAT. But the board photo shows structure at the
-   40-pin position on the *top* face that could be either solder tails or a stacking
-   header. A side-on view or the board itself settles it.
-
-   What is at stake is convenience, not capability. With a pass-through, phases A
-   and B merge: no HAT swapping, and — more usefully — **browse and play can run
-   together before the isolator arrives.** That is the one thing neither phase covers
-   alone: the control-thread-to-callback path under real audio load, redraw timing
-   while audio runs, and the display sharing I2C with the WM8804. That last one is
-   currently deferred to C, and a pass-through would surface it earlier *and in a
-   harsher form*, because without the isolator there is no bus split and the
-   pull-ups really do parallel — HiFiBerry's own caution in its pure state. Finding
-   that early is worth more than finding it tidily.
-
-   Without one, nothing is blocked. Swap the HAT between A and B, or buy a GPIO
-   splitter (another unsupported interposer, and the isolator is coming anyway), or
-   let C do the integration. Not worth chasing — but if the header turns out to be
-   there, use it.
-3. **The Digi2 Pro's `JP1`, the "isolation ground jumper".**
-   [#5](https://github.com/tamatebox/deck-pi/issues/5). Two circumstantial
-   lines make the identification safe: the datasheet's connector list carries an
-   "isolation ground jumper", and the board photo shows `JP1` immediately beside the
-   output isolation transformer. What it *does* is still undocumented.
-
-   The transformer narrows it, though. Its marking reads **Pulse `T6074NL`**, which
-   is the **electrostatically shielded** variant of a 1:1 digital-audio transformer —
-   225 uH, 1500 Vrms. An electrostatic shield is a conductor between primary and
-   secondary with its own terminal, and it does nothing at all unless grounded. So
-   the likeliest function of a jumper sitting right next to it is:
-
-   > **grounding the transformer's electrostatic shield, or not.**
-
-   That would make it a noise-rejection option, not a grounding-topology one — and
-   it would mean **[#7](https://github.com/tamatebox/deck-pi/issues/7)'s grounding question does not depend on `JP1`
-   after all.** An earlier version of this file claimed it did, on the assumption
-   that `JP1` bonded the *output connector's* ground and shield to board ground.
-   That reading is not ruled out; the name reads both ways, since grounding a shield
-   improves the isolation while bonding the output ground would defeat it.
-
-   **A continuity check settles it — no vendor query needed.** With a meter on the
-   bare board:
+**The Digi2 Pro's `JP1`** —
+[#5](https://github.com/tamatebox/deck-pi/issues/5). The datasheet lists an "isolation
+ground jumper" and the photo shows `JP1` beside the output transformer, so the
+identification is safe; what it *does* is undocumented. The transformer narrows it:
+its marking reads **Pulse `T6074NL`**, the **electrostatically shielded** variant, and
+a shield does nothing unless grounded — so the likeliest function is grounding the
+shield or not, making it a noise option rather than a grounding-topology one. That
+reading is not certain; the name reads both ways. **A continuity check settles it, no
+vendor query needed:**
 
    | `JP1`'s pins connect to | Reading |
    |---|---|
    | the transformer's middle pin and board ground | grounds the electrostatic shield |
    | the **RCA shell** and board ground | bonds the output ground |
 
-   The advice that the clean supply's secondary should float rests on the second
-   case. So this belongs to [#7](https://github.com/tamatebox/deck-pi/issues/7), not to a list of loose ends.
+The advice that the clean supply's secondary should float rests on the second case, so
+this belongs to [#7](https://github.com/tamatebox/deck-pi/issues/7).
 
-**Resolved without the boards:** "does the Digi2 Pro actually drive GPIO 5/6?"
-used to be a third item here. The overlay names the pins and the machine driver
-switches them, so it was answered by reading `hifiberry-digi-pro-overlay.dts` and
-`rpi-wm8804-soundcard.c` — see the assembly checklist and `implementation.md`.
+Two resolved without the boards, kept because both were once listed here. The J12/J13
+values came from a legible scan of §F, the earlier refusal having rested on an oblique
+photo of the silkscreen. And "does the Digi2 Pro actually drive GPIO 5/6?" was answered
+by reading `hifiberry-digi-pro-overlay.dts` and `rpi-wm8804-soundcard.c`. **Worth
+generalising:** a question about a *driver's* behaviour is usually answerable from
+kernel source right now, even when a question about the *board* needs the board.
 
-Worth generalising: a question about a *driver's* behaviour is usually answerable
-from kernel source right now, even when a question about the *board* needs the
-board. The two boards' own jumpers and connectors are the genuinely physical
-part.
+## Sources
+
+Every hardware fact above should be traceable to one of these; where it is not, the
+text says so.
+
+- **IsolatorPi III User's Guide** (Ian Canada, 2024) —
+  <https://github.com/iancanada/DocumentDownload/tree/master/IsolatorPi>
+  ([PDF](https://raw.githubusercontent.com/iancanada/DocumentDownload/master/IsolatorPi/IsolatorPiIIIUsersManual.pdf)).
+  §E connectors and J6, §F jumpers, §H LEDs, §J application notes. Same directory has
+  `isolatorpiiii.dxf` (board outline, useful for the enclosure) and
+  **`IsolatorPiIII.jpg`**, a 1620x1080 photo readable enough to settle silkscreen
+  questions — the source of J1's screw terminal, the `CA-IS376x` marking and the
+  `SLAVE`/`MASTER` labels. Board is 65 x 65.5 mm. **Ian's manuals are mirrored on
+  manual-aggregator sites; do not cite those** — one transcribes the J12/J13 table
+  backwards.
+- **Raspberry Pi 3B+ product brief** —
+  <https://datasheets.raspberrypi.com/rpi3/raspberry-pi-3-b-plus-product-brief.pdf>
+  Specification, input-power table, operating temperature, case warnings.
+- **Frequency management and thermal control** —
+  <https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#frequency-management-and-thermal-control>
+  with `temp_soft_limit` under
+  <https://www.raspberrypi.com/documentation/computers/config_txt.html#overclocking-options>.
+  Source of the 60 C soft limit and the 4.8 V figure.
+- **HiFiBerry Digi2 Pro datasheet** —
+  <https://www.hifiberry.com/docs/data-sheets/datasheet-digi2-pro/>
+- **GPIO usage of HiFiBerry boards** —
+  <https://www.hifiberry.com/docs/hardware/gpio-usage-of-hifiberry-boards/>
+  The authority for which pins the Digi2 Pro claims (2/3, 5, 6, **18-21**), the 3.3 V
+  current limit and the I2C-slave warning. Read the per-board sections carefully — the
+  Digi+ and the Digi2 Pro reserve *different* pins, and "pins 27 and 28" means
+  physical pins.
+- **Digi2 Pro board photo** —
+  <https://www.hifiberry.com/wp-content/uploads/2021/02/board-parts.jpg>
+  Source of `JP1` beside the output transformer, `P3` for 5 V in, the `P4` BNC
+  footprint, and the board printing its own overlay line. Marked "HW 2.1".
+- **WM8804 datasheet** (v4.5) — <https://statics.cirrus.com/pubs/proDatasheet/WM8804_v4.5.pdf>
+  Table 5 is the authority for the **400 kHz** I2C ceiling (`tSCY` min 2500 ns, which
+  is exactly 1/400 kHz, so the table is self-consistent). Cirrus's own CDN.
+- **CA-IS376x datasheet** (Chipanalog) —
+  <https://e.chipanalog.com/Public/Uploads/uploadfile/files/20240611/CAIS376xdatasheetVersion1.06en.pdf>
+- **Device Tree overlay README** (`raspberrypi/linux`, `rpi-6.12.y`) —
+  <https://raw.githubusercontent.com/raspberrypi/linux/rpi-6.12.y/arch/arm/boot/dts/overlays/README>
+  What each overlay claims and what its parameters release. Source of `spi0-1cs`'s
+  `cs1_pin` default of GPIO 7 and `no_miso` freeing GPIO 9 — the two pins the
+  zero-spare tally depends on. Also where to check `gpio-key` and `rotary-encoder`
+  parameters before writing them into `config.txt`.
+- **Raspberry Pi GPIO pinout** — <https://pinout.xyz/> — the header map's layout and
+  the two-column convention. Common to every 40-pin Pi, but a *recalled-shaped* fact,
+  so **confirm with `pinout` on the board** rather than against this table.
+- **Pioneer CDJ-350 operating instructions** (389414-01U) —
+  <https://imagescdn.juno.co.uk/manual/389414-01U.pdf> — p.17-18 for CUE and FF/REW.
+  Used by `controls.md`.
+- **Bourns PTA series datasheet** — <https://www.bourns.com/docs/product-datasheets/pta.pdf>
+  Cited for a *market* fact, not a part: the centre detent is one digit of the
+  ordering code, and travel tops out at 60 mm.

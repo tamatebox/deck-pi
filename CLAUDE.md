@@ -56,9 +56,10 @@ and `docs/README.md` says why.
 
 | | |
 |---|---|
-| `docs/hardware.md` | Boards, jumpers, power, the 40-pin header map, assembly and bring-up. **Any pin, jumper or connector question.** |
+| `docs/hardware.md` | Boards, jumpers, power, the 40-pin header map, how many of what, assembly and bring-up. **Any pin, jumper, connector or part-count question.** |
+| `docs/controls.md` | What pressing each control *does*, transcribed from the CDJ-350 manual and marked where the deck departs. **Any question about what a button means.** |
 | `docs/architecture.md` | Format scope, the ring and window, transport, threading, v2. **The design; should be stable.** |
-| `docs/implementation.md` | ALSA calls, libsndfile FFI, realtime setup, mount, dependencies — and *What reads as handled and is not*, the checklist for this project's recurring defect. **What to type, and what fails silently.** |
+| `docs/implementation.md` | ALSA calls, libsndfile FFI, realtime setup, mount, `config.txt` and the overlays, dependencies — and *What reads as handled and is not*, the checklist for this project's recurring defect. **What to type, and what fails silently.** |
 | `docs/decisions.md` | Why each settled decision went the way it did, and the log of the ones that were **reversed** — whose superseded reasoning has no other home. **Before changing a design choice.** |
 | `README.md` | Status, what is built, how to run the suite. |
 | [issues](https://github.com/tamatebox/deck-pi/issues) | Every open question, and the analysis behind it. |

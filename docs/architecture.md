@@ -1,180 +1,62 @@
 # Architecture
 
+The design. `decisions.md` has why each choice went the way it did; this file has
+the shape that resulted.
+
 ## The one idea
 
 **The boundary that matters is the deadline, not the machine.** The audio callback
-reads locked RAM and nothing else. Everything that touches a file, a header, a
-byte order or a sample width happens on a thread that is allowed to block.
+reads locked RAM and nothing else; everything that touches a file, a header, a byte
+order or a sample width runs on a thread allowed to block.
 
-Draw that line correctly and the work is cheap wherever it runs. Uncompressed PCM
-has nothing expensive in it: a byte swap is one ARM instruction, unpacking 24-bit
-to 32-bit is a few more, and neither is a decoder. What was never affordable was
-doing them *under a deadline*.
-
-That is what makes bit-perfect playback and a 1.2 GHz A53 compatible. (The 3B+ is
-specified at 1.4 GHz, but its soft temperature limit drops it to 1.2 GHz at 60 C,
-so 1.2 GHz is the sustained figure everything here is sized against — see
-`hardware.md`.)
-
-An earlier version of this document drew the line between the Pi and a preparing
-machine, and normalised every file offline into headerless raw PCM. That bought
-nothing — see `decisions.md`, which records why it was dropped.
+Uncompressed PCM has nothing expensive in it — a byte swap is one ARM instruction,
+unpacking 24-bit to 32-bit is a few more, and neither is a decoder. What was never
+affordable was doing them *under a deadline*. That is what makes bit-perfect
+playback and a sustained 1.2 GHz A53 compatible.
 
 ## Library
 
-**The USB stick is the library.** It is prepared on another machine, carried, and
-plugged in; the deck reads it and never writes it. One stick at a time — the first
-block device found — mounted **read-only**, as either **exFAT or HFS+**, the two
-filesystems a Mac writes natively that also have mature in-tree Linux drivers. A
-journaled HFS+ volume is forced read-only by the driver anyway, which is the same
-policy from the other direction. There is no import step and no database: the folder tree is the index.
-
-The Pi holds no library of its own. Its SD card carries the OS and the state the
-deck itself creates (see Cue points below).
+**The USB stick is the library** — prepared elsewhere, mounted read-only, never
+written, the folder tree as the index. No import step, no database. The Pi's SD card
+holds the OS and the state the deck creates: cues, keyed by volume UUID plus
+relative path. The stick is content; the Pi owns what it made.
 
 ### What plays
-
-Exactly what the DDC can send, and nothing else:
 
 | | |
 |---|---|
 | Container | WAV, AIFF, AIFF-C, **RF64, Wave64** |
 | Sample rate | 44.1 / 88.2 / 176.4 and 48 / 96 / 192 kHz |
 | Bit depth | **int16 and int24 only** |
-| Combinations | all **6 x 2 = 12** of them, with no preferred subset |
-| Channels | stereo (mono is duplicated to both — lossless) |
+| Combinations | all **6 x 2 = 12**, no preferred subset |
+| Channels | stereo (mono duplicated to both — lossless) |
 
-`hardware.md` states the interface limit as 44.1-192 kHz, 24 bit max. The software
-scope is that limit, so there is no second rule to remember: if the Digi2 Pro can
-send it, the deck plays it.
+If the Digi2 Pro can send it, the deck plays it. There is no second rule.
 
-### What does not, and why it is always known in advance
+### What does not
 
 | Rejected | Reason |
 |---|---|
-| 32-bit int or float | Above the 24-bit output ceiling. Converting float also needs a clipping or scaling decision, and scaling would be a gain stage |
-| 8-bit | Below int16; also unsigned by convention, an extra path for nothing |
-| Rates outside 44.1-192 kHz (32 kHz, 22.05 kHz) | Outside the interface limit |
-| Compressed — MP3, FLAC, AAC | A decoder would have to run on the Pi |
-| DSD — `.dsf`, `.dff` | No DoP decoder board is fitted, deliberately (`hardware.md`) |
+| 32-bit int or float | Above the 24-bit ceiling; float also needs a clipping or scaling decision, and scaling would be a gain stage |
+| 8-bit | Below int16, and unsigned by convention |
+| 32 kHz, 22.05 kHz | Outside the interface limit |
+| MP3, FLAC, AAC | A decoder would run on the Pi |
+| DSD | No DoP board is fitted, deliberately |
 
-**Every one of these is decidable from the header alone**, so the browser reads
-the header of the highlighted row and can refuse *before* PLAY is pressed. Nothing
-in this list can surprise you mid-set.
+**Every one is decidable from the header alone**, so the browser refuses on
+*highlight* rather than on PLAY, and nothing here can surprise you mid-set.
 
-### What the DAC accepts is not our problem
-
-S/PDIF is unidirectional. The Digi2 Pro sends whatever rate it was given and does
-not know what is downstream; a DAC that cannot lock to it goes silent, and nothing
-comes back, so the software **cannot detect this, ever**.
-
-That is accepted rather than engineered around. If it does not play, it does not
-play. The display already shows the rate and depth in use, so silence next to a
-visible "192 kHz" is as much diagnosis as exists or is needed, and where the
-downstream is unknown the answer is not to carry rates you cannot guarantee —
-converting when building the stick, like everything else the deck refuses.
-
-A configurable "my DAC does up to N kHz" ceiling was proposed here twice and
-dropped both times. The deck cannot tell which DAC is attached, so it would be a
-claim rather than a fact, and a stale claim asserts a capability that is not there
-while sounding certain. Not worth a setting for a failure that is this legible.
-
-Anything on this list that is wanted is converted on the preparing machine, where
-there is no deadline and the lossy decisions can be made deliberately. Same
-argument as the downconversion note below.
-
-### The three problems, and where they go now
-
-Reading WAV and AIFF directly means three problems. None of them requires an
-import step; all three require only that they happen off the realtime thread.
-
-- **AIFF is big-endian**, and ARM is not, so every sample needs a byte swap.
-  AIFF-C's `sowt` is the exception — little-endian — so it cannot even be decided
-  by container type. → `rev16` / `rev32`, one instruction, in the window thread.
-- **24-bit samples are 3 bytes**, so indexing means assembling each sample from
-  its bytes rather than reading an array. → unpacked into the int32 ring, in the
-  window thread.
-- **RIFF and AIFF chunk sizes are 32-bit**, capping a file at 4 GB — and many
-  implementations treat the field as signed, so 2 GB is the compatible ceiling.
-  → unchanged, and it binds. See Track length ceiling. RF64 and Wave64 lift it.
-
-**libsndfile does all of this, in the window thread.** It already handles
-big-endian AIFF, `sowt`, 24-bit unpacking, the 80-bit IEEE extended-precision
-sample rate in the AIFF COMM chunk, and RF64. It **must not appear in the audio
-callback** — it buffers, allocates and locks — but the window thread has no
-deadline, so none of that binds there.
-
-It is bound by a **hand-written FFI**, not a binding crate — see
-`implementation.md`.
-
-### Cue points
-
-Imported cues do not exist: the stick is read-only and nothing prepares it with
-metadata. Cues are punched on the deck and stored **on the Pi's SD card**, keyed
-by the volume's UUID plus the file's relative path. The UUID comes from `blkid` or
-the udev environment, not from inside the mount — neither filesystem exposes its
-serial through a file API.
-
-The stick is content; the Pi owns state it created. One consequence to accept:
-cues would not travel between two decks, if a second is ever built, because they
-are two machines.
-
-Cues are a mixing tool for dance material and the primary way to navigate *inside*
-a long piece — both, since the stick carries both. Either way cue regions are
-pre-locked (see Playback).
-
-### Do not upsample
-
-Native rate is kept per track. Converting a 44.1 kHz source to 96 kHz gains
-nothing audible, costs 2.2x the space on the stick, costs 2.2x the CPU in v2, and
-makes bit-perfect output impossible for that track. If a 192 kHz source is
-inconvenient, downconvert it when preparing the stick, with a high-quality SRC —
-off the deck there is no time limit, so nothing is lost.
-
-This is the general escape hatch. Anything the deck refuses — 32-bit float, a
-compressed file, an out-of-range rate — is converted the same way, in the same
-place, for the same reason.
-
-**With existing tools, and not by anything in this project.** `sox` and `ffmpeg`
-already do all of it, and both can be built against libsoxr — which grew out of
-SoX's own resampler and is the same library v2 will use on the deck. So an offline
-downconvert and an on-deck one are the same code, which is a better guarantee than
-a bespoke converter would be. Preparing a stick is a workflow step, not a
-component: it runs on another machine, shares no code with the deck, and the deck
-cannot tell how a file was made.
-
-### Storage
-
-Sources are played as they are, so 24-bit stays packed at 3 bytes per sample —
-these are file sizes, not the 1.33x-inflated int32 figures an import step would
-have produced. A stereo frame is 4 bytes at int16 and 6 at int24, so the rate is
-just `sample rate x frame bytes`.
-
-| | int16 GB/h | int24 GB/h | 256 GB holds (16 / 24) |
-|---|---|---|---|
-| 44.1 kHz | 0.64 | 0.95 | 403 h / 269 h |
-| 48 kHz | 0.69 | 1.04 | 371 h / 247 h |
-| 88.2 kHz | 1.27 | 1.91 | 202 h / 134 h |
-| 96 kHz | 1.38 | 2.07 | 185 h / 123 h |
-| 176.4 kHz | 2.54 | 3.81 | 101 h / 67 h |
-| 192 kHz | 2.77 | 4.15 | 93 h / 62 h |
-
-Capacity is not a constraint at any of these for a stick that fits in a pocket.
-
-Bus contention is not one either. The audio path is I2S, not USB, so the stick has
-the Pi 3B+'s single USB 2.0 bus effectively to itself: the only other device on it
-is Ethernet, and operation is network-independent — the cable can be out during a
-set. Sustained read during playback is 1.15 MB/s at the very worst (192/24), which
-any stick delivers.
+Anything wanted is converted when preparing the stick — `sox` or `ffmpeg`, both
+buildable against libsoxr, which is the same library v2 uses on the deck. Off the
+deck there is no deadline and the lossy choices are deliberate.
 
 ### Track length ceiling
 
-Not RAM — RAM cost is constant in track length (see Playback). The limit is the
-**container**: RIFF and AIFF chunk sizes are 32-bit.
+Not RAM, which is constant in track length. The limit is the **container**: RIFF and
+AIFF chunk sizes are 32-bit, and many implementations treat the field as signed, so
+2 GiB is the compatible ceiling.
 
-At the 2 GiB ceiling:
-
-| | int16 | int24 |
+| at 2 GiB | int16 | int24 |
 |---|---|---|
 | 44.1 kHz | 3 h 23 m | 2 h 15 m |
 | 48 kHz | 3 h 06 m | 2 h 04 m |
@@ -183,407 +65,209 @@ At the 2 GiB ceiling:
 | 176.4 kHz | 51 m | 34 m |
 | 192 kHz | 47 m | 31 m |
 
-4 GiB is exactly double each figure, but 2 GiB is the one that matters: many
-implementations treat the size field as signed. The risk sits with whatever **wrote** the file, not with reading
-it — a tool that runs past 2 GiB into a plain WAV can emit a wrapped size field,
-and the file then plays and stops early with nothing to indicate why. The browser
-should treat an implausible declared length as suspect.
+**RF64 and Wave64 lift it entirely.** The risk sits with whatever *wrote* the file:
+a tool running past 2 GiB into a plain WAV can emit a wrapped size field, and the
+file then plays and stops early with nothing to indicate why — so the browser should
+treat an implausible declared length as suspect.
 
-**RF64 and Wave64 lift the ceiling entirely** (64-bit sizes), and libsndfile reads
-them in the window thread at no extra cost. Long-form work above 1 hour at 96/24,
-or above half an hour at 192/24, needs one of those containers.
+Neither capacity nor bus contention constrains anything: 256 GB holds 62 hours at
+the very worst (192/24), the audio path is I2S so the stick has the single USB 2.0
+bus effectively to itself, and sustained read peaks at 1.15 MB/s.
 
 ## Playback
 
 **The window thread reads through libsndfile into a locked int32 ring around the
 playhead. The audio callback reads the ring and nothing else.**
 
-Samples land in the ring in the **output's own layout**: `S24_LE`, meaning the
-24-bit value right-aligned in a 32-bit word. `sf_readf_int` hands back a
-left-justified int32 — int16 shifted left 16, int24 left 8 — so filling the ring
-is that value shifted right 8. One buffer format, one code path in the callback,
-no branch on source depth, and nothing for the callback to convert.
+Samples land in the ring in the output's own `S24_LE` layout — `sf_readf_int`'s
+left-justified value shifted right 8 — so the callback has one format, one path, no
+branch on source depth and nothing to convert. Every step is a pure shift, so the
+chain is lossless. **The shift belongs in the window thread**: it could legally go in
+either, but moving work off the deadline is the whole organising idea.
 
-Every step is a pure shift, so the whole chain is lossless: an int24 source
-returns as `value << 8` and comes back to itself; an int16 source returns as
-`value << 16` and lands in the top 16 bits of the 24-bit field with zeros below,
-which is the standard promotion.
+**The window is sized in bytes**, `min(60 s, N MiB)`. Time alone would swing RAM 4x
+across the supported rates; a byte cap holds it flat and degrades window length
+instead. There is no bit-depth axis, the ring being int32 whatever the source was.
+So **RAM cost is constant in both track length and sample rate** — the first
+decouples length from the Pi's 1 GB, the second lets an unexpected hi-res file play
+with a shorter window instead of failing. N is not chosen
+([#9](https://github.com/tamatebox/deck-pi/issues/9)); at 64 MiB the window runs
+±60 s at 48 kHz down to ±21 s at 192 kHz.
 
-**The shift belongs in the window thread, not the callback.** It could legally go
-in either — a shift allocates nothing and locks nothing — but the window thread
-has no deadline, and moving work off the deadline is the whole organising idea.
+**The two window halves are relative to the direction of travel**, not to increasing
+frame number. An append-only ring accumulates for free only on the side the playhead
+has passed, and a forward-only refill gave a *descending* playhead a window laid out
+entirely ahead of it: 12 relocations, **0 of 12 periods served**, measured. Direction
+comes from successive playhead values, so nothing new is plumbed, and an explicit
+seek clears it. Measured after: 12 of 12. One cost stays — relocating discards the
+window and a descending playhead's next input arrives last, so the callback asks for
+it once per relocation before it is there. Reverse playback is *served*, not gapless.
 
-`S24_LE` is not a choice; it is the only useful format both drivers offer. See
-`implementation.md`.
+Pulling the stick behaves like a CDJ, for the same reason: what is already resident
+keeps playing. The grace period is the forward half of the window — bounded rather
+than guaranteed — and the window thread is where the failure surfaces, having no
+deadline.
 
-The float read path normalises to [-1.0, 1.0] instead, and `SFC_SET_SCALE_*` only
-affects float-integer conversion. Neither is reachable: sources are int16 or int24
-and we call the integer entry point. Excluding 32-bit is what keeps it that way.
+**Position is float64.** A float32 accumulator's 24-bit mantissa reaches spacing 1.0
+past 2^23 samples, ~190 s at 44.1 kHz, after which the fraction is gone and
+interpolation quietly stops working — audible as the back half of a track degrading,
+with nothing pointing at the cause.
 
-The thread keeps the window filled ahead of and behind the playhead; cue regions
-are pre-locked so a cold seek does not stall. The callback does no syscall, takes
-no lock, allocates nothing, and — because the ring is locked RAM rather than a
-file mapping — **cannot fault**.
+**Output rate follows the source**, set when the track loads. All six rates belong to
+the 44.1 or 48 kHz family, so crossing families **switches oscillators** via the
+GPIO 5/6 lines `hardware.md` reserves — the driver does that from `hw_params` and the
+application only ever sets a rate. Staying within a family costs nothing: the machine
+driver returns early when the rate is unchanged.
 
-### Size the window in bytes
+**v1 is unconditionally bit-perfect.** No pitch and no jog means no second mode, and
+every supported conversion is a pure shift. FF and REW do not break it either: they
+are a **silent seek**, position advancing with no audio produced, so there is never a
+moment when something other than the source reaches the DAC.
 
-`min(60 s, N MiB)`. Time alone would make RAM swing 4x across the supported rates;
-a byte cap holds it flat and degrades the window length instead. Shown at
-N = 64 MiB, which is illustrative — the value is not yet chosen,
-[#9](https://github.com/tamatebox/deck-pi/issues/9):
+Four ALSA requirements, because it converts silently when asked wrongly: **`hw:`
+only** (`default` mixes, `plughw` resamples), **the exact rate, never the nearest**
+(the convenience call succeeds at a different rate and reports nothing), **no
+software volume**, and note that **a card with a volume control scales even on
+`hw:`** — which the Digi2 Pro avoids by having none at all. The calls and flags are
+in `implementation.md`.
 
-Note there is **no bit-depth axis here.** The ring is int32 whatever the source
-was, so the window is a function of sample rate alone — one fewer thing to reason
-about, and another reason the uniform ring earns its slightly larger footprint for
-int16 material.
-
-| | Ring fill rate | Window at 64 MiB |
-|---|---|---|
-| 44.1 kHz | 353 kB/s | ±60 s |
-| 48 kHz | 384 kB/s | ±60 s |
-| 88.2 kHz | 706 kB/s | ±47 s |
-| 96 kHz | 768 kB/s | ±43 s |
-| 176.4 kHz | 1.41 MB/s | ±23 s |
-| 192 kHz | 1.54 MB/s | ±21 s |
-
-A three-hour file costs the same as a three-minute one. **RAM cost is constant in
-both track length and sample rate** — the first is what decouples length from the
-Pi 3B+'s 1 GB, the second is what lets an unexpected hi-res file play with a
-shorter window instead of failing. Pick N from jog feel in v2; v1 only ever reads
-forward, so even ±21 s is generous there.
-
-### Why a ring and not mmap
-
-An earlier version mapped the file and mlocked a window of *file pages*, so the
-callback could index the mapping directly. That works only when the file is
-already in the target format. With a byte swap and a 24-bit unpack in the path a
-RAM buffer is needed anyway, which removes mmap's whole advantage — and dropping
-mmap pays three times over:
-
-- **A stick pulled mid-playback cannot fault the callback.** Touching a mapping
-  whose device is gone raises SIGBUS, and it would have raised it inside the audio
-  thread. There are no file-backed pages in the callback's path now.
-- **No 32-bit address-space ceiling.** A three-hour 192/24 file is ~16 GB and
-  cannot be mapped in a 32-bit userspace at all. Reads with 64-bit offsets work
-  either way, so the OS bit width stops being a design input.
-- **RF64 and Wave64 come free**, because libsndfile is doing the reading.
-
-Jog is unaffected: the ring is RAM, so reads inside it are free in either
-direction, and scrubbing past its edge means an `sf_seek` and a refill — exactly
-what a page fault would have cost.
-
-**The filling policy is direction-aware, and it had to be made so.** Reads inside the
-window are free in either direction, but the fill step used to relocate to the
-playhead and only ever append *forward*, which gave a **descending** playhead a
-window laid out entirely ahead of where it was going: measured at 12 relocations
-over 12 periods with **0 periods served**. Backwards playback consumes input *below*
-the position, which a forward-only refill never provides.
-
-So the two window halves are defined **relative to the direction of travel** rather
-than to increasing frame number, and the direction is inferred from successive
-playhead values — no new plumbing, and an explicit seek clears it, because a cue
-jump backwards is a discontinuity rather than motion. Descending, the fill restarts
-*below* the playhead. Measured after the change: 12 of 12 periods served, and the
-relocations amortise once the window is larger than the descent — 1 relocation over
-the same 12 periods at 16k frames against 12 at 1k.
-
-**One cost does not go away, and it is the append-only ring's.** Relocating discards
-the window, and a descending playhead's next input sits at the *top* of the span
-about to be read, so it arrives last: the callback asks for it once per relocation
-before it is there. Reading is around two orders of magnitude faster than playback
-consumes, so that is one missed period rather than a stall, and it amortises over
-the coast distance. Removing it entirely would mean letting the ring accept writes
-below `start` — a prepending ring, which is a larger change than the policy and is
-not made. Being explicit: reverse playback is *served*, not gapless.
-
-Pulling the stick therefore behaves like a CDJ, and for the same reason: what is
-already resident keeps playing. The grace period is the forward half of the
-window, so it is bounded rather than guaranteed, and the window thread is where
-the failure surfaces — it has no deadline and may fail.
-
-### Position
-
-**float64.** A float32 accumulator has a 24-bit mantissa; past 2^23 samples the
-spacing between representable values reaches 1.0. At 44.1 kHz that is ~190 s,
-after which the fractional position is gone and interpolation quietly stops
-working — audible as the back half of a track degrading, with nothing pointing at
-the cause.
-
-### Sample rate
-
-The output rate follows the source, set when the track loads. Reopening the ALSA
-device per track is free here: the other deck is a physically separate Pi with its
-own DDC, so nothing audible is interrupted. The Digi2 Pro's two oscillators cover
-the 44.1 and 48 kHz families exactly, with no fractional division either way.
-
-All six supported rates are one of those two families, so **crossing families
-switches oscillators** — via GPIO 5/6, the lines `hardware.md` reserves. The
-driver does this itself from `hw_params`; the application only sets a rate and
-never touches those pins. It is normal operation, not an edge case: a 44.1 kHz
-file followed by a 48 kHz one exercises it.
-
-Staying within a rate costs nothing at all — the machine driver returns early when
-the requested rate equals the current one, so a run of same-rate tracks never
-reconfigures.
-
-A rate outside 44.1-192 kHz cannot be played at all, in v1 or v2. It is visible in
-the header, so the browser refuses on highlight rather than on PLAY — see Library.
-
-### v1 is unconditionally bit-perfect
-
-With no pitch and no jog, there is no second mode. `hw:` device, matched rate, no
-resampling, no gain — the source samples reach the DAC untouched.
-
-*Unconditionally* is now literal, and excluding 32-bit is what buys it. Every
-supported conversion is a pure shift into the ring's `S24_LE` layout, so there is
-no depth, rate or container in scope that costs a bit. A 32-bit float source would
-have needed a clipping or scaling decision, and scaling would be a gain stage —
-which is why it is out of scope rather than handled.
-
-FF and REW do not break this either: they are a **silent seek** in v1. Position
-advances while the button is held and the display follows, but no audio is
-produced, so there is never a moment where something other than the source
-reaches the DAC. An audible scan would need the resampler, and that is v2, where
-it becomes `r = 4` on the rate variable and the unity button already owns the mode
-question.
-
-### Holding it on the ALSA side
-
-Four requirements, because ALSA converts silently when asked wrongly:
-**`hw:` device only** — `default` converts and usually mixes, `plughw` resamples;
-**the exact rate, never the nearest** — the convenience call succeeds at a
-different rate and reports nothing; **no software volume**, ALSA's own included;
-and **a card with a volume control scales the stream even on `hw:`**, which the
-Digi2 Pro avoids by having none at all.
-
-The calls, the flags, and why the null test alone is not enough are in
-`implementation.md`.
+**What the DAC accepts is out of scope.** S/PDIF is unidirectional, so a DAC that
+cannot lock goes silent and the software can never detect it. The display shows the
+rate in use, which is as much diagnosis as exists.
 
 ## v2: pitch and jog
 
-### One rate variable
+**One rate variable.** Pitch is `r` near 1.0, jog is `r` varying per block and going
+negative, pause is `r = 0`. One resampling read path carries all three.
 
-Pitch and jog are the same mechanism — read at rate `r`. Pitch is `r` near 1.0,
-jog is `r` varying per block and going negative, pause is `r = 0`. Write one
-resampling read path and all three ride on it.
+**libsoxr, not libsamplerate.** The latter's three sinc converters are all 97 dB
+SNR — roughly 16 bits — which would cap the whole system at 16-bit quality whenever
+pitch is off centre. libsoxr specifies quality in bits, has **`SOXR_VR`** as a
+first-class variable-rate mode, and slews rate changes through
+`soxr_set_io_ratio`'s third argument, which is the fix for zipper noise at block
+boundaries. `passband_end`, `stopband_begin` and `phase_response` are directly
+settable, so bandwidth trades against CPU continuously.
 
-### libsoxr, not libsamplerate
+**`soxr_create` must be given a ratio range that brackets the one the deck uses.**
+Declare 1:1 and set ratios outside it and `soxr_process` reallocates on the audio
+thread, unboundedly, while the audio stays correct and `assert_no_alloc` stays
+silent — it cannot see libsoxr at all. The range is ±10% and known in advance, so
+this is a line of setup code, and a load-bearing one; `implementation.md` carries it
+with the measurements.
 
-libsamplerate's three sinc converters all have **97 dB SNR** — they differ only in
-bandwidth (97 / 90 / 80 % of Nyquist). 97 dB is roughly 16 bits, so it would cap
-the entire system at 16-bit quality whenever pitch is off centre, which is most of
-the time in use. That defeats the hi-res sources and the whole output chain.
+**The CPU budget is an estimate, not a measurement.** Benchmark precision x output
+rate x pitch range on the actual Pi, **thermally soaked**
+([#3](https://github.com/tamatebox/deck-pi/issues/3)) — a cold run measures a clock
+the board will not hold for a set. Downsampling costs extra: a 192 kHz source at
+96 kHz output is about twice a 96 kHz source at the same output.
 
-libsoxr specifies quality in bits — `SOXR_HQ` is 20-bit, `SOXR_VHQ` 28-bit — and
-carries two things this application specifically needs:
-
-- **`SOXR_VR`**, a first-class variable-rate mode. Varispeed is a supported
-  feature, not a ratio being poked every block.
-- **`soxr_set_io_ratio(soxr, ratio, slew_len)`** — the third argument slews the
-  rate change across a span, which is the fix for zipper noise at block
-  boundaries. It does not have to be hand-written.
-
-### One configuration requirement comes with it
-
-`SOXR_VR` is allocation-free in steady state **provided `soxr_create` is given a
-ratio range that brackets the range the deck will use.** Declare 1:1 and then set
-ratios outside it and `soxr_process` reallocates on the audio thread, unboundedly,
-while the audio stays correct and `assert_no_alloc` stays silent. The pitch range is
-±10% and known before the resampler is built, so this is a line of setup code rather
-than a design constraint — but it is a load-bearing one, and it lives in
-`implementation.md` with the measurements.
-
-An earlier version of this section said measurement had *inverted* the bullet above —
-that the first-class variable-rate mode was the allocating one and only a fixed ratio
-was clean. That was a misconfigured probe, not a property of libsoxr. The bullet
-stands as written. `decisions.md` records the reversal, and one idea it prompted is
-worth keeping even though its problem evaporated: **moving the resampler off the audio
-thread would buy the invariant's letter and not its purpose**, because the producer
-would then owe every period on time, so the deadline relocates rather than
-disappears — onto a thread where `assert_no_alloc` is equally blind to libsoxr.
-
-
-`passband_end`, `stopband_begin` and `phase_response` are all directly settable,
-so bandwidth trades against CPU continuously rather than in three steps.
-
-**The CPU budget is an estimate, not a measurement.** Extrapolating from A53 IPC,
-libsamplerate's SINC_BEST looked like ~2x realtime at 44.1 kHz output and under
-1x at 96 kHz. libsoxr should do better, but *should* is not a number. Benchmark
-precision x output rate x pitch range on the actual Pi before the board choice is
-locked, because the answer decides whether the 3B+ survives into v2.
-
-**Benchmark it thermally soaked.** The 3B+ soft-throttles from 1.4 to 1.2 GHz at
-60 C, so a run started from cold measures a clock the board will not hold for a
-set. Let it reach steady state first, or pin the clock, and record which. A cold
-benchmark would pass a board that fails twenty minutes in.
-
-Note that downsampling costs extra: a 192 kHz source at 96 kHz output costs about
-twice a 96 kHz source at 96 kHz. Source rate matters as much as output rate.
-
-### The unity button
-
-Bit-perfect output stops being automatic once a resampler exists, and it cannot be
-recovered by feeding the resampler a ratio of 1.0: real resamplers put the
-transition band below Nyquist, so the kernel is not a pure sinc and its integer
-taps are not a unit impulse. Passthrough has to be an explicit path.
-
-Make it an explicit **button**, not a deadband on the fader. A deadband means
-inferring the mode from an analog value every block, which drags in threshold
-width, hysteresis, and flip-flopping as the fader drifts across the boundary. A
-button puts the transition at one known instant.
-
-- Keep the resampler running always — the CPU budget is sized for the worst case
-  anyway — and switch only which output is selected. Its delay line stays warm, so
-  either direction can hand over immediately.
-- Cross-fade the handover over 5-10 ms. Switching cold clicks: the filter holds
-  input samples in its delay line and has its own group delay.
-- Touching the jog suspends unity. Restoring it requires **snapping the read
-  position to the nearest integer sample** — after scrubbing it is fractional, and
-  bit-perfect is not possible from a fractional offset. The jump is under one
-  sample (23 us at 44.1 kHz) and inaudible, but it must be deliberate. The null
-  test catches its absence.
-- Either gate the button on the fader being near centre, or use pickup on
-  release. A pitch jump on disengage is worse than either.
-
-Unity requires output rate to equal source rate, and no gain anywhere. Both hold
-in this design — a software fader would end it.
+**Unity is a button, not a deadband on the fader.** Bit-perfect cannot be recovered
+by feeding the resampler a ratio of 1.0 — real resamplers put the transition band
+below Nyquist, so the kernel is not a pure sinc and its taps are not a unit impulse.
+Passthrough has to be an explicit path, and a deadband would mean inferring the mode
+from an analog value every block, dragging in threshold width, hysteresis and
+flip-flopping; a button puts the transition at one known instant. Keep the resampler
+running always and switch which output is selected, so its delay line stays warm.
+Cross-fade the handover over 5-10 ms, because switching cold clicks. Touching the jog
+suspends unity, and restoring it **snaps the read position to the nearest integer
+sample** — bit-perfect is impossible from a fractional offset. Under one sample,
+inaudible, and the null test catches its absence.
 
 ## Shape of the program
 
-The primary division is not by phase — insert, browse, play — but by **deadline**,
-because that is the only boundary that constrains structure. Exactly one thing has
-one:
+The primary division is by **deadline**, not by phase — insert, browse, play
+describe what the user does, not where the seams are. Exactly one thing has a
+deadline: the audio callback.
 
 | | |
 |---|---|
-| Under a deadline | the audio callback, which reads the ring and nothing else |
-| Not | everything else |
-
-Phases describe what the user does, not where the seams are. Of the three, the
-first is not code at all, two concerns cut across all of them, and one sits
-underneath.
-
-| | |
-|---|---|
-| **Mount** — *not ours* | A udev rule and `systemd-mount`. Zero application code; see `implementation.md`. |
-| **Media watch** | The fixed mount point appearing and disappearing, the volume UUID from blkid, and three states: nothing mounted, mounted but unreadable, browsable. Built: `src/media.rs`. Presence is `st_dev` against the parent's rather than existence — see `decisions.md`, which records why the simpler test was not enough. Polled, not event-driven: the check is two `stat` calls and nothing here has a deadline, where `inotify` would report directory creation rather than mounting, which is exactly the distinction that had to be made. |
-| **File layer** | The libsndfile FFI. Opens one file's header, and reads frames into the ring's layout. **Shared** — the browser needs it for length, rate and the four rejections; playback needs it to fill the ring. |
-| **Browser** | Walks the folder tree, caches headers by path, holds the selection. The model. Built: `src/browser.rs`. **The row count is a parameter, not a constant** — `view(height)` takes the viewport height, because the panel candidates in [#2](https://github.com/tamatebox/deck-pi/issues/2) give two to twelve browsable rows and the module must not decide that. `view` is the only thing that opens a file *speculatively* — `enter` opens on a cache miss, because playing a header nobody vetted is not an option — which is what makes "reads ride the render" structural rather than a habit. |
-| **Display** | `embedded-graphics` over one panel driver, the redraw budget, the idle timers. The view. **Cuts across** — it renders browsing and transport alike. |
-| **Input** | `/dev/input`, the kernel-decoded encoder, tap-versus-hold for FF and REW. **Cuts across**, and deliberately knows nothing about either: it emits standard keycodes, and which GPIO produces which is a line in `config.txt`. Built: `src/input.rs`, which reads the struct directly rather than through the `evdev` crate. **Three disciplines, not one** — see `decisions.md`; a uniform tap-or-hold rule would stop PLAY working when held. It emits gestures and interprets none of them. |
-| **Transport** | The rate variable, the float64 position, and what PLAY / CUE / FF / REW mean. Writes the lock-free slot; never touches the ring. **Three of its names are confusable, and not by accident.** The CDJ's vocabulary describes what the player is doing to the *music*; the state machine's describes what the transport is doing to the *position*. They do not line up, so where a word appears in both it usually means different things — which is why each of these has to be read off the code rather than guessed from the name. **`Stopped` is not the DJ's "stopped".** A CDJ has no STOP function, because returning to the cue point and pausing *is* stopping (`decisions.md`), so that gesture lands on `Paused` — and so does a track reaching its end, which is still loaded and sitting on its last frame. `Stopped` also **refuses every control**, which is a rule the state machine only needed once the state became reachable: PLAY on an empty deck would otherwise set rate 1.0 and read as playing over a deck holding nothing. `Stopped` means *nothing loaded*, and it **was a one-way door** for as long as nothing unloaded a track: a fresh `Transport` is constructed `Stopped` and no transition led back. `Transport::track_unloaded` is that transition, and `app::track::Playing::unload` calls it after joining the audio thread — so the pair of answers to "is anything loaded" now moves together, which is why the lifecycle owns both objects at once. **Note which check missed it**, because that is the transferable part. Grepping for construction sites — the cheap sweep `implementation.md` recommends for a declared-but-unreached mechanism — reported this one healthy, because the constructor is right there. What catches a one-way door is asking which transitions lead *into* each state, which is a different sweep. **`is_silent` is not "paused".** Paused is rate 0 and nothing moves; silent is the position moving with the output muted, which is exactly what makes v1's FF/REW a *seek* rather than a scan. A display that read "no audio" as "paused" would show a still deck through a seek, and v2 clears the flag to make the same seek audible without a second read mode. **`headers_read` counts opens performed, not cache entries held.** The cache is never cleared, so entries accumulate across every folder visited, and a re-read of an uncached failure is precisely the activity the counter exists to measure. Two of the three were got wrong in this repository before they were named here: a test asserted `Stopped` for a track that had ended, and the accessor itself returned the cache's length. **And the shape is not confined to the transport.** `Miss::Overrun` was once documented as "a different *fault* to report", and two consumers duly treated a period of silence as a fault — one panicking, one ending playback. A name or a gloss that imports the wrong vocabulary is a defect in the same sense a wrong line is, because it is what the next reader reasons from; `implementation.md`'s *What reads as handled and is not* and `src/ring.rs`'s `Miss` carry that one, and it is not repeated here. |
+| **Mount** — *not ours* | A udev rule and `systemd-mount`. Zero application code; `implementation.md`. |
+| **Media watch** | `src/media.rs`. The fixed mount point, the volume UUID, three states. **Polled, not event-driven**: the check is two `stat` calls, and `inotify` would report directory creation rather than mounting — exactly the distinction that had to be made. |
+| **File layer** | The hand-written libsndfile FFI. Opens a header, reads frames into the ring's layout. **Shared** by the browser and playback. |
+| **Browser** | `src/browser.rs`. Walks the tree, caches headers by path, holds the selection. **The row count is a parameter, not a constant** — `view(height)` takes the viewport, the panel candidates giving two to twelve rows. `view` is the only thing that opens a file *speculatively*, which is what makes "reads ride the render" structural rather than a habit. |
+| **Display** | `embedded-graphics` over one panel driver, the redraw budget, the idle timers. **Cuts across** browsing and transport alike. |
+| **Input** | `src/input.rs`. Reads `/dev/input` directly, decodes tap-versus-hold for FF and REW, and **knows nothing about GPIO** — it emits keycodes, and which pin makes which is a line in `config.txt`. It emits gestures and interprets none of them. |
+| **Transport** | The rate variable, the float64 position, and what each control means. Writes the lock-free slot; never touches the ring. **Three of its names are confusable and the code is the authority, not the name** — the CDJ's vocabulary describes what the player does to the *music*, the state machine's what it does to the *position*, and they do not line up. `Stopped` means *nothing loaded* and refuses every control; `is_silent` is the position moving with output muted, which is what makes v1's FF/REW a seek; `headers_read` counts opens performed, not entries held. Two of the three were got wrong here before they were named. |
 | **Audio engine** | The window thread that fills the ring, the callback that drains it, the per-track ALSA setup. |
-| **Dispatch** | What a press means, and which of the two "current" things it acts on. Built: `src/app/deck.rs`. **ENTER acts on the selection, FF/REW on the playing track** — one button's two gestures must not address two objects, which is the same reason the browse encoder was not overloaded for seeking. It is also where the cue store is finally written, through `Loaded` rather than from a path, and where the window is told that a Back Cue is a *jump* rather than motion. Its predecessor was a hand-written copy of itself inside `tests/input_test.rs`, which could not have caught a divergence between the two. |
-| **Track lifecycle** | The window thread, the audio thread and the sink a track owns — created together, joined together. Built: `src/app/track.rs`, with the period loop in `src/app/audio.rs`. **Per *track*, not per *play*:** PAUSE, the end of the track and a Back Cue back into it all happen inside one run, so the device is not reopened and the ring is not refilled to resume. That rests on `decisions.md`'s FF/REW rule — a track change always contains a pause — so a load never lands inside audible playback; change that to load-and-play and this is what has to be revisited. Every drop happens on the control thread: the audio thread hands its deck back rather than freeing 64 MiB on the deadline, and dropping the handle shuts both threads down rather than leaking a thread that writes silence into a real device for ever. **And every *decision* happens there too** — the audio thread publishes the position and nothing else, so the pause at the end of a track is the control thread deriving it and calling `reached_end`, not the callback reaching over. The first version did reach over, which is why the rule is stated here as well as on the type. |
-| **Loaded** | The playing track's path and where it sits in its folder — the thing the browser, transport and engine each did *not* own. Built: `src/loaded.rs`, closing [#14](https://github.com/tamatebox/deck-pi/issues/14). **A tap acts on the playing track's folder position, not on the selection**, because FF/REW's *hold* already acts on the playing track and one button's two gestures must not address two objects — the same reason the browse encoder was not overloaded for seeking. Neighbours are re-derived through `browser::read_folder` rather than snapshotted: the medium is read-only so the folder cannot change, and sharing the walk is what stops the two orders drifting on the dotfile rule. `None` at a folder boundary, which is [#12](https://github.com/tamatebox/deck-pi/issues/12)'s answer — the caller does nothing, and doing nothing is stopping. It also owns the **cue key**, because that half is a correctness constraint rather than a preference: `CueStore` takes a path from its caller, the browser was the only holder of paths, and a cue set while browsing elsewhere landed on the browsed file, atomically and silently. |
-| **Cue store** | Cues on the SD card, keyed by volume UUID plus relative path. The only state the application persists. Built: `src/cue.rs`. The key is the path *relative* to the mount point and held as raw bytes, so a remount elsewhere keeps its cues and two undecodable names cannot collide. Writes through on every set, atomically. |
+| **Dispatch** | `src/app/deck.rs`. What a press means, and **which of the two "current" things it acts on: ENTER the selection, FF/REW the playing track.** One button's two gestures must not address two objects. |
+| **Track lifecycle** | `src/app/track.rs`, period loop in `src/app/audio.rs`. The window thread, audio thread and sink a track owns — created together, joined together. **Per *track*, not per *play*:** PAUSE, the end of a track and a Back Cue into it all happen inside one run, so the device is not reopened to resume. That rests on a track change always containing a pause. **Every decision happens on the control thread** — the audio thread publishes the position and nothing else. |
+| **Control loop** | `src/app/controls.rs`. Reads the events and produces the press. **`Deck::service` runs before the presses, not after**: the end of a track and the press that follows are discovered on the same turn, and applying first would let PLAY/PAUSE read a transport still claiming rate 1.0, take the pause branch, and vanish into a state that was about to change anyway. **A lost device node resets the decoder**, a `HoldStart` whose button no longer exists having nothing left to end it. The event source is a trait for the same reason the sink is. |
+| **Loaded** | `src/loaded.rs`. The playing track's path and folder position — what the browser, transport and engine each did *not* own. Neighbours are re-derived through `browser::read_folder` rather than snapshotted, which is what stops two orders drifting on the dotfile rule. `None` at a folder boundary, and doing nothing is stopping. It owns the **cue key**, because a cue set while browsing elsewhere landed on the browsed file, atomically and silently. |
+| **Cue store** | `src/cue.rs`. The only state the application persists. Key is the path *relative* to the mount and held as raw bytes, so a remount elsewhere keeps its cues and two undecodable names cannot collide. Writes through atomically on every set. |
 
-Threading below is a **different axis**, saying which of these run where and under
-what rules. A module is not a thread: the file layer is called from the window
-thread when filling the ring and from the browser when reading a header, and it
-has to be safe for both without either becoming the other's problem.
+A module is not a thread: the file layer is called from the window thread when
+filling the ring and from the browser when reading a header, and has to be safe for
+both without either becoming the other's problem.
 
 ## Threading
 
 - **Audio callback** — reads the locked int32 ring, resamples in v2. No malloc, no
-  lock, no I/O, and no page fault. Enforce from the first commit, while the load is
-  light enough to get away with breaking it.
+  lock, no I/O, no page fault.
 - **Window thread** — reads through libsndfile into the ring, converting endianness
-  and sample width on the way, and keeps it filled ahead of and behind the
-  playhead. Blocking, allocating and locking are all fine here; this is the thread
-  the deadline does not reach. Failures surface here too, a pulled stick included.
-- **Control thread** — reads `/dev/input`, converts events to velocity, writes to
-  a lock-free slot the callback reads. Same shape for buttons and for a jog, so
-  v2 substitutes rather than rewrites.
-- **UI and browser** — same process, same language. Walking the folder tree,
-  reading the highlighted row's header and drawing the display all have no
-  deadline. There is no IPC boundary and no second language to cross; PortAudio's
-  callback guidance lists "crossing language boundaries" as a hazard in its own
-  right.
+  and width on the way. Blocking, allocating and locking are all fine; this is the
+  thread the deadline does not reach, and where failures surface, a pulled stick
+  included.
+- **Control thread** — reads `/dev/input`, converts events to velocity, writes a
+  lock-free slot. Same shape for buttons and for a jog, so v2 substitutes rather
+  than rewrites.
+- **UI and browser** — same process, same language, no deadline. No IPC boundary and
+  no second language to cross; PortAudio's own guidance lists crossing language
+  boundaries as a hazard in its own right.
 
-Pin the audio thread and its IRQs to different cores from GPIO interrupt handling;
-the 3B+ has four cores and one deck to run.
+Pin the audio thread and its IRQs to different cores from GPIO interrupt handling —
+four cores, one deck. Target 5-10 ms output latency for v2 jog response:
+`threadirqs`, `SCHED_FIFO` in the 70-80 range, and a PREEMPT_RT kernel likely
+unnecessary.
 
-Target ~5-10 ms output latency for v2 jog response: 128-256 frame periods, 2-3
-periods, plus `threadirqs` and `SCHED_FIFO` in the 70-80 range. A PREEMPT_RT
-kernel is likely unnecessary.
-
-**Those two ranges do not combine freely, and the bottom of the rate range is
-where it binds.** The same frame count is more time at a lower rate:
+**The period choice is not free, and the bottom of the rate range is where it
+binds** — the same frame count is more time at a lower rate:
 
 | at 44.1 kHz | 2 periods | 3 periods |
 |---|---|---|
 | 128 frames | 5.8 ms | 8.7 ms |
 | 256 frames | **11.6 ms** | **17.4 ms** |
 
-So at 44.1 and 48 kHz only the 128-frame periods land inside the target; 256 frames
-is only free from 96 kHz upward. Read the range as "128 frames, and 256 becomes
-available at the higher rates", not as a free choice.
+So read it as "128 frames, and 256 becomes available from 96 kHz upward", not as a
+free choice.
 
 ## Display
 
-`embedded-graphics` gives one drawing API behind a `DrawTarget` trait, and drivers
-implementing it exist for every controller in play — ssd1306, ssd1309, ssd1322
-(including a 256x64 variant), ssd1327, ili9341, st7789 — with
-`linux-embedded-hal` putting them on the Pi's `/dev/i2c` and `/dev/spidev` rather
-than on a microcontroller's peripherals. So the display model is **not locked in
-by the UI code**: the device constructor is the only line that changes.
+`embedded-graphics` gives one drawing API behind a `DrawTarget` trait, with drivers
+for every controller in play and `linux-embedded-hal` putting them on `/dev/i2c` and
+`/dev/spidev`. **The panel model is not locked in by the UI code** — the device
+constructor is the only line that changes, and
+`embedded-graphics-simulator` runs the same code on a desktop, so geometries can be
+compared with real filenames before anything is bought. That reversibility is why
+the language choice went the way it did: `luma` gave Python the same property and C
+has no equivalent.
 
-That also means the panel can be evaluated before it is bought:
-`embedded-graphics-simulator` runs the same `DrawTarget` code on a desktop, so
-competing geometries can be compared with real filenames on screen. Earlier text
-here suggested prototyping on a cheap 0.96 in panel instead, which is worse on both
-counts — it misrepresents legibility by being finer-pitched than any candidate, and
-it costs money to do what the simulator does for nothing.
+**Update on state change, not on a timer** — not for noise, which the isolator
+settles, but for bus time. Frame bytes are `width x height x bpp / 8` and both
+factors bite. **The panel is on SPI** ([#2](https://github.com/tamatebox/deck-pi/issues/2)),
+where a 128x64 frame is 0.82 ms at 10 MHz, so the discipline below is good practice
+rather than load-bearing; it was sized against the same frame taking ~26 ms over a
+400 kHz I2C bus shared with the WM8804.
 
-This is the reversibility that keeps the panel choice open, and it is why the
-language choice went the way it did — `luma` gave Python the same property, and C
-has no equivalent at all.
-
-Update on state change, not on a timer. Not for noise — the isolator settles that
-— but for bus time: a full 128x64 frame is ~26 ms over I2C at 400 kHz, and the
-WM8804 shares that bus.
-
-**That figure is a mono 128x64 panel on I2C, and the whole discipline below is sized
-against it** — so it is a constraint on the panel choice rather than a consequence
-of it. Frame bytes are `width x height x bpp / 8`, and both factors bite: a
-128x128 4-bit panel is 8x the bytes, 184 ms, on a bus that carries 44.4 kB/s.
-
-**And the discipline is contingent on the bus.** On SPI the same frame is 0.82 ms at
-10 MHz, and the I2C segment would then carry only the WM8804 and — if the v2 ADC is
-also I2C — a two-byte read at 100 Hz, about 1% of the bus. The partial-update tick
-and the header-reads-ride-the-redraw-budget rule below would stay good practice but
-stop being load-bearing. Which bus the panel is on is
-[#2](https://github.com/tamatebox/deck-pi/issues/2), and it turns on the v2 ADC —
-[#1](https://github.com/tamatebox/deck-pi/issues/1).
-
-One qualification, because the rule as written is too strong: a position readout
-has to advance while a track plays, and that *is* a timer. Take it as **full
-redraws on state change, and a small position field on a slow tick** — once a
-second is plenty, and a partial update of a few characters costs a fraction of
-those 26 ms. It also means the idle timer below never fires mid-track, which is
-the wanted behaviour and should be deliberate rather than a side effect.
+One qualification, because the rule as written is too strong: a position readout has
+to advance while a track plays, and that *is* a timer. Take it as **full redraws on
+state change, and a small position field on a slow tick** — once a second is plenty.
+That also keeps the idle timer from firing mid-track, which should be deliberate
+rather than a side effect.
 
 Coalesce encoder events and redraw at most every 30-50 ms, or fast scrolling falls
-behind. **Header reads ride the same budget**: the browser opens the visible rows'
-files to show length, rate and depth and to mark the unplayable ones, so drive
-those reads from what is actually rendered rather than from each encoder event,
-and cache them by path. A fast spin then costs one open per redraw, not one per
-detent.
+behind. **Header reads ride the same budget**: drive them from what is actually
+rendered rather than from each encoder event, and cache by path, so a fast spin
+costs one open per redraw and not one per detent.
 
 ### If the panel is an OLED
 
-Dim after ~30 s idle and blank after a few minutes. The blank command also stops
-the charge pump, so burn-in and power are handled by one timer.
+Dim after ~30 s idle and blank after a few minutes; the blank command also stops the
+charge pump, so burn-in and power are one timer. **Gate it on the transport**, though:
+with a long track playing, "no input for a few minutes" is a *normal* state, and
+blanking then would hide the position readout exactly when it is being watched, in a
+dark room, during a set. Idle means nothing playing.
 
-**Gate that on the transport, though.** These timers were written for an idle
-appliance. With a long track playing, "no input for a few minutes" is a *normal*
-state, and blanking then would hide the position
-readout exactly when it is being watched — in a dark room, during a set. Idle
-means idle: nothing playing. While the transport is running, leave it up.
-
-**This applies only to the OLED candidates.** The panel has not been chosen,
-and one of its options is an ILI9341 TFT — backlit, with no burn-in and no charge
-pump, but with a backlight that wants its own idle timer instead. Nothing outside
-this subsection should assume which it is; several documents used to say "OLED"
-outright, which was deciding an open question by wording.
+**This applies only to the OLED candidates** — an ILI9341 TFT has no burn-in and no
+charge pump, but a backlight that wants its own timer instead. Nothing outside this
+subsection should assume which it is; several documents used to say "OLED" outright,
+which was deciding an open question by wording.

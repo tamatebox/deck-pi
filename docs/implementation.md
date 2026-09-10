@@ -610,7 +610,14 @@ The pins are; **these lines are not** — they are what to type, and every one o
 them fails silently when the spelling is wrong, which is this file's subject and
 not that one's.
 
-## Wireless
+**`hardware.md` owns the GPIO assignment and the lines below follow it.** The
+`gpio-key` lines name 23 as BACK, 26 as FF and 16 as REW, and so does its
+Assignment table; `src/input.rs`'s keycodes are a third copy. Change one and there
+are two more. The Rust pair is guarded by a bijection test and **nothing guards
+either against `config.txt`** — the durable fix is a single source all three are
+generated from, not this sentence.
+
+### Wireless
 
 Off. Ethernet is the only network path, so **confirm wired connectivity before
 disabling anything** — the web-free UI is local, but SSH is the only way in.
@@ -644,7 +651,7 @@ systemd-rfkill) and only commit to the overlays once measured. `config.txt` live
 on the FAT partition, so a mistake there is recoverable by reading the card on a
 Mac; a mistake in the ext4 rootfs is not.
 
-## config.txt
+### config.txt
 
 ```ini
 dtoverlay=hifiberry-digi-pro
