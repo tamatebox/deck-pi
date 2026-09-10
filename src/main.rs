@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use deck_pi::app::audio::Deck;
+use deck_pi::app::audio::{AtEnd, Deck};
 use deck_pi::engine::Engine;
 use deck_pi::file::{OpenError, Track};
 use deck_pi::browser::{Browser, Row, Verdict};
@@ -287,6 +287,9 @@ fn play<S: AudioSink>(
         reader,
         engine: Engine::new(info.frames),
         sink,
+        // One file, pulled through, then a report. The deck's setting is
+        // `Idle` and lives in `app::track`.
+        at_end: AtEnd::Stop,
     };
 
     // **No realtime setup from the bring-up CLI.** `--rt-check` is where that
@@ -295,6 +298,14 @@ fn play<S: AudioSink>(
     // can do nothing about.
     let stop = AtomicBool::new(false);
     let (deck, stopped, report) = deck_pi::app::audio::run(deck, &stop, &lost, None);
+
+    // **The control thread pauses the deck at the end, and here that is this
+    // thread** — `run` has returned, so nothing else is touching the
+    // transport. The audio loop deliberately does not do it; see
+    // `Transport::reached_end`.
+    if stopped == deck_pi::app::audio::Stopped::EndOfTrack {
+        transport.reached_end();
+    }
 
     let _ = tx.send(deck_pi::window::Command::Shutdown);
     let _ = thread.join();

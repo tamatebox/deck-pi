@@ -62,8 +62,18 @@ pub struct Engine {
 
 impl Engine {
     pub fn new(track_frames: u64) -> Self {
+        Engine::at(track_frames, 0.0)
+    }
+
+    /// Starting from `position` rather than from zero.
+    ///
+    /// The app loop builds the engine with the transport's own position, so
+    /// a load has **one** answer to "where does this start" instead of two
+    /// that happen to agree. `Transport::track_loaded` sets zero; this
+    /// follows it rather than restating it.
+    pub fn at(track_frames: u64, position: f64) -> Self {
         Engine {
-            position: 0.0,
+            position,
             track_frames,
         }
     }
@@ -81,9 +91,30 @@ impl Engine {
         debug_assert_eq!(out.len() % RING_CHANNELS, 0, "periods are whole frames");
         let frames = (out.len() / RING_CHANNELS) as u64;
 
-        // A queued seek is absolute and consumed exactly once.
-        if let Some(target) = t.take_seek() {
+        // A queued seek is absolute and consumed exactly once — **applied,
+        // published, and only then retired.** Clearing it first leaves an
+        // interval in which no seek is pending and `position` still reads
+        // the pre-seek value, and the control thread's end-of-track decision
+        // reads exactly that pair. See `Transport::peek_seek`.
+        //
+        // **No test can see this line's position, and that is worth knowing
+        // rather than discovering.** The publish is redundant with the one at
+        // the bottom of this function in every single-threaded sense, so
+        // moving it after the retire — or deleting it — leaves every
+        // observable end state identical and the whole suite green. It earns
+        // its keep only in the interleaving, where it is the store a control
+        // thread is guaranteed to have seen if it has seen the retire. A
+        // covering test would have to catch another thread inside a
+        // two-instruction window; the ring's fences, whose window is a whole
+        // period's copy, are detected 10-20% of the time. So this is argued
+        // from the release on `consumed_seek` and the acquire on
+        // `peek_seek`, not measured, and it is said out loud because the
+        // catalogue's rule is that an unfalsifiable claim is the kind this
+        // project gets wrong.
+        if let Some(target) = t.peek_seek() {
             self.position = target.min(self.track_frames) as f64;
+            t.publish_position(self.position);
+            t.consumed_seek(target);
         }
 
         // One reading of the pair the branch below depends on, not two

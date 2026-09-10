@@ -17,7 +17,7 @@ mod fixtures;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 
-use deck_pi::app::audio::{self, Deck, Stopped};
+use deck_pi::app::audio::{self, AtEnd, Deck, Stopped};
 use deck_pi::engine::Engine;
 use deck_pi::sink::CaptureSink;
 use deck_pi::transport::{State, Transport, RATE_PAUSED};
@@ -62,6 +62,7 @@ fn rig(tag: &str, frames: usize) -> (Rig, Deck<CaptureSink>) {
         reader,
         engine: Engine::new(info.frames),
         sink: CaptureSink::new(info.rate, PERIOD, frames + PERIOD),
+        at_end: AtEnd::Stop,
     };
     (
         Rig { scratch, frames: info.frames, lost, tx, thread, transport },
@@ -88,9 +89,19 @@ fn a_track_plays_out_and_leaves_the_deck_stopped() {
     assert!(report.peak > 0, "the fixture must contain audio");
     assert!(deck.sink.was_drained(), "the device is drained on the way out");
 
-    // **The loop tells the transport.** That wiring is the whole of what was
-    // missing when `reached_end` had a doc comment, a design-document sentence
-    // and no callers but its own tests.
+    // **The loop does not tell the transport, and that is the fix rather
+    // than the omission.** It reports; `Transport::reached_end` is a
+    // control-thread call, because the transport's control methods are
+    // read-modify-write across several atomics and are safe against each
+    // other only while one thread performs them. Calling it from here made a
+    // second writer and cost a lost PLAY after a Back Cue.
+    assert_eq!(
+        r.transport.state(),
+        State::Playing,
+        "the run ended; nothing on the audio side has decided anything"
+    );
+    // The caller is the control thread — here, this one.
+    r.transport.reached_end();
     assert_eq!(r.transport.rate(), RATE_PAUSED);
     assert_eq!(r.transport.state(), State::Paused);
 

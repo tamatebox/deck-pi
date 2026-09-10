@@ -34,6 +34,10 @@ use crate::transport::Transport;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stopped {
     /// The track played out. The transport has been told.
+    ///
+    /// **Only reachable under [`AtEnd::Stop`]**, which is the bring-up CLI's
+    /// setting. On the deck the thread stays up and the end of a track is not
+    /// the end of the run — see that type.
     EndOfTrack,
     /// The window thread reported a failure — a pulled stick, dominantly.
     /// What was resident played out first; that is the design, not a
@@ -57,6 +61,28 @@ pub struct Report {
     pub elapsed: Duration,
 }
 
+/// What the end of the track does to the run.
+///
+/// **The audio thread is per *track*, not per *play*, and this is where that
+/// distinction is spent.** `decisions.md` puts the thread, the window thread
+/// and the sink on a track's lifetime — "a track change always contains a
+/// pause, which is what lets the audio thread, window thread and sink be
+/// per-track and every drop happen off the deadline" — so PAUSE, the end of a
+/// track, and a Back Cue back into it are all things that happen *inside* one
+/// run. Tearing down at the end would mean the next PLAY had to reopen the
+/// ALSA device and refill 64 MiB, and it would mean a deck sitting at the end
+/// of a track could not be cued back into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtEnd {
+    /// End the run. `src/main.rs`'s answer: one file, pulled through, then a
+    /// report.
+    Stop,
+    /// Keep the device fed and the thread alive. **The deck's answer.** The
+    /// engine has already written silence into the period, so this costs one
+    /// write per period and nothing else.
+    Idle,
+}
+
 /// Everything the loop needs from outside itself.
 ///
 /// A struct rather than eight arguments because the audio thread takes
@@ -69,6 +95,7 @@ pub struct Deck<S: AudioSink> {
     pub reader: RingReader,
     pub engine: Engine,
     pub sink: S,
+    pub at_end: AtEnd,
 }
 
 /// Runs until the track ends, the medium goes, or `stop` is set.
@@ -126,9 +153,30 @@ pub fn run<S: AudioSink>(
                     }
                 }
             }
+            // Everything from here down is a period of silence, which the
+            // engine has already written into `period`. **None of them is a
+            // fault**, and three of them used to be: the arm below was a
+            // catch-all, so `Paused` and `Seeking` ended the run with
+            // `Unexpected`. Nothing noticed because the only caller was a
+            // bring-up CLI that plays one file and never touches a control —
+            // the shape `implementation.md` calls an unstated premise, here
+            // "the deck is always playing".
             Outcome::EndOfTrack => {
-                deck.transport.reached_end();
-                break Stopped::EndOfTrack;
+                // **This loop does not tell the transport.** It reports —
+                // `Engine::fill` has already published the position — and the
+                // control thread derives the end from it and calls
+                // `reached_end` itself. Writing control state from here makes
+                // a second writer of a type whose other methods are
+                // read-modify-write across several atomics, and it cost a
+                // lost PLAY after a Back Cue before it was moved. The
+                // reasoning is on `Transport::reached_end`; `AtEnd::Stop`'s
+                // caller does it after `run` returns, on its own thread.
+                if deck.at_end == AtEnd::Stop {
+                    break Stopped::EndOfTrack;
+                }
+                if let Err(e) = idle(&mut deck.sink, &period, starves, &mut report) {
+                    break e;
+                }
             }
             // Any miss is a period of silence and none is a fault — see
             // `Miss`. Matching the whole enum is deliberate: naming one
@@ -138,23 +186,69 @@ pub fn run<S: AudioSink>(
                 if medium_lost.load(Ordering::Relaxed) {
                     break Stopped::MediumLost;
                 }
-                if starves {
-                    // The sink says it runs dry, so hand it the silence the
-                    // engine already put in the buffer.
-                    let write = crate::no_alloc(|| deck.sink.write_period(&period));
-                    match write {
-                        Ok(()) | Err(SinkError::Underrun) => {}
-                        Err(e) => break Stopped::Unexpected(e.to_string()),
-                    }
-                } else {
-                    std::thread::yield_now();
+                if let Err(e) = idle(&mut deck.sink, &period, starves, &mut report) {
+                    break e;
                 }
             }
-            other => break Stopped::Unexpected(format!("{other:?}")),
+            // PAUSE, and FF/REW held. Ordinary operation: the deck is not
+            // producing audio and is not going anywhere.
+            Outcome::Paused | Outcome::Seeking => {
+                if let Err(e) = idle(&mut deck.sink, &period, starves, &mut report) {
+                    break e;
+                }
+            }
+            // **Deliberately still fatal.** v1 has no resampler, so there is
+            // nothing to serve this with, and the transport's seqlock is what
+            // makes it unreachable — see `Transport`'s publishing order,
+            // which measured 10.7M of 35.6M fills reporting it before the
+            // pair was published as one. A deck that stops loudly beats one
+            // that plays something it cannot audit.
+            Outcome::NeedsResampler { .. } => {
+                break Stopped::Unexpected(format!("{outcome:?}"))
+            }
         }
     };
 
     let _ = deck.sink.drain();
     report.elapsed = started.elapsed();
     (deck, why, report)
+}
+
+/// One period in which no audio was produced.
+///
+/// **A sink that does not pace must not be given `AtEnd::Idle` on a realtime
+/// thread.** The yield below is a spin, and the resting state of a loaded,
+/// paused deck is exactly this branch — so a non-pacing sink there would spin
+/// a `SCHED_FIFO` 75 thread on a pinned core for as long as nothing is
+/// playing. Every sink that reaches the deck blocks in `write_period`, which
+/// is what makes the spin a test-only cost today; that is a constraint on
+/// future sinks rather than an observation about this one.
+///
+/// Two sinks with opposite obligations, which is why
+/// [`AudioSink::starves_if_not_fed`] is on the trait rather than assumed here.
+/// A real device runs dry if it is not written to, so it gets the silence and
+/// the write is what paces the loop. A collector does not, and writing to it
+/// would record silence the deck never emitted — `null_test.rs` compares what
+/// the sink received against the source, so a padded capture is a failed null
+/// test rather than a slow one.
+fn idle<S: AudioSink>(
+    sink: &mut S,
+    silence: &[i32],
+    starves: bool,
+    report: &mut Report,
+) -> Result<(), Stopped> {
+    if !starves {
+        // Nothing to feed and nothing to wait on. Yielding rather than
+        // sleeping keeps the wake-up latency off the next real period.
+        std::thread::yield_now();
+        return Ok(());
+    }
+    match crate::no_alloc(|| sink.write_period(silence)) {
+        Ok(()) => Ok(()),
+        Err(SinkError::Underrun) => {
+            report.underruns += 1;
+            Ok(())
+        }
+        Err(e) => Err(Stopped::Unexpected(e.to_string())),
+    }
 }

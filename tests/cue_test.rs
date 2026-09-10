@@ -146,7 +146,7 @@ fn back_cue_returns_to_the_restored_point_rather_than_to_zero() {
 
     t.cue_down(); // Back Cue: return to the point and pause
     t.cue_up();
-    assert_eq!(t.take_seek(), Some(1_234_567));
+    assert_eq!(t.peek_seek(), Some(1_234_567));
     // `is_silent` is the FF/REW silent-seek flag, not "paused" — a
     // confusable pair, and the first version of this test used the wrong
     // one. Pausing is the rate going to zero.

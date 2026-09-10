@@ -62,20 +62,21 @@ pub enum State {
     /// stopping means (`decisions.md`), so that gesture and a track reaching
     /// its end both land on `Paused`, still loaded and sitting on a frame.
     ///
-    /// **A one-way door.** A fresh `Transport` really is `Stopped` — it is
-    /// the value the type is constructed with, and the test below asserts it
-    /// — but no `state.store` anywhere targets it. The machine can be in this
-    /// state and cannot get back to it.
+    /// **It was a one-way door and is not any more.**
+    /// [`Transport::track_unloaded`] stores it, `app::track::Playing::unload`
+    /// calls that after joining the audio thread, and `tests/app_track_test.rs`
+    /// asserts the round trip. Recorded because the history is the useful
+    /// part: the state was constructed and never stored for as long as
+    /// nothing *owned* "what is loaded"
+    /// ([#14](https://github.com/tamatebox/deck-pi/issues/14)), then for as
+    /// long as `Loaded::unload` existed with no app loop to call it. Both
+    /// halves read as finished from inside, and neither was.
     ///
-    /// That is not an oversight, and the reason has changed once already —
-    /// which is why it says what it is waiting for rather than just "later".
-    /// It was that nothing *unloaded* a track, because no module owned "what
-    /// is loaded" ([#14](https://github.com/tamatebox/deck-pi/issues/14)).
-    /// That has landed: `Loaded::unload` exists. What is missing now is
-    /// smaller and more specific — `unload` clears only its own field, and
-    /// the app loop that would call it and store `Stopped` here is not built.
-    /// A reader who greps for a writer and finds only the constructor has not
-    /// missed one.
+    /// **Note which check missed it, because that is the transferable part.**
+    /// Grepping for construction sites — `implementation.md`'s cheap sweep
+    /// for a declared-but-unreached mechanism — reports this state healthy,
+    /// since the constructor is right there in `Default`. What finds a
+    /// one-way door is asking which transitions lead *into* each state.
     Stopped = 0,
     Playing = 1,
     Paused = 2,
@@ -145,8 +146,9 @@ pub struct Transport {
     /// This is what makes FF and REW a *silent* seek in v1 without giving v1
     /// a second read mode. v2 clears it and the same seek becomes audible.
     silent: AtomicBool,
-    /// A one-shot absolute seek. `-1` means none; the callback swaps it out,
-    /// so a request is consumed exactly once.
+    /// A one-shot absolute seek. `-1` means none; the callback peeks it,
+    /// applies it, publishes the position, and only then retires it — see
+    /// [`Transport::peek_seek`] for why that order matters.
     seek_to: AtomicI64,
     /// Published by the callback for the display and the window thread.
     position: AtomicU64,
@@ -384,16 +386,48 @@ impl Transport {
 
     // ---- audio callback ----
 
-    /// Takes a pending seek, if any. Wait-free and consumes the request, so a
-    /// button press cannot be serviced twice.
+    /// A queued seek, **without** consuming it. Pair with
+    /// [`consumed_seek`](Self::consumed_seek).
+    ///
+    /// # Why this is two calls and not a swap
+    ///
+    /// It was a swap, and the split is what lets the callback **publish the
+    /// position it lands on before the request is cleared**. That ordering is
+    /// load-bearing for a control thread deciding anything about where the
+    /// deck is: with the clear first, there is an interval in which no seek is
+    /// pending *and* `position` still reads the pre-seek value, and any reader
+    /// that treats "no seek pending" as "the position is current" is wrong
+    /// inside it. It is a few instructions wide, and it was wide enough — the
+    /// end-of-track pause read exactly that pair and stopped a deck the
+    /// operator had just started. See [`reached_end`](Self::reached_end).
+    ///
+    /// Peek, apply, publish, then retire, and the interval does not exist: a
+    /// reader that sees no pending seek has necessarily seen the store that
+    /// came before the retire.
     #[inline]
-    pub fn take_seek(&self) -> Option<u64> {
-        let v = self.seek_to.swap(-1, Ordering::AcqRel);
+    pub fn peek_seek(&self) -> Option<u64> {
+        let v = self.seek_to.load(Ordering::Acquire);
         if v < 0 {
             None
         } else {
             Some(v as u64)
         }
+    }
+
+    /// Retires the request `target`, which the caller has peeked and applied.
+    ///
+    /// **A newer request that arrived meanwhile is left pending rather than
+    /// dropped.** It is then serviced on the next period — one period late,
+    /// 2.9 ms at 44.1 kHz with 128-frame periods, against losing a cue jump
+    /// outright, which is a button that did nothing.
+    #[inline]
+    pub fn consumed_seek(&self, target: u64) {
+        let _ = self.seek_to.compare_exchange(
+            target as i64,
+            -1,
+            Ordering::Release,
+            Ordering::Relaxed,
+        );
     }
 
     #[inline]
@@ -421,8 +455,28 @@ impl Transport {
     /// elsewhere is worse than a silence, and PLAY is right there."
     /// Auto-advance is a later addition if wanted, not an omission here.
     ///
-    /// **Whoever drives the playback loop must call this when the engine
-    /// returns `Outcome::EndOfTrack`, and it must be the control thread.**
+    /// **The control thread calls this, and only the control thread.**
+    ///
+    /// It is not a suggestion and it is not about tidiness. Every other
+    /// method here that changes control state does a read-modify-write across
+    /// more than one atomic — `cue_down` reads the rate and the position and
+    /// then decides which of three things to do — and those are safe against
+    /// each other only because one thread performs them. Calling this from
+    /// the audio thread makes a second writer, and then `reached_end` can
+    /// land inside `cue_down`: the preview latches while the pause it was
+    /// deciding against has already happened.
+    ///
+    /// **Stage 1 of the app loop called it from the audio thread**, and the
+    /// visible cost was one lost PLAY press after a Back Cue at the end of a
+    /// track, found by a test that timed out. The invisible cost was the
+    /// paragraph above. The end of the track is now *derived* by the control
+    /// thread from the position the callback publishes — `app::track::
+    /// Playing::service` — so the callback reports and never decides.
+    ///
+    /// **Whoever drives the playback loop must call this when the position
+    /// reaches the end**, or a deck that has played out reads `Playing` at
+    /// rate 1.0 for ever: a display saying "playing" over silence, and a PLAY
+    /// press that pauses.
     /// Nothing called it for a long time: the engine reported the outcome and
     /// touched the transport not at all, so at the end of a track the deck
     /// read `Playing` at rate 1.0 for ever — a display saying "playing" over
@@ -434,17 +488,112 @@ impl Transport {
     /// is when it already holds a `&Transport`. `fill` runs on the audio
     /// thread, and these stores would then race a control-thread `play()` or
     /// `begin_seek()` — the same split-store hazard the rest of this type is
-    /// careful about, introduced to save the caller a line.
+    /// careful about, introduced to save the caller a line. That was written
+    /// before the app loop existed and then contradicted by the first thing
+    /// that called it. Read it as a rule with a scar.
     pub fn reached_end(&self) {
+        // **A queued seek makes the report stale, and acting on it loses the
+        // operator's PLAY.** Back Cue at the end of a track followed by PLAY
+        // queues a seek and sets the rate; a report computed before those and
+        // acted on after them concludes, from the *old* position, that the
+        // deck should be paused — and pauses one the operator has just
+        // started. It sits at the cue point having been told to play, and in
+        // a venue that reads as a dead PLAY button after every Back Cue.
+        //
+        // The guard is exact **because this runs on the control thread**,
+        // which is the only writer of the state it checks and then changes;
+        // nothing can queue a seek between the two. On the audio thread it
+        // would only be narrow, which is where this started — see the
+        // paragraph above.
+        //
+        // It belongs here rather than in the caller for the reason `end_seek`
+        // guards itself: a pending seek means the position this conclusion
+        // rests on is about to be replaced, and the next caller cannot be
+        // expected to know that.
+        if self.peek_seek().is_some() {
+            return;
+        }
         self.publish_motion(RATE_PAUSED, false);
         self.previewing.store(false, Ordering::Relaxed);
         self.state.store(State::Paused as u8, Ordering::Relaxed);
+    }
+
+    /// A track has been loaded: **paused at frame zero, with `cue_point`
+    /// restored.**
+    ///
+    /// `decisions.md` settles the position — "Loading a track waits at frame
+    /// zero, not at its stored cue" — and names the cost, which is that the
+    /// first CUE press then takes the paused-and-not-at-cue branch and
+    /// overwrites the point the operator did not choose. That is
+    /// `cue_down` behaving as specified and is deliberately not special-cased
+    /// here: a mode that exists only just after a load is invisible in the
+    /// code and unlearnable at the panel.
+    ///
+    /// **Every field is reset, not only the two a load obviously touches.**
+    /// This type outlives the track — one `Transport` per deck, so the
+    /// display and the input dispatch hold one thing rather than re-reading a
+    /// pointer that changes under them — which means a field left alone is a
+    /// field carrying the *previous* track's value. A latched `seek_to` would
+    /// fire into the new track on its first period, and a latched
+    /// `previewing` would make the first CUE release stop a deck that was
+    /// never previewing.
+    ///
+    /// **The cue point is not clamped to the track here**, deliberately: the
+    /// engine clamps a seek request to `track_frames` when it consumes one,
+    /// so a stored cue past the end of a file that has since been replaced
+    /// lands on the last frame rather than off the end. Clamping in two
+    /// places would mean two answers to keep agreeing.
+    ///
+    /// Called with **no audio thread running** — `app::track::load` spawns it
+    /// after this returns, and `Playing::unload` joins it before
+    /// [`track_unloaded`](Self::track_unloaded) — which is why these are
+    /// plain stores with no ordering discipline beyond the motion pair's own.
+    pub fn track_loaded(&self, cue_point: u64) {
+        self.seek_to.store(-1, Ordering::Relaxed);
+        self.position.store(0.0f64.to_bits(), Ordering::Relaxed);
+        self.cue.store(cue_point, Ordering::Relaxed);
+        self.previewing.store(false, Ordering::Relaxed);
+        self.publish_motion(RATE_PAUSED, false);
+        self.state.store(State::Paused as u8, Ordering::Relaxed);
+    }
+
+    /// Nothing is loaded any more.
+    ///
+    /// **This is the transition into [`State::Stopped`], and until the app
+    /// loop existed there was none** — the state was constructed and never
+    /// stored, which `implementation.md` catalogues as a one-way door and
+    /// says is found by asking which transitions lead *into* each state
+    /// rather than by grepping for construction sites.
+    ///
+    /// The cue point goes with the track. It belongs to the file, not to the
+    /// deck, and `CueStore` is where it persists — leaving it here would mean
+    /// the next track loaded without a stored cue inherits this one's.
+    pub fn track_unloaded(&self) {
+        self.seek_to.store(-1, Ordering::Relaxed);
+        self.position.store(0.0f64.to_bits(), Ordering::Relaxed);
+        self.cue.store(0, Ordering::Relaxed);
+        self.previewing.store(false, Ordering::Relaxed);
+        self.publish_motion(RATE_PAUSED, false);
+        self.state.store(State::Stopped as u8, Ordering::Relaxed);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the callback does with a queued seek, minus applying it: peek,
+    /// then retire. The two-call protocol exists so the position can be
+    /// published in between — `peek_seek` says why — and these tests are
+    /// about cue and seek *semantics*, so they use this and the ordering has
+    /// its own test.
+    fn take(t: &Transport) -> Option<u64> {
+        let seek = t.peek_seek();
+        if let Some(frame) = seek {
+            t.consumed_seek(frame);
+        }
+        seek
+    }
 
     #[test]
     fn play_and_pause_are_the_rate_variable_and_nothing_else() {
@@ -496,20 +645,20 @@ mod tests {
     #[test]
     fn a_seek_request_is_consumed_exactly_once() {
         let t = Transport::new();
-        assert_eq!(t.take_seek(), None);
+        assert_eq!(take(&t), None);
         t.request_seek(12_345);
-        assert_eq!(t.take_seek(), Some(12_345));
-        assert_eq!(t.take_seek(), None, "a request must not be serviced twice");
+        assert_eq!(take(&t), Some(12_345));
+        assert_eq!(take(&t), None, "a request must not be serviced twice");
         // Frame 0 is a legitimate target and must not read as "no request".
         t.request_seek(0);
-        assert_eq!(t.take_seek(), Some(0));
+        assert_eq!(take(&t), Some(0));
 
         // And an absurd target must still arrive as *a* request rather than
         // colliding with the sentinel. `u64::MAX as i64` is -1, which is the
         // sentinel exactly; saturating instead keeps it visible so the engine
         // can clamp it to the track and report the end.
         t.request_seek(u64::MAX);
-        assert_eq!(t.take_seek(), Some(i64::MAX as u64));
+        assert_eq!(take(&t), Some(i64::MAX as u64));
     }
 
     #[test]
@@ -540,7 +689,7 @@ mod tests {
         t.cue_down();
         assert_eq!(t.cue_point(), 50_000);
         assert_eq!(t.rate(), RATE_PAUSED, "\"No sound is output at this time\"");
-        assert_eq!(t.take_seek(), None, "setting a point must not move the deck");
+        assert_eq!(take(&t), None, "setting a point must not move the deck");
         t.cue_up();
         assert_eq!(t.rate(), RATE_PAUSED, "release after setting must do nothing");
 
@@ -561,13 +710,13 @@ mod tests {
         t.cue_down();
         assert_eq!(t.rate(), RATE_PAUSED, "Back Cue pauses; it does not resume");
         assert_eq!(t.state(), State::Paused);
-        assert_eq!(t.take_seek(), Some(1_000), "returns to the cue point");
+        assert_eq!(take(&t), Some(1_000), "returns to the cue point");
         assert_eq!(t.cue_point(), 1_000, "Back Cue must not move the point");
 
         // And PLAY restarts from the point, not from where it was.
         t.play();
         assert_eq!(t.rate(), RATE_UNITY);
-        assert_eq!(t.take_seek(), None, "PLAY queues no seek of its own");
+        assert_eq!(take(&t), None, "PLAY queues no seek of its own");
     }
 
     #[test]
@@ -582,14 +731,14 @@ mod tests {
         t.cue_down();
         assert_eq!(t.rate(), RATE_UNITY, "plays while held");
         assert_eq!(t.state(), State::Playing);
-        assert_eq!(t.take_seek(), None, "already at the point; nothing to seek");
+        assert_eq!(take(&t), None, "already at the point; nothing to seek");
         assert_eq!(t.cue_point(), 4_410, "previewing must not re-set the point");
 
         // Pretend the callback advanced during the preview.
         t.publish_position(9_000.0);
         t.cue_up();
         assert_eq!(t.rate(), RATE_PAUSED, "release stops");
-        assert_eq!(t.take_seek(), Some(4_410), "and returns to the point");
+        assert_eq!(take(&t), Some(4_410), "and returns to the point");
     }
 
     #[test]
@@ -601,12 +750,12 @@ mod tests {
         t.publish_position(0.0);
         t.cue_down();
         t.cue_up();
-        assert_eq!(t.take_seek(), Some(0));
+        assert_eq!(take(&t), Some(0));
 
         t.play();
         t.cue_up();
         assert_eq!(t.rate(), RATE_UNITY, "a spurious release must not stop playback");
-        assert_eq!(t.take_seek(), None);
+        assert_eq!(take(&t), None);
     }
 
     #[test]
@@ -621,7 +770,7 @@ mod tests {
         t.cue_down();
         assert_eq!(t.rate(), RATE_PAUSED);
         assert!(!t.is_silent(), "back cue leaves the deck ready to play, not muted");
-        assert_eq!(t.take_seek(), Some(2_000));
+        assert_eq!(take(&t), Some(2_000));
     }
 
     #[test]
@@ -634,7 +783,7 @@ mod tests {
         t.cue_down();
         t.reached_end();
         t.cue_up();
-        assert_eq!(t.take_seek(), None, "the latch must have been cleared");
+        assert_eq!(take(&t), None, "the latch must have been cleared");
     }
 
     #[test]
@@ -645,6 +794,120 @@ mod tests {
         assert_eq!(t.rate(), RATE_PAUSED);
         assert_eq!(t.state(), State::Paused);
         // Auto-advance is an open question; nothing here may decide it.
-        assert_eq!(t.take_seek(), None, "reaching the end must not queue a seek");
+        assert_eq!(take(&t), None, "reaching the end must not queue a seek");
+    }
+
+    #[test]
+    fn a_queued_seek_makes_reaching_the_end_stale_and_it_is_ignored() {
+        // Back Cue at the end of a track, then PLAY: two control-thread
+        // writes, with a fill in flight that decided against the old
+        // position. Without the guard the deck ends up paused at the cue
+        // point having just been told to play — a PLAY button that does
+        // nothing after every Back Cue.
+        let t = Transport::new();
+        t.track_loaded(0);
+        t.back_cue();
+        t.play();
+
+        t.reached_end();
+        assert_eq!(t.rate(), RATE_UNITY, "the operator's PLAY must survive");
+        assert_eq!(t.state(), State::Playing);
+
+        // Once the seek has been consumed the report is current again.
+        assert_eq!(take(&t), Some(0));
+        t.reached_end();
+        assert_eq!(t.rate(), RATE_PAUSED);
+        assert_eq!(t.state(), State::Paused);
+    }
+
+    #[test]
+    fn a_seek_queued_while_one_is_being_serviced_is_kept_rather_than_dropped() {
+        // `consumed_seek` retires *the request it was given*, so a press that
+        // lands between the peek and the retire survives to the next period.
+        // A plain swap would have discarded it: a cue jump that did nothing.
+        let t = Transport::new();
+        t.request_seek(100);
+        let target = t.peek_seek().expect("queued");
+
+        t.request_seek(200); // the operator again, mid-service
+        t.consumed_seek(target);
+
+        assert_eq!(t.peek_seek(), Some(200), "the newer request must survive");
+    }
+
+    #[test]
+    fn no_pending_seek_means_the_published_position_is_the_new_one() {
+        // The pair a control thread reads to decide whether the deck has run
+        // out. The callback's protocol is peek, apply, publish, retire — so
+        // the state "nothing pending, position still the old one" does not
+        // occur, and a reader that treats the first as implying the second is
+        // right. With the retire first it is wrong for a few instructions,
+        // which is what pauses a deck the operator has just started.
+        let t = Transport::new();
+        t.publish_position(2_000.0);
+        t.request_seek(50);
+
+        let target = t.peek_seek().expect("queued");
+        t.publish_position(target as f64);
+        assert!(
+            t.peek_seek().is_some(),
+            "still pending, so a reader must conclude nothing yet"
+        );
+        t.consumed_seek(target);
+
+        assert_eq!(t.peek_seek(), None);
+        assert_eq!(t.position(), 50.0);
+    }
+
+    #[test]
+    fn a_load_restores_the_cue_point_and_still_waits_at_frame_zero() {
+        let t = Transport::new();
+        t.track_loaded(120_000);
+        assert_eq!(t.cue_point(), 120_000, "the stored point must be restored");
+        assert_eq!(t.position(), 0.0, "decisions.md: waits at zero, not at the cue");
+        assert_eq!(t.state(), State::Paused);
+        assert_eq!(t.rate(), RATE_PAUSED);
+    }
+
+    #[test]
+    fn a_load_clears_what_the_previous_track_latched() {
+        // One `Transport` per deck, so every field not reset here is the
+        // previous track's. A latched seek would fire into the new track on
+        // its first period; a latched preview would make the first CUE
+        // release stop a deck nobody previewed.
+        let t = Transport::new();
+        t.track_loaded(0);
+        t.play();
+        t.request_seek(900);
+        t.pause();
+        t.cue_down();
+
+        t.track_loaded(50);
+        assert_eq!(take(&t), None, "a seek must not survive a load");
+        t.cue_up();
+        assert_eq!(
+            take(&t),
+            None,
+            "the preview latch must not survive a load"
+        );
+    }
+
+    #[test]
+    fn an_unload_is_the_transition_into_stopped_that_this_type_lacked() {
+        let t = Transport::new();
+        t.track_loaded(4_410);
+        t.play();
+        assert_eq!(t.state(), State::Playing);
+
+        t.track_unloaded();
+        assert_eq!(t.state(), State::Stopped, "nothing loaded is Stopped");
+        assert_eq!(t.rate(), RATE_PAUSED);
+        assert_eq!(t.position(), 0.0);
+        assert_eq!(
+            t.cue_point(),
+            0,
+            "the cue belongs to the file; leaving it would give the next \
+             track this one's point"
+        );
     }
 }

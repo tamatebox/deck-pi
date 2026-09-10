@@ -188,7 +188,7 @@ fn cue_held_at_the_point_previews_and_releasing_it_returns() {
 
     feed(&mut deck, &mut d, ms(120), key(Button::Cue, 0));
     assert_eq!(deck.transport.rate(), RATE_PAUSED, "release stops it");
-    assert_eq!(deck.transport.take_seek(), Some(0), "and returns to the point");
+    assert_eq!(deck.transport.peek_seek(), Some(0), "and returns to the point");
 }
 
 #[test]
@@ -238,7 +238,7 @@ fn cue_during_a_held_seek_pauses_and_releasing_the_button_does_not_undo_it() {
     feed(&mut deck, &mut d, ms(700), key(Button::Cue, 1));
     feed(&mut deck, &mut d, ms(760), key(Button::Cue, 0));
     assert_eq!(deck.transport.state(), State::Paused, "Back Cue pauses");
-    assert_eq!(deck.transport.take_seek(), Some(0), "and returns to the point");
+    assert_eq!(deck.transport.peek_seek(), Some(0), "and returns to the point");
 
     // Now let FF go. This must change nothing.
     feed(&mut deck, &mut d, ms(1_200), key(Button::Ff, 0));
