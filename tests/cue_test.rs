@@ -26,8 +26,12 @@ impl Drop for Dir {
     }
 }
 
-/// A UUID of the shape `/dev/disk/by-uuid` gives for HFS+.
-const HFSPLUS: &str = "655062ae-6e83-4521-b69b-44b96146a5d7";
+/// A UUID of the shape `/dev/disk/by-uuid` gives for HFS+ — **version 3**,
+/// which is not cosmetic: `libblkid` derives it by MD5ing the volume's
+/// 8-byte `finder_info.id` behind a fixed seed and stamping `uuid[6] = 0x30`,
+/// so a version-4 value cannot come from an HFS+ volume. This one is
+/// recomputed from real input bytes; see `src/media.rs`.
+const HFSPLUS: &str = "b03e987f-7127-39da-a816-1167109da731";
 /// And the shape exFAT gives, which is a different format entirely — hence
 /// `decisions.md` storing it as an opaque string rather than parsing it.
 const EXFAT: &str = "1A2B-3C4D";

@@ -62,9 +62,14 @@ pub enum Medium {
     Unreadable { reason: String },
     /// Mounted and readable.
     Browsable {
-        /// The volume UUID, as an **opaque string** — exFAT gives
-        /// `XXXX-XXXX` and HFS+ a 16-hex UUID, so `decisions.md` says not to
-        /// parse it.
+        /// The volume UUID, as an **opaque string**. exFAT gives
+        /// `XXXX-XXXX`, a 32-bit volume serial; HFS+ gives a standard
+        /// 36-character UUID, because `libblkid` does not publish the volume
+        /// header's own id — `hfs_set_uuid` MD5s the 8-byte `finder_info.id`
+        /// behind a fixed seed and stamps version 3, so what appears in
+        /// `/dev/disk/by-uuid/` is `xxxxxxxx-xxxx-3xxx-[89ab]xxx-...` and the
+        /// raw id never appears at all. Two unrelated shapes, which is why
+        /// `decisions.md` says to store it and never parse it.
         ///
         /// `None` is a real state rather than an error: the stick browses and
         /// plays, but the cue store has nothing to key on, so cues cannot be
@@ -308,10 +313,18 @@ mod tests {
 
     #[test]
     fn the_uuid_is_opaque_and_both_filesystems_shapes_survive_it() {
-        // exFAT gives `XXXX-XXXX`, HFS+ a 16-hex UUID. `decisions.md` says
-        // store it as an opaque string rather than parsing it, so this only
-        // checks that neither shape is altered on the way through.
-        for raw in ["1A2B-3C4D", "a1b2c3d4e5f60718"] {
+        // `decisions.md` says store it as an opaque string rather than
+        // parsing it, so this only checks that neither shape is altered on
+        // the way through.
+        //
+        // The HFS+ value is a real one rather than a plausible-looking one:
+        // it is what `libblkid`'s `hfs_set_uuid` produces from the
+        // `finder_info.id` bytes `a1b2c3d4e5f60718` — MD5 behind the fixed
+        // seed, then version 3 and the RFC 4122 variant stamped in. Those
+        // bytes used to sit here *as* the UUID, which was the hash's input
+        // mistaken for its output; recomputing from them keeps the example
+        // reproducible and shows what the old constant actually was.
+        for raw in ["1A2B-3C4D", "b03e987f-7127-39da-a816-1167109da731"] {
             let m = Medium::Browsable {
                 uuid: Some(raw.to_string()),
             };
