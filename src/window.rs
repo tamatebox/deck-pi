@@ -262,8 +262,25 @@ impl Window {
             } else {
                 playhead
             };
-            self.restart_at(target)?;
-            out.relocated = true;
+            // **A relocation to where the window already is, on a track with
+            // nothing left to read, is not a relocation** — and treating it as
+            // one was a loop. `resident.is_empty()` is true at the end of
+            // every track, because everything has been consumed; the restart
+            // then seeks to the same place, reads zero, leaves the span empty,
+            // and `run` sees `relocated` and clears the `EndOfTrack` latch, so
+            // the event fires again on the very next pass. **Measured at 15
+            // `EndOfTrack` events in 200 ms**, with a seek plus a read syscall
+            // behind each one.
+            //
+            // Two ways in, and the second needs no seek at all: a playhead
+            // sitting exactly at `frames`, and **loading a file with no audio
+            // in it** — a header-only WAV, which is what an interrupted export
+            // leaves behind.
+            let pointless = self.at_end && target == self.cursor;
+            if !pointless {
+                self.restart_at(target)?;
+                out.relocated = true;
+            }
         }
 
         // Discard what has fallen out of the window on the side the playhead

@@ -601,3 +601,69 @@ fn an_explicit_seek_clears_the_direction_so_a_cue_jump_is_not_a_scrub() {
     );
     assert_eq!(resident.end, 50_000 + window.ahead_target());
 }
+
+#[test]
+fn the_end_of_a_track_is_reported_once_however_long_the_deck_sits_there() {
+    // `run` latches `EndOfTrack` so it fires once — and then cleared the latch
+    // whenever a fill relocated. At the end of a track the window is empty by
+    // definition, which forced a relocation on every pass, which cleared the
+    // latch, which re-fired the event. Measured at **15 events in 200 ms**,
+    // each carrying a seek and a read syscall, on a deck that is doing nothing
+    // at all.
+    //
+    // The deck sits at the end of a track routinely: `decisions.md` says a
+    // track that reaches its end stops and nothing advances on its own, so
+    // this is the *normal* resting state between tracks, not an edge case.
+    let scratch = Scratch::new("window-end-once");
+    let frames = 4_000usize;
+    let source = signal(Bits::S24, 2, frames);
+    let bytes = fixtures::build(Kind::Wav, &source, Bits::S24, 44_100, 2);
+    let path = fixtures::write(&scratch.dir, "short", Kind::Wav, &bytes);
+
+    let (window, reader, _) = Window::load(&path, SMALL_WINDOW_BYTES).expect("loads");
+    let (tx, rx) = mpsc::channel();
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let ev = Arc::clone(&events);
+    let handle = std::thread::spawn(move || window.run(rx, move |e| ev.lock().unwrap().push(e)));
+
+    // Park the playhead past the last frame and leave it there, which is what
+    // the transport does when a track runs out.
+    reader.publish_playhead(frames as u64);
+    std::thread::sleep(Duration::from_millis(200));
+
+    tx.send(Command::Shutdown).expect("send");
+    handle.join().expect("window thread");
+
+    let seen = events.lock().unwrap().clone();
+    let ends = seen.iter().filter(|e| **e == Event::EndOfTrack).count();
+    assert_eq!(ends, 1, "EndOfTrack must be latched; events were {seen:?}");
+}
+
+#[test]
+fn a_file_with_a_header_and_no_audio_reports_the_end_once_and_stops() {
+    // What an interrupted export leaves on a stick: a valid WAV header
+    // declaring zero frames. The window is empty from the first pass and can
+    // never be filled, so the same latch-clearing loop ran with no seek
+    // needed to get into it — the file simply has nowhere to go.
+    let scratch = Scratch::new("window-empty-file");
+    let bytes = fixtures::build(Kind::Wav, &[], Bits::S24, 44_100, 2);
+    let path = fixtures::write(&scratch.dir, "headeronly", Kind::Wav, &bytes);
+
+    let (window, reader, info) = Window::load(&path, SMALL_WINDOW_BYTES).expect("a header opens");
+    assert_eq!(info.frames, 0, "the fixture must really be empty");
+
+    let (tx, rx) = mpsc::channel();
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let ev = Arc::clone(&events);
+    let handle = std::thread::spawn(move || window.run(rx, move |e| ev.lock().unwrap().push(e)));
+
+    reader.publish_playhead(0);
+    std::thread::sleep(Duration::from_millis(200));
+
+    tx.send(Command::Shutdown).expect("send");
+    handle.join().expect("window thread");
+
+    let seen = events.lock().unwrap().clone();
+    let ends = seen.iter().filter(|e| **e == Event::EndOfTrack).count();
+    assert_eq!(ends, 1, "events were {seen:?}");
+}
