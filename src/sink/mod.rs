@@ -160,6 +160,19 @@ pub trait AudioSink {
 
     /// Blocks until everything queued has been played. Not realtime; called
     /// when a track ends or the deck stops.
+    ///
+    /// **Terminal for the ALSA sink: the next track needs a new one.**
+    /// `snd_pcm_drain` leaves the device in `SETUP`, so a further
+    /// `write_period` returns `EBADFD` — and because that is not an xrun, the
+    /// recovery path does not call `prepare` and the error surfaces as a bare
+    /// device failure. Nothing in this trait said so, and "or the deck stops"
+    /// reads as though the sink survives stopping.
+    ///
+    /// That costs nothing here, because the design already opens a device per
+    /// track: the output rate follows the source, so a rate change reopens it
+    /// anyway, and `architecture.md` records that as free — the other deck is
+    /// a separate Pi, so nothing audible is interrupted. Written down because
+    /// it is a contract, not because it is a limitation.
     fn drain(&mut self) -> Result<(), SinkError>;
 
     /// Checks that the device is running what it was asked for, **while it is

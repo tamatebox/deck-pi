@@ -523,6 +523,40 @@ pub use imp::{in_force, limits, lock_memory, pin_current_thread, promote_current
 ///
 /// Returns what the kernel reports, not what was asked for, so a caller
 /// cannot accidentally log its own request as an outcome.
+/// Whether the **calling** thread is running under a realtime policy.
+///
+/// For a thread that must *not* be: the window thread and the control thread
+/// both block, allocate and call libsndfile, and none of that belongs at
+/// `SCHED_FIFO` 75 — a blocking read at realtime priority is how a system
+/// stops responding.
+///
+/// # Why this is needed at all
+///
+/// **glibc's `pthread_create` defaults to `PTHREAD_INHERIT_SCHED`**, so a
+/// thread spawned from a thread that has called [`apply`] inherits its policy
+/// and priority. The obvious shape for the app loop — set the process up in
+/// `main`, then spawn the window thread — therefore puts libsndfile at
+/// realtime priority, silently. `apply`'s own read-backs cannot see it:
+/// `in_force` reports the calling thread and nothing else.
+///
+/// `SCHED_RESET_ON_FORK` does not help; it governs `fork`, not
+/// `pthread_create`. Rust's `std::thread::Builder` exposes no scheduling
+/// attribute, so the fix is placement — **call `apply` on the audio thread
+/// itself, after the others are running** — and this is how a thread checks
+/// that the placement was right.
+#[cfg(target_os = "linux")]
+pub fn is_realtime() -> bool {
+    // SAFETY: pid 0 is the calling thread; no pointers involved.
+    let policy = unsafe { libc::sched_getscheduler(0) };
+    policy == libc::SCHED_FIFO || policy == libc::SCHED_RR
+}
+
+/// Always false where there is no scheduler to ask.
+#[cfg(not(target_os = "linux"))]
+pub fn is_realtime() -> bool {
+    false
+}
+
 pub fn apply(req: &RtRequest, needed_bytes: u64) -> Result<RtInForce, RtError> {
     lock_memory(needed_bytes)?;
     let reached = prefault_stack(req.stack_prefault_bytes);
@@ -760,5 +794,26 @@ VmLib:\t    9999 kB
         assert_eq!(apply(&RtRequest::default(), 1024), Err(RtError::NotSupported));
         assert_eq!(in_force(), Err(RtError::NotSupported));
         assert_eq!(limits(), Err(RtError::NotSupported));
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod inheritance_tests {
+    use super::*;
+
+    /// A plain thread is not realtime, which is the baseline the window
+    /// thread's `debug_assert` rests on.
+    ///
+    /// The inheritance itself cannot be tested here without `rtprio` in
+    /// `limits.conf` — `promote_current_thread` fails with `EPERM` on an
+    /// ordinary developer machine and in the default container — so what is
+    /// checked is that the accessor reports the calling thread and reports it
+    /// honestly. `docs/implementation.md` records the measured privileged
+    /// runs; this is the half that runs everywhere.
+    #[test]
+    fn an_ordinary_thread_reports_itself_as_not_realtime() {
+        assert!(!is_realtime());
+        let spawned = std::thread::spawn(is_realtime).join().expect("thread");
+        assert!(!spawned);
     }
 }

@@ -492,7 +492,22 @@ fn compare_entries(a: &Entry, b: &Entry) -> Ordering {
     match (a.kind, b.kind) {
         (EntryKind::Folder, EntryKind::File) => Ordering::Less,
         (EntryKind::File, EntryKind::Folder) => Ordering::Greater,
-        _ => natural_cmp(&a.name.to_string_lossy(), &b.name.to_string_lossy()),
+        // **The tie-break is on the filename's bytes, not the displayed
+        // string's**, and the difference is what makes the order total.
+        //
+        // `natural_cmp` is a total order on `&str` and already breaks ties on
+        // raw bytes — but it is handed `to_string_lossy()`, and lossy mapping
+        // is not injective: every invalid sequence becomes the same U+FFFD, so
+        // two different filenames arrive here as one string and compare
+        // `Equal`. `sort_by` is stable, so the rows then keep `readdir` order
+        // and a reload can reshuffle them under the selection, which is the
+        // exact failure `decisions.md` says the tie-break exists to prevent.
+        //
+        // Reachable on the medium this deck reads: `src/cue.rs` already has a
+        // test built on two distinct invalid-UTF-8 names, for the same reason
+        // — a filename is bytes, and a lossy conversion loses which one it was.
+        _ => natural_cmp(&a.name.to_string_lossy(), &b.name.to_string_lossy())
+            .then_with(|| a.name.as_encoded_bytes().cmp(b.name.as_encoded_bytes())),
     }
 }
 
@@ -640,5 +655,55 @@ mod tests {
             names,
             vec!["Alpha.wav", "beta.wav", "Delta.wav", "gamma.wav"]
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod ordering_tests {
+    use super::*;
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    /// **Tested at the comparison, not through a listing, and the first
+    /// attempt at the latter proved nothing.**
+    ///
+    /// The observable symptom is rows reshuffling under the selection across
+    /// a reload — but `sort_by` is stable and `readdir` returns a consistent
+    /// order within a run, so an integration test that lists, reloads and
+    /// compares passes whether or not the tie-break is there. It was written
+    /// that way first and passed against the broken code.
+    ///
+    /// What is actually wrong is one comparison returning `Equal` for two
+    /// different files, so that is what this looks at.
+    #[test]
+    fn two_names_differing_only_in_invalid_bytes_are_not_equal() {
+        // `decisions.md` promises the order is **total**, with a final
+        // tie-break on the raw bytes. `natural_cmp` provides one — but it is
+        // handed `to_string_lossy()`, and lossy mapping is not injective:
+        // every invalid sequence becomes the same U+FFFD. So two distinct
+        // filenames arrived as one string and compared equal.
+        //
+        // Reachable on the medium this deck reads, and `src/cue.rs` already
+        // tests the same byte pair for the same reason: a filename is bytes,
+        // and two undecodable names must not collide.
+        let entry = |bytes: &[u8]| Entry {
+            name: OsString::from_vec(bytes.to_vec()),
+            kind: EntryKind::File,
+        };
+        let a = entry(b"\xff.wav");
+        let b = entry(b"\xfe.wav");
+
+        assert_eq!(
+            a.name.to_string_lossy(),
+            b.name.to_string_lossy(),
+            "the premise: these are one string once displayed"
+        );
+        assert_ne!(
+            compare_entries(&a, &b),
+            Ordering::Equal,
+            "and two different files must still not compare equal"
+        );
+        // Antisymmetric, so a sort cannot depend on which arrives first.
+        assert_eq!(compare_entries(&a, &b).reverse(), compare_entries(&b, &a));
     }
 }

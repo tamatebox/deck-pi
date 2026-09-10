@@ -37,6 +37,23 @@ impl fmt::Display for SndFileError {
 
 impl std::error::Error for SndFileError {}
 
+/// libsndfile's message for the last error on `handle`, or for the last
+/// handle-less one when `handle` is null.
+///
+/// **The handle-less form reads a process global, so with two threads open it
+/// can report the wrong reason.** `sf_errno` and `sf_syserr` are file-scope
+/// statics in `sndfile.c`; a failed `sf_open` has no handle to attach to, so
+/// it leaves the reason there and `sf_strerror(NULL)` reads it back. The
+/// browser opens headers on one thread while the window thread loads a track
+/// on another, and two failed opens racing means one of them can be told the
+/// other's reason.
+///
+/// Never wrong *audio* — the `Err` is still an `Err` and the file still does
+/// not open — only a wrong *why*, which on a deck whose stated principle is
+/// saying why rather than just that is worth knowing about. Not fixed: the
+/// alternative is a mutex around every open, on a path that already blocks,
+/// to improve a message. Revisit if the browser ever shows a reason that does
+/// not match the file.
 fn last_error(handle: *mut ffi::SNDFILE) -> SndFileError {
     // SAFETY: sf_strerror accepts null (meaning "the last error with no
     // handle"), and returns a static, NUL-terminated string owned by the

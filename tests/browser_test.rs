@@ -518,3 +518,4 @@ fn a_symlink_that_stays_inside_the_medium_still_works() {
         );
     }
 }
+

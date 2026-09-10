@@ -425,6 +425,22 @@ impl Window {
     /// front of every track load and every relocation — a guaranteed dropout
     /// at exactly the two moments the window is empty.
     pub fn run(mut self, commands: Receiver<Command>, events: impl Fn(Event)) {
+        // **This thread must not be realtime, and it can inherit that
+        // without anyone deciding to.** glibc's `pthread_create` defaults to
+        // `PTHREAD_INHERIT_SCHED`, so a window thread spawned from a thread
+        // that has called `rt::apply` runs at `SCHED_FIFO` 75 — with
+        // libsndfile, a blocking read and an allocator on it. `rt::apply`'s
+        // read-backs cannot catch it, because they report the calling thread.
+        //
+        // A debug assertion rather than a hard failure: it is a wiring
+        // mistake, it is caught the first time the thread runs, and refusing
+        // to play in release over a scheduling policy would be worse than the
+        // policy.
+        debug_assert!(
+            !crate::rt::is_realtime(),
+            "the window thread inherited a realtime policy — call rt::apply on \
+             the audio thread, after this one is spawned (see rt::is_realtime)"
+        );
         // Latched, so reaching the end of the track is reported once rather
         // than on every poll for as long as the track sits there.
         let mut end_reported = false;
