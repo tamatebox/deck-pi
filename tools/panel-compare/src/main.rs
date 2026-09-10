@@ -1,5 +1,6 @@
 //! Renders the same browser screen on every candidate panel, at true physical
-//! size, so open question 1 can be judged by looking rather than by arguing.
+//! size, so the panel choice can be judged by looking rather than by arguing.
+//! The analysis it feeds is GitHub issue #2.
 //!
 //! Two outputs:
 //!

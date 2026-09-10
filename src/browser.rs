@@ -2,7 +2,8 @@
 //!
 //! `architecture.md` calls this "the model" and puts the display opposite it as
 //! "the view". The split is load-bearing rather than tidy: which panel the deck
-//! gets is open question 1, and the candidates give **two to twelve** browsable
+//! gets is unsettled — GitHub issue #2 — and the candidates give
+//! **two to twelve** browsable
 //! rows. So nothing here knows a row count — [`Browser::view`] takes the
 //! viewport height as an argument.
 //!
@@ -274,7 +275,7 @@ impl Browser {
         // the scroll position, so the row can arrive below the viewport — and
         // it is pulled back in here, on the next render, always. What is left
         // is that it lands on the **bottom** row rather than where it was,
-        // which on the two-row panel of open question 1 is a full-height
+        // which on the smallest candidate panel's two rows is a full-height
         // jump. Recorded so the next reader does not have to re-find the
         // clamp before concluding the same thing.
         if self.selected < self.first {
