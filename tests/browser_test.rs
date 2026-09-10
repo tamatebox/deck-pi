@@ -188,15 +188,79 @@ fn scrolling_reads_one_header_per_new_row_and_selection_alone_reads_nothing() {
         "one render of two rows must read exactly two headers"
     );
 
-    // Rendering the same rows again is free — the cache is keyed by path.
+    // Rendering the same rows again is free for anything whose verdict is a
+    // property of the path — but **`broken.wav` is re-read every time, on
+    // purpose**. `Plays` and `Refused` come from a header, which cannot change
+    // on a read-only medium; `Unreadable` is the outcome of one I/O attempt at
+    // one moment, so caching it turned a single USB glitch into a file marked
+    // damaged for the life of the `Browser`, with nothing able to clear it.
+    // The cost is one open per render for rows that actually failed.
+    let one_row_is_unreadable = 1;
     b.view(2);
+    assert_eq!(
+        b.headers_read(),
+        2 + one_row_is_unreadable,
+        "the readable row is cached and the unreadable one is retried"
+    );
     b.view(2);
-    assert_eq!(b.headers_read(), 2, "a re-render must not re-read");
+    assert_eq!(b.headers_read(), 2 + one_row_is_unreadable * 2);
 
-    // And stepping back onto a row already read costs nothing either.
+    // And stepping back onto a row already read costs nothing either — the
+    // row scrolled to here is `REFUSED_channels.wav`, whose verdict is cached.
+    let before = b.headers_read();
     b.select_prev();
     b.view(2);
-    assert_eq!(b.headers_read(), 2);
+    assert_eq!(
+        b.headers_read(),
+        before + one_row_is_unreadable,
+        "only the unreadable row is opened again"
+    );
+}
+
+#[test]
+fn a_file_that_reads_once_and_then_recovers_stops_being_marked_damaged() {
+    // The failure the cache change exists to remove. A transient I/O error —
+    // a knocked connector, or a read landing before the medium has settled —
+    // used to be latched: neither `reload()` nor `enter()` cleared it, and
+    // media watch reports no state change because the volume UUID has not
+    // moved, so nothing would ever rebuild the `Browser`.
+    //
+    // Unix-only: it needs a file that fails to open and then does not, which
+    // is a permission change.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let s = tree("browser-recovers");
+        let samples = signal(Bits::S24, 2, 512);
+        let bytes = fixtures::build(Kind::Wav, &samples, Bits::S24, 44_100, 2);
+        let path = fixtures::write(&s.dir, "recovers", Kind::Wav, &bytes);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+
+        let mut b = Browser::open(&s.dir).expect("opens");
+        // Running as root defeats the fault — mode 000 is still readable — so
+        // skip rather than assert something the environment cannot produce.
+        let rows = b.view(64);
+        let unreadable_first = rows.iter().any(|r| {
+            matches!(r, deck_pi::browser::Row::File { name, verdict, .. }
+                if name == "recovers.wav" && matches!(verdict, deck_pi::browser::Verdict::Unreadable(_)))
+        });
+        if !unreadable_first {
+            eprintln!("skipped: mode 000 is still readable here (running as root?)");
+            return;
+        }
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        let rows = b.view(64);
+        let still_unreadable = rows.iter().any(|r| {
+            matches!(r, deck_pi::browser::Row::File { name, verdict, .. }
+                if name == "recovers.wav" && matches!(verdict, deck_pi::browser::Verdict::Unreadable(_)))
+        });
+        assert!(
+            !still_unreadable,
+            "a file that can be read again must stop being marked damaged"
+        );
+    }
 }
 
 #[test]
@@ -374,5 +438,83 @@ fn a_file_that_vanishes_between_the_listing_and_the_render_reads_as_unreadable()
     match verdict {
         Verdict::Unreadable(msg) => assert!(!msg.is_empty()),
         other => panic!("expected unreadable, got {:?}", other),
+    }
+}
+
+#[test]
+fn a_symlink_out_of_the_medium_is_refused_rather_than_followed() {
+    // `BrowseError::OutsideRoot`'s doc comment has always said this. Until
+    // now nothing constructed the variant: `read_folder` classifies through
+    // `metadata`, so a link to a directory arrived as an ordinary folder and
+    // `enter` descended straight out of the medium. Reproduced before the
+    // fix — `escape -> /etc` listed as a folder, ENTER enumerated `/etc`, and
+    // the header reads opened files underneath it.
+    //
+    // A stick is prepared on a Mac and HFS+ carries symlinks, so this is
+    // reachable material rather than a contrived one. exFAT has none.
+    #[cfg(unix)]
+    {
+        let s = tree("browser-symlink");
+        let outside = Scratch::new("browser-symlink-outside");
+        std::fs::write(outside.dir.join("not_ours.wav"), b"x").expect("write");
+        std::os::unix::fs::symlink(&outside.dir, s.dir.join("escape")).expect("symlink");
+
+        let mut b = Browser::open(&s.dir).expect("opens");
+
+        // The row is still listed. `decisions.md` records dotfiles as the
+        // *only* filter, and a refusal that explains itself is the pattern the
+        // four header rejections already follow — hiding it would be a second
+        // filter and a silent one.
+        let rows = b.view(64);
+        let at = names(&rows)
+            .iter()
+            .position(|n| *n == "escape")
+            .expect("the link is listed, not hidden");
+        while b.selected_index() < at {
+            b.select_next();
+        }
+
+        match b.enter() {
+            Err(BrowseError::OutsideRoot { path }) => {
+                assert!(path.ends_with("escape"), "got {path:?}");
+                assert!(
+                    BrowseError::OutsideRoot { path }
+                        .to_string()
+                        .contains("outside the medium"),
+                    "the reason has to be sayable on a two-row panel"
+                );
+            }
+            other => panic!("following a link out of the medium: {other:?}"),
+        }
+
+        // And the browser has not moved.
+        assert_eq!(b.path(), s.dir.as_path());
+    }
+}
+
+#[test]
+fn a_symlink_that_stays_inside_the_medium_still_works() {
+    // The other side, and the reason the fix is a containment test rather
+    // than "never follow a link": a stick prepared on a Mac may well link one
+    // folder to another inside itself, and that is ordinary content.
+    #[cfg(unix)]
+    {
+        let s = tree("browser-symlink-inside");
+        std::os::unix::fs::symlink(s.dir.join("aa_dance"), s.dir.join("shortcut"))
+            .expect("symlink");
+
+        let mut b = Browser::open(&s.dir).expect("opens");
+        let rows = b.view(64);
+        let at = names(&rows)
+            .iter()
+            .position(|n| *n == "shortcut")
+            .expect("listed");
+        while b.selected_index() < at {
+            b.select_next();
+        }
+        assert!(
+            matches!(b.enter(), Ok(Activation::Descended)),
+            "a link inside the medium is ordinary content"
+        );
     }
 }

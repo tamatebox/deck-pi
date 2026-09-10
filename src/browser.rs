@@ -110,7 +110,14 @@ pub enum BrowseError {
     /// `read_dir` failed. Almost always the medium being removed.
     Unreadable { path: PathBuf, reason: String },
     /// A path that resolved outside the root. Only reachable through a
-    /// symlink on an HFS+ volume, and refused rather than followed.
+    /// symlink on an HFS+ volume — exFAT has none — and refused rather than
+    /// followed.
+    ///
+    /// **This variant was declared, documented and never constructed.** The
+    /// sentence above was true of the intent and false of the code: a link to
+    /// a directory listed as an ordinary folder and `enter` descended through
+    /// it, out of the medium entirely. It is returned by `enter` now, which
+    /// is the only place that can leave the tree.
     OutsideRoot { path: PathBuf },
 }
 
@@ -151,7 +158,11 @@ pub struct Browser {
     /// so scrolling is stable: stepping down one row scrolls by one, instead
     /// of re-centring and moving every line on the panel.
     first: usize,
+    /// The root with every link resolved. Never reported — see `open`.
+    root_real: PathBuf,
     headers: HashMap<PathBuf, Verdict>,
+    /// Opens performed, for `headers_read`. Not the cache size — see there.
+    reads: usize,
 }
 
 impl Browser {
@@ -162,13 +173,23 @@ impl Browser {
     /// reliable one (`decisions.md`). By the time this is called, something is
     /// mounted; what can still go wrong is reading it.
     pub fn open(root: &Path) -> Result<Browser, BrowseError> {
+        // **The canonical root is kept separately and never reported.** It is
+        // only for the containment test in `enter`; the paths this module
+        // hands out stay exactly as the caller gave them, because the mount
+        // point can itself be reached through a link — `/var` is a symlink to
+        // `/private/var` on macOS — and `src/cue.rs` keys every cue on the
+        // path *relative to the mount point*. Canonicalising what is reported
+        // would silently rewrite that key and orphan a stick's cues.
+        let root_real = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
         let mut b = Browser {
             root: root.to_path_buf(),
+            root_real,
             cwd: root.to_path_buf(),
             entries: Vec::new(),
             selected: 0,
             first: 0,
             headers: HashMap::new(),
+            reads: 0,
         };
         b.reload()?;
         Ok(b)
@@ -267,14 +288,7 @@ impl Browser {
                 EntryKind::Folder => Row::Folder { name, selected },
                 EntryKind::File => {
                     let path = self.cwd.join(&entry.name);
-                    let verdict = match self.headers.get(&path) {
-                        Some(v) => v.clone(),
-                        None => {
-                            let v = read_header(&path);
-                            self.headers.insert(path, v.clone());
-                            v
-                        }
-                    };
+                    let verdict = cached_header(&mut self.headers, &mut self.reads, path);
                     Row::File {
                         name,
                         verdict,
@@ -291,11 +305,19 @@ impl Browser {
         self.first
     }
 
-    /// How many files in this folder have been read. Diagnostic — it is what
-    /// makes "one open per redraw, not one per detent" checkable rather than
-    /// asserted.
+    /// How many headers this `Browser` has actually opened. Diagnostic — it
+    /// is what makes "one open per redraw, not one per detent" checkable
+    /// rather than asserted.
+    ///
+    /// **A count of reads, not of cache entries, and the difference is not
+    /// cosmetic.** It used to return `self.headers.len()`, which said neither
+    /// what its name nor its doc claimed: the cache is never cleared, so it
+    /// accumulated across every folder visited rather than describing this
+    /// one, and it stopped counting altogether once `Unreadable` verdicts
+    /// were no longer cached — a re-read of a failed row is exactly the
+    /// activity this is here to measure.
     pub fn headers_read(&self) -> usize {
-        self.headers.len()
+        self.reads
     }
 
     /// ENTER: descend into the selection, or hand a playable file over.
@@ -311,6 +333,21 @@ impl Browser {
         let path = self.cwd.join(&entry.name);
         match entry.kind {
             EntryKind::Folder => {
+                // **A symlink on the stick can point anywhere, and this is
+                // where following one would leave the medium.** `read_folder`
+                // classifies through `metadata`, deliberately, so a link to a
+                // directory arrives here indistinguishable from a real folder;
+                // without this check `escape -> /etc` browses as an ordinary
+                // folder and the header reads open files under `/etc`.
+                //
+                // The listing policy is untouched — `decisions.md` records
+                // dotfiles as the *only* filter, so the row stays visible and
+                // is refused with a reason when opened, which is the same
+                // "say why, not just that" the four rejections follow.
+                let real = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                if !real.starts_with(&self.root_real) {
+                    return Err(BrowseError::OutsideRoot { path });
+                }
                 let entries = read_folder(&path)?;
                 self.cwd = path;
                 self.entries = entries;
@@ -319,14 +356,7 @@ impl Browser {
                 Ok(Activation::Descended)
             }
             EntryKind::File => {
-                let verdict = match self.headers.get(&path) {
-                    Some(v) => v.clone(),
-                    None => {
-                        let v = read_header(&path);
-                        self.headers.insert(path, v.clone());
-                        v
-                    }
-                };
+                let verdict = cached_header(&mut self.headers, &mut self.reads, path);
                 Ok(match verdict {
                     Verdict::Plays(info) => Activation::Play(Box::new(info)),
                     Verdict::Refused(r) => Activation::Refused(r),
@@ -366,6 +396,37 @@ impl Browser {
 /// one `sf_close`. The file layer is deliberately shared with playback here
 /// (`architecture.md`) rather than reimplemented for the browser, which is
 /// what stops the two disagreeing about whether something will play.
+/// The header cache, and the one verdict that must never enter it.
+///
+/// `Plays` and `Refused` are properties of the *path*: the medium is mounted
+/// read-only, so what a header says cannot change while a `Browser` lives, and
+/// caching them is what makes scrolling cost one open per row rather than one
+/// per detent (`decisions.md`).
+///
+/// **`Unreadable` is not a property of the path. It is the result of one I/O
+/// attempt at one moment**, and caching it made a single transient failure
+/// permanent: a USB glitch during one render, or one read landing between
+/// media watch reporting `Browsable` and the medium settling, marked that file
+/// "damaged" for as long as the `Browser` existed. Neither `reload()` nor
+/// `enter()` cleared it, and media watch reports no change because the UUID is
+/// the same, so nothing would ever rebuild the `Browser`. Re-reading costs one
+/// open per render, and only for rows that actually failed.
+fn cached_header(
+    cache: &mut HashMap<PathBuf, Verdict>,
+    reads: &mut usize,
+    path: PathBuf,
+) -> Verdict {
+    if let Some(v) = cache.get(&path) {
+        return v.clone();
+    }
+    *reads += 1;
+    let v = read_header(&path);
+    if !matches!(v, Verdict::Unreadable(_)) {
+        cache.insert(path, v.clone());
+    }
+    v
+}
+
 fn read_header(path: &Path) -> Verdict {
     match Track::open(path) {
         Ok(track) => Verdict::Plays(track.info().clone()),
