@@ -124,16 +124,24 @@ and is not. A five-way review and the fixes after it turned up enough instances
 to sort into shapes, and **the shapes matter more than the list, because each
 needs a different check and the cheap one clears most of them.**
 
+**The instances are recorded as they were found, not as they now stand.** Many
+have since been closed, and a table that tracked which would be a status line
+in a catalogue — stale on an ordinary commit, which is the failure `CLAUDE.md`
+describes wearing a different hat. Read a row as evidence that the shape is
+real and its check works, never as a work list. Where *how* an instance was
+closed is the transferable part, it is in the prose below.
+
 | | Shape | The check that finds it | Instance |
 |---|---|---|---|
 | 1 | Declared, never reached | grep **construction sites**, not definitions | `BrowseError::OutsideRoot`, `verify_in_force`, `Transport::reached_end`, `Command::Relocate` |
 | 2 | Wired, unreachable **for its stated cause** | ask whether the *stated cause* can reach the site | `window::Event::Failed` — two construction sites, neither reachable by a pulled stick |
-| 3 | A one-way door | ask which transitions lead **into** each state | `State::Stopped` — constructed, never stored. Was "pending [#14](https://github.com/tamatebox/deck-pi/issues/14)"; #14 has landed and `Loaded::unload` exists, so what is missing is now the app loop that would wire it to `Transport` |
-| 4 | An unstated premise, true of the code and false of the hardware | name the cardinality the code chose, where no document states one | `Device::wait` polled 1 of the 7 nodes `config.txt` creates — most buttons dead |
+| 3 | A one-way door | ask which transitions lead **into** each state | `State::Stopped` — constructed, never stored |
+| 4 | An unstated premise, true of the code and false of the hardware — or of its only caller and false of the deck | name the cardinality the code chose, where no document states one; for a catch-all, enumerate what it actually catches and ask of each whether it is a fault | `Device::wait` polled 1 of the 7 nodes `config.txt` creates — most buttons dead. And `app::audio::run`'s `other => Unexpected` arm, which caught `Outcome::Paused` and `Outcome::Seeking`: PAUSE would have killed the audio thread, invisible because the only caller was a CLI that plays one file and touches no control |
 | 5 | Correct only because something else chose to behave | ask what the code relies on the other side *choosing* to do | `wait` ignored `revents`; a hung-up fd spun 340,838 times in 200 ms, hidden because real evdev returns `ENODEV` |
 | 6 | Partial by physics | ask whether the job is as large as the problem | absolute-axis rollover folds correctly; the clamped case emits no event at all, so nothing is recoverable |
 | 7 | **Absence of a complaint read as evidence** | break the thing on purpose and confirm the check complains | a linter whose error went to stderr and whose silence was read as a pass; a symmetric null test; a race harness reaching `Overrun` 8.6M times and detecting nothing; a guard whose enforcement depended on **linkage** — an integration test that never touches the crate gets no `#[global_allocator]`, so every `assert_no_alloc` in it silently passes |
 | 8 | True under a reading nobody would take | read your own sentence as a stranger, not as its author | "no code path stores this", written beside the constructor |
+| 9 | **A precondition the code states and nothing enforces** | grep doc comments for `must` and read the callers of each | `Transport::reached_end` says "it must be the control thread" and explains the hazard; the first thing that ever called it was the audio loop. Also `window::Command::Relocate`'s "whoever owns the app loop must send this" — the app loop now exists and does not. And `Devices::read_pending`'s "a caller that gets a non-zero answer must reset its decoder" — no caller yet, which is where the other two started |
 
 **One check deliberately lives elsewhere, so this list is not complete on its
 own.** A sentence that names a source nobody opened belongs to the same family —
@@ -142,7 +150,7 @@ failure of **writing**, which happens continuously, rather than of code met
 while debugging. Its check is in `CLAUDE.md`'s operating principles, where every
 session reads it at start rather than when something is already suspected.
 
-Three of these need more than a row.
+Four of these need more than a row.
 
 **Shapes 2 and 3 are cleared by the check that catches shape 1**, which is the
 whole reason to separate them. `Event::Failed` greps clean — a type, a doc
@@ -152,10 +160,62 @@ sent, so the deadness was *inherited* rather than local. `State::Stopped` greps
 clean for the opposite reason: the constructor is right there, and what is
 missing is a transition back.
 
+`State::Stopped` is now closed — `Transport::track_unloaded` stores it and
+`app::track::Playing::unload` calls that — and **it took two goes, both of
+which read as finished from inside.** First [#14](https://github.com/tamatebox/deck-pi/issues/14)
+gave the state an owner, which felt like the answer and left it still unstored;
+then the track lifecycle gave that owner a caller. Worth knowing before the
+next one: a door needs both a hand and a hinge, and having just fitted one it
+is very hard to see which.
+
 **Shape 4 has a wrong repair that looks right.** Waiting on each of the seven
 nodes in turn spends the full timeout on each, so the round trip becomes seven
 poll intervals and `Decoder::tick` runs that much later — dead buttons traded
 for a drifting hold threshold. It has to be one `poll` over all of them.
+
+**Shape 9 costs one grep, and its yield is a measurement of the pass rather
+than a property of the code.** It is the cheapest sweep in this table and the
+only one that reads the *prose* as the specification it claims to be. One pass
+found two; a second, run to check the first rather than to trust its number,
+found a third. Take the sweep, not the tally.
+
+Two of the three have the same shape: the sentence was written before anything
+could break it, by the person who understood the hazard, and was then
+contradicted by the first caller — who had no reason to open the doc comment
+of a function whose name said what it did. **The third is that sentence one
+stage earlier**, and is the more useful find because nothing is broken yet:
+`Devices::read_pending` says a caller getting a non-zero answer *must* reset
+its decoder, or presses in flight on a vanished node can never be released,
+and its only caller anywhere is the hang-up unit test — which asserts the
+count and has no decoder to reset. The caller that will arrive is the input
+dispatch stage. Written, unviolated, one caller away is exactly where
+`Transport::reached_end` sat two stages ago, so the sweep is worth running
+*before* writing a caller and not only after.
+
+Note what does *not* find any of them: the type checks, the tests pass, the
+comment and the code agree locally, and clippy has nothing to say. Note also
+that a violated precondition is not automatically a bug you can see —
+`reached_end` from the audio thread cost one lost PLAY press in a race, and
+would have cost a corrupted `cue_down` in a rarer one.
+
+**The shape has a reader-side twin, and it arrived within hours of the row
+being written.** `Transport::peek_seek` states what a *reader* must do —
+observe the retire before the position, because the callback writes them in
+that order — and the first reader did the opposite: `Playing::service` read
+the position and *then* checked for a pending seek, which is a freshness
+check performed after the read it was meant to qualify. Same file, same day,
+same hand as the fix it followed, and it shipped.
+
+**What it changed is the repair, not the row.** Care was never going to hold
+this: the wrong order is invisible, and that is measured rather than assumed.
+Reversing the two loads — inside the function or in its caller — turns the
+whole suite red in **0 runs of 10**, and the version that shipped in
+`3492ea4` had it wrong and was green. So the pair now lives behind one call,
+`Transport::settled_position`, which answers `None` while a seek is in
+flight; there is no longer a way to ask the question in the wrong order.
+**Where a precondition cannot be checked, the repair is to make violating it
+unavailable** — the same disposition `decisions.md` records for `no_alloc`
+moving into the crate, reached here by measurement instead of by taste.
 
 **Shape 7 is the one to internalise, because it invalidates evidence rather
 than code.** In each instance nothing complained, and nothing complaining was
@@ -173,8 +233,12 @@ It recurs while being written down. The commit that hardened the argument
 parser closed one route to an unpinned realtime run and tested it, and left the
 duplicate-flag route beside it unchecked — six passing parser tests standing in
 for a parser nobody had tried to break, in the change that documents this shape.
+And again in the audio loop: its three tests played a track from start to finish
+and never paused it, so a catch-all that treated PAUSE as a fault passed them
+all. The tests were not weak — they were the wrong shape, being the CLI's
+questions asked of a deck.
 
-### Two rules that cut across all eight
+### Two rules that cut across all nine
 
 **Agreement between a comment and its code is evidence about the comment and
 never about the code.** Several of these survived because the type, the doc
@@ -555,7 +619,7 @@ Useful as a health signal, not as a popularity one.
 | `embedded-graphics` | Drawing API | 2.6M, current |
 | `linux-embedded-hal` | Panel drivers onto `/dev/i2c`, `/dev/spidev` | 5.9M, current |
 | `assert_no_alloc` | Enforcement, not runtime | 4.3M but stale since 2021 |
-| panel driver | One, chosen after open question 1 | thin, and it varies a lot: `ssd1309` 13k / 2023, `ssd1327` 1.7k / **2020** |
+| panel driver | One, chosen after the panel choice ([#2](https://github.com/tamatebox/deck-pi/issues/2)) | thin, and it varies a lot: `ssd1309` 13k / 2023, `ssd1327` 1.7k / **2020** |
 | libsndfile | Reading, via hand-written FFI. **`build.rs` requires >= 1.0.28**, which is where RF64 read support arrives — relax that pin and the Track length ceiling argument in `architecture.md` goes with it, silently | C library healthy; no crate dependency |
 | `pkg-config` | Build-dependency. `build.rs` uses it to resolve libsndfile on both the development Mac and the Pi, so the link line is not hardcoded | 300M+, current |
 | libsoxr | v2 resampling, hand-written FFI | C library static since 2023 |
@@ -574,6 +638,6 @@ Measured against `linux/input.h` on aarch64: `sizeof(struct input_event)` is 24 
 figure is a property of the base `decisions.md` chose rather than of the struct, and
 the layout is derived from `size_of::<libc::timeval>()` instead of hardcoded.
 
-The reversibility that keeps open question 1 open rests on `embedded-graphics`,
+The reversibility that keeps the panel choice open rests on `embedded-graphics`,
 which is healthy — not on any individual panel driver, which is what a naive read
 of the download counts would worry about.
