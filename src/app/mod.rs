@@ -18,5 +18,6 @@
 //! So the loop is library code, and the two binaries under `src/bin` are thin.
 
 pub mod audio;
+pub mod controls;
 pub mod deck;
 pub mod track;
