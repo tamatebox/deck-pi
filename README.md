@@ -159,7 +159,7 @@ libsndfile is a system library, found through `pkg-config`:
 ```sh
 brew install libsndfile pkg-config          # macOS
 sudo apt install libsndfile1-dev pkg-config # Debian / Raspberry Pi OS
-cargo test    # 199 tests on Linux, 184 on macOS; green in debug and release
+cargo test    # green in debug and release; Linux/aarch64 is the gate, see below
 ```
 
 Four tests are `#[ignore]`d and none is a skipped assertion. One is the demo-file
@@ -190,6 +190,14 @@ on both platforms.
 rustup component add clippy   # inside the container, once
 cargo clippy --all-targets -- -D warnings
 ```
+
+**Linux/aarch64 is the gate, and a green macOS run proves nothing about the deck.**
+Both are worth running — the Mac loop is much faster and that is why it exists —
+but what compiles out there is precisely the hardware-facing half: `src/rt.rs`,
+the ALSA sink, `src/input.rs`'s device module and the `/proc` half of media
+watch. Roughly fifteen tests, and they are the fifteen that touch the machine
+the deck is. Report the Linux figure; treat the macOS one as a development
+convenience.
 
 **Most of it builds and is tested off the target.** The ALSA sink is Linux-only and
 sits behind an `AudioSink` trait, so on a Mac the same engine drives a capture sink

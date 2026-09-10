@@ -177,6 +177,25 @@ pub trait AudioSink {
     /// would start costing something.
     fn drain(&mut self) -> Result<(), SinkError>;
 
+    /// Whether this sink runs dry when it is not handed a period on time.
+    ///
+    /// **The miss rule, stated by the sink instead of remembered by the
+    /// caller.** On a miss the engine fills the buffer with silence and calls
+    /// it "silence, not a stall". A real device must be handed that silence:
+    /// discarding it leaves ALSA to run out, which is an xrun, a `prepare()`
+    /// and a longer gap than the one period the engine was offering. A capture
+    /// sink has no device and no deadline, so it is handed nothing and the
+    /// caller waits instead — which is what lets the null test compare the
+    /// track's own samples rather than a faithful record of how late the
+    /// filler was.
+    ///
+    /// This was a `bool` parameter on the playback loop until it moved into
+    /// the library, and a parameter is a thing a caller can get wrong. The
+    /// default is `true`, so a sink that says nothing is assumed to starve.
+    fn starves_if_not_fed(&self) -> bool {
+        true
+    }
+
     /// Checks that the device is running what it was asked for, **while it is
     /// running**, and fails naming the field that differs.
     ///

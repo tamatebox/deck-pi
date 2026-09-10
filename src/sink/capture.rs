@@ -73,6 +73,13 @@ impl AudioSink for CaptureSink {
         self.params
     }
 
+    /// No device, so nothing runs dry. A caller that misses a period should
+    /// wait for the real samples rather than record the silence — see the
+    /// trait method.
+    fn starves_if_not_fed(&self) -> bool {
+        false
+    }
+
     fn write_period(&mut self, period: &[i32]) -> Result<(), SinkError> {
         if period.len() % SINK_CHANNELS != 0 {
             return Err(SinkError::WrongPeriodLength {

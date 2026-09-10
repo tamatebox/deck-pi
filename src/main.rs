@@ -3,9 +3,11 @@
 //! highlighted row.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use deck_pi::engine::{Engine, Outcome};
-use deck_pi::file::{OpenError, Track, RING_CHANNELS};
+use deck_pi::app::audio::Deck;
+use deck_pi::engine::Engine;
+use deck_pi::file::{OpenError, Track};
 use deck_pi::browser::{Browser, Row, Verdict};
 use deck_pi::media::{self, Medium};
 use deck_pi::ring;
@@ -256,135 +258,73 @@ fn main() {
 /// shape the realtime thread will have, minus `SCHED_FIFO` and `mlockall`.
 fn play<S: AudioSink>(
     path: &std::path::Path,
-    sink: &mut S,
+    sink: S,
     label: &str,
-    feed_silence_on_miss: bool,
 ) -> Result<(), String> {
-    let period_frames = sink.period_frames();
     let (window, reader, info) = Window::load(path, ring::WINDOW_BYTES_PLACEHOLDER)
         .map_err(|e| e.to_string())?;
 
+    // The window thread's failure has to reach the audio thread without a
+    // lock on the deadline, so the flag is an atomic and the text — which
+    // only the reporting below reads — is beside it.
+    let lost = std::sync::Arc::new(AtomicBool::new(false));
+    let why = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+    let (l, w) = (std::sync::Arc::clone(&lost), std::sync::Arc::clone(&why));
     let (tx, rx) = std::sync::mpsc::channel();
-    let failure = std::sync::Arc::new(std::sync::Mutex::new(None));
-    let f = std::sync::Arc::clone(&failure);
     let thread = std::thread::spawn(move || {
         window.run(rx, move |e| {
             if let deck_pi::window::Event::Failed(msg) = e {
-                *f.lock().unwrap() = Some(msg);
+                *w.lock().unwrap() = Some(msg);
+                l.store(true, Ordering::Release);
             }
         })
     });
 
-    let transport = Transport::new();
-    let mut engine = Engine::new(info.frames);
+    let transport = std::sync::Arc::new(Transport::new());
     transport.play();
+    let deck = Deck {
+        transport: std::sync::Arc::clone(&transport),
+        reader,
+        engine: Engine::new(info.frames),
+        sink,
+    };
 
-    let started = std::time::Instant::now();
-    let mut period = vec![0i32; period_frames * RING_CHANNELS];
-    let mut played = 0u64;
-    let mut waits = 0u64;
-    let mut underruns = 0u64;
-    let mut peak: i32 = 0;
-    let mut verified = false;
+    // **No realtime setup from the bring-up CLI.** `--rt-check` is where that
+    // is exercised and where a refusal is an error; promoting this thread
+    // here would make every `--drain` on a developer desk print a refusal it
+    // can do nothing about.
+    let stop = AtomicBool::new(false);
+    let (deck, stopped, report) = deck_pi::app::audio::run(deck, &stop, &lost, None);
 
-    loop {
-        match engine.fill(&transport, &reader, &mut period) {
-            Outcome::Played { frames } | Outcome::PlayedTail { frames } => {
-                for &s in &period[..frames * RING_CHANNELS] {
-                    peak = peak.max(s.abs());
-                }
-                match sink.write_period(&period[..frames * RING_CHANNELS]) {
-                    Ok(()) => {
-                        played += frames as u64;
-                        // Once, as soon as the stream is actually running.
-                        // `hw_params` reads `closed` before that and after
-                        // `drain`, which is why this cannot wait until the
-                        // end — the previous version read it after playback
-                        // and printed it without comparing anything.
-                        if !verified {
-                            verified = true;
-                            if let Err(e) = sink.verify_in_force() {
-                                return Err(format!("ALSA substituted something: {e}"));
-                            }
-                        }
-                    }
-                    Err(deck_pi::sink::SinkError::Underrun) => underruns += 1,
-                    Err(e) => return Err(e.to_string()),
-                }
-            }
-            Outcome::EndOfTrack => {
-                // The deck stops here rather than advancing; see
-                // `Transport::reached_end`. This loop is the only caller
-                // today, which is the whole of what "the app loop" means so
-                // far.
-                transport.reached_end();
-                break;
-            }
-            // Any miss: the window thread has not got here yet, or it is
-            // mid-relocation. Both are transient and both are a period of
-            // silence, not a failure — matching `Miss` as a whole rather than
-            // naming one variant is deliberate, because `Relocated` used to
-            // fall through to the arm below and end playback. It is common at
-            // the start of a track, where the window relocates to frame zero.
-            Outcome::Missed(_) => {
-                waits += 1;
-                if failure.lock().unwrap().is_some() {
-                    break;
-                }
-                if feed_silence_on_miss {
-                    // **A real device has to be fed.** `engine.rs` fills the
-                    // buffer with silence and calls it "silence, not a
-                    // stall"; discarding it leaves ALSA to run dry, which is
-                    // an xrun, a `prepare()` and a longer gap than the one
-                    // period the engine was offering. The position does not
-                    // advance, so the track resumes where it was and comes
-                    // out one period longer — which is what a dropout is.
-                    //
-                    // A capture sink is fed nothing and waits instead: it has
-                    // no deadline, and the null test wants the track's own
-                    // samples rather than a faithful record of how late the
-                    // filler was.
-                    match sink.write_period(&period) {
-                        Ok(()) | Err(deck_pi::sink::SinkError::Underrun) => {}
-                        Err(e) => return Err(e.to_string()),
-                    }
-                }
-                std::thread::yield_now();
-            }
-            other => {
-                println!("        {}: {:?} at frame {}", label, other, engine.position());
-                break;
-            }
-        }
-    }
-
-    let _ = sink.drain();
     let _ = tx.send(deck_pi::window::Command::Shutdown);
     let _ = thread.join();
+    // Dropped here, on this thread, which is the point of `run` handing it
+    // back: the ring's last `Arc` goes with the reader, and 64 MiB freed on
+    // the audio thread is the hazard `implementation.md` names.
+    drop(deck);
 
-    let elapsed = started.elapsed();
-    if let Some(msg) = failure.lock().unwrap().clone() {
-        return Err(format!("after {} frames: {}", played, msg));
+    if let Some(msg) = why.lock().unwrap().clone() {
+        return Err(format!("after {} frames: {}", report.frames, msg));
     }
-    let audio_secs = played as f64 / info.rate as f64;
+    if let deck_pi::app::audio::Stopped::Unexpected(e) = &stopped {
+        return Err(e.clone());
+    }
+    let audio_secs = report.frames as f64 / info.rate as f64;
     println!(
         "        {}: {}/{} frames in {:.3} s ({:.1}x realtime), {} waits, \
          {} underruns, peak {:#x}",
         label,
-        played,
+        report.frames,
         info.frames,
-        elapsed.as_secs_f64(),
-        audio_secs / elapsed.as_secs_f64().max(1e-9),
-        waits,
-        underruns,
-        peak
+        report.elapsed.as_secs_f64(),
+        audio_secs / report.elapsed.as_secs_f64().max(1e-9),
+        report.misses,
+        report.underruns,
+        report.peak
     );
     Ok(())
 }
 
-/// Pulls the whole track through window thread, ring and callback into a
-/// capture sink — the entire v1 software path with a collector where ALSA
-/// would be. Runs anywhere, including a machine with no sound card.
 fn drain_through_the_ring(path: &std::path::Path) {
     const PERIOD: usize = 256;
     let rate = match Track::open(path) {
@@ -396,15 +336,12 @@ fn drain_through_the_ring(path: &std::path::Path) {
     };
     // Capacity for the whole track, so nothing reallocates mid-run.
     let frames = Track::open(path).map(|t| t.info().frames).unwrap_or(0) as usize;
-    let mut sink = CaptureSink::new(rate, PERIOD, frames + PERIOD);
-    if let Err(e) = play(path, &mut sink, "drain", false) {
+    let sink = CaptureSink::new(rate, PERIOD, frames + PERIOD);
+    if let Err(e) = play(path, sink, "drain") {
         println!("        drain: FAILED — {}", e);
     }
 }
 
-/// Plays for real, and runs the two checks `implementation.md` calls the
-/// hardware half — with the card's mixer inspected first, because a card with
-/// a volume control has its driver scale the stream even on `hw:`.
 #[cfg(target_os = "linux")]
 /// Returns whether the device actually played it.
 fn play_to_device(path: &std::path::Path, device: &str) -> bool {
@@ -423,7 +360,7 @@ fn play_to_device(path: &std::path::Path, device: &str) -> bool {
         }
     };
 
-    let mut sink = match AlsaSink::open(device, rate, PERIOD, PERIODS) {
+    let sink = match AlsaSink::open(device, rate, PERIOD, PERIODS) {
         Ok(s) => s,
         Err(e) => {
             println!("        device: could not open {} at {} Hz — {}", device, rate, e);
@@ -447,7 +384,7 @@ fn play_to_device(path: &std::path::Path, device: &str) -> bool {
         Err(e) => println!("        mixer:  WARNING {}", e),
     }
 
-    if let Err(e) = play(path, &mut sink, "device", true) {
+    if let Err(e) = play(path, sink, "device") {
         println!("        device: FAILED — {}", e);
         return false;
     }

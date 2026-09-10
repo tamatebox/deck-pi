@@ -10,6 +10,7 @@
 //! the cue store and input. Not started: the display, and the app loop that would
 //! join these together.
 
+pub mod app;
 pub mod browser;
 pub mod cue;
 pub mod engine;
