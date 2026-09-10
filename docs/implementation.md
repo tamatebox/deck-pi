@@ -132,7 +132,7 @@ needs a different check and the cheap one clears most of them.**
 | 4 | An unstated premise, true of the code and false of the hardware | name the cardinality the code chose, where no document states one | `Device::wait` polled 1 of the 7 nodes `config.txt` creates — most buttons dead |
 | 5 | Correct only because something else chose to behave | ask what the code relies on the other side *choosing* to do | `wait` ignored `revents`; a hung-up fd spun 340,838 times in 200 ms, hidden because real evdev returns `ENODEV` |
 | 6 | Partial by physics | ask whether the job is as large as the problem | absolute-axis rollover folds correctly; the clamped case emits no event at all, so nothing is recoverable |
-| 7 | **Absence of a complaint read as evidence** | break the thing on purpose and confirm the check complains | a linter whose error went to stderr and whose silence was read as a pass; a symmetric null test; a race harness reaching `Overrun` 8.6M times and detecting nothing |
+| 7 | **Absence of a complaint read as evidence** | break the thing on purpose and confirm the check complains | a linter whose error went to stderr and whose silence was read as a pass; a symmetric null test; a race harness reaching `Overrun` 8.6M times and detecting nothing; a guard whose enforcement depended on **linkage** — an integration test that never touches the crate gets no `#[global_allocator]`, so every `assert_no_alloc` in it silently passes |
 | 8 | True under a reading nobody would take | read your own sentence as a stranger, not as its author | "no code path stores this", written beside the constructor |
 
 Three of these need more than a row.
@@ -154,7 +154,8 @@ for a drifting hold threshold. It has to be one `poll` over all of them.
 than code.** In each instance nothing complained, and nothing complaining was
 taken as a result: a check that never ran, a check that was symmetric so the
 error cancelled, a probe optimised out because its allocation was unused, a
-harness with no measured sensitivity. **The only way to know a check works is to
+harness with no measured sensitivity, a guard that was present in the source and
+absent from the binary. **The only way to know a check works is to
 make it fail** — remove the fix and confirm the test goes red. Where that is
 probabilistic, the detection rate is itself a measurement: this repository's
 ring-race guard was measured at 1 detection in 5 runs on macOS and 1 in 10 on

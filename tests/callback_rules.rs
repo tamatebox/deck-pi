@@ -10,42 +10,13 @@
 //! (docs/implementation.md, "Process setup").
 
 use assert_no_alloc::assert_no_alloc;
+use deck_pi::no_alloc;
 
 use deck_pi::engine::{Engine, Outcome};
 use deck_pi::file::RING_CHANNELS;
 use deck_pi::ring::{self, Miss};
 use deck_pi::sink::{AudioSink, CaptureSink};
 use deck_pi::transport::Transport;
-
-/// `assert_no_alloc`, made to mean the same thing in both profiles.
-///
-/// **In release it did not.** `Cargo.toml` selects `warn_release`, under which
-/// a violation prints one line and increments a counter — `assert_no_alloc`
-/// itself does not panic. None of the five regions below looked at that
-/// counter, so **each of them passed in release whether or not the callback
-/// allocated**, and `CLAUDE.md`'s "green in debug and release" carried no
-/// allocation-freedom claim for the release half at all. Verified by putting a
-/// `Vec::with_capacity(4096)` inside a region: release printed
-/// `violations counted: 2` and the test passed.
-///
-/// Release is the profile that matters here — it is what runs on the deck, and
-/// its codegen is what could introduce a temporary the debug build does not.
-///
-/// The counter only exists when the warn feature is active for the profile,
-/// hence the `cfg`; in debug the wrapper is plain `assert_no_alloc`, which
-/// aborts.
-fn no_alloc<T>(f: impl FnOnce() -> T) -> T {
-    #[cfg(not(debug_assertions))]
-    assert_no_alloc::reset_violation_count();
-    let out = assert_no_alloc(f);
-    #[cfg(not(debug_assertions))]
-    assert_eq!(
-        assert_no_alloc::violation_count(),
-        0,
-        "the callback allocated in release — see the line printed above"
-    );
-    out
-}
 
 /// Everything the audio callback does, on a resident window.
 #[test]
