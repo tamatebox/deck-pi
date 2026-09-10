@@ -35,7 +35,7 @@
 //! kind of silent, well-meant alteration this project exists to avoid. The
 //! cue point starts at frame zero unless set.
 
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{fence, AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 /// Unity. At this rate, with output rate matched to the source, the samples
 /// reach the DAC untouched — which is the whole point of v1.
@@ -82,10 +82,47 @@ impl State {
 /// Every field is a single atomic, so there is no torn state to guard and no
 /// lock for the callback to take. `f64`s travel as their bit patterns, which
 /// is exact — this is a reinterpretation, not a conversion.
+///
+/// # Publishing order
+///
+/// **"No torn state" is true of each field and was false of the pair the
+/// callback decides on.** `Engine::step` reads `rate` and then `is_silent()`,
+/// and a control-thread write of the two is two stores: interleave them and
+/// the callback sees a combination that never existed. No memory reordering is
+/// needed — two adjacent loads against two adjacent stores is enough.
+///
+/// The combination that mattered was `rate == ±RATE_SEEK` with `silent ==
+/// false`, which `step` reads as "a rate other than unity that is not a silent
+/// seek" and reports as `Outcome::NeedsResampler`. v1 has no resampler, so the
+/// caller treats that as fatal — measured at **10.7M of 35.6M fills** with the
+/// control thread pressing and releasing FF, which is a rare event in real use
+/// and a stopped deck when it happens.
+///
+/// The fix is an ordering rule, not a lock and not a wider atomic:
+///
+/// - **Entering** a silent state, set `silent` **first**, then the rate.
+/// - **Leaving** one, set the rate **first**, then `silent`.
+///
+/// So `silent` is never false while the rate is still a seek rate, and the bad
+/// combination cannot be observed. What a badly timed read can still see is
+/// `silent == true` with a rate of unity or zero, which costs one period of
+/// silence or one period of seeking at 1x instead of 4x. Both are recoverable
+/// and neither is reported as an error.
+///
+/// **Deriving `silent` from the rate would remove the pair entirely and is
+/// deliberately not done.** In v1 `silent` holds exactly when `|rate| ==
+/// RATE_SEEK`, so the flag looks redundant — but `decisions.md` has FF/REW
+/// becoming an **audible** `r = 4` in v2, so the equivalence is a v1-only
+/// accident. Encoding it here would work now and have to be unpicked then,
+/// which is the same trap as serving the ring with a FIFO.
 pub struct Transport {
     /// The rate variable `r`. One number carries pause, play, and in v2 pitch
     /// and jog, which is why all three ride the same read path.
     rate: AtomicU64,
+    /// Version around the `(rate, silent)` pair, odd while a write is in
+    /// flight. See "Publishing order" on the type — the pair is what the
+    /// callback decides on, and it has to be read as one thing.
+    motion: AtomicU32,
     /// True while the audio must be muted even though the position is moving.
     /// This is what makes FF and REW a *silent* seek in v1 without giving v1
     /// a second read mode. v2 clears it and the same seek becomes audible.
@@ -109,6 +146,7 @@ impl Default for Transport {
     fn default() -> Self {
         Transport {
             rate: AtomicU64::new(RATE_PAUSED.to_bits()),
+            motion: AtomicU32::new(0),
             silent: AtomicBool::new(false),
             seek_to: AtomicI64::new(-1),
             position: AtomicU64::new(0.0f64.to_bits()),
@@ -127,8 +165,7 @@ impl Transport {
     // ---- control thread ----
 
     pub fn play(&self) {
-        self.silent.store(false, Ordering::Relaxed);
-        self.rate.store(RATE_UNITY.to_bits(), Ordering::Release);
+        self.publish_motion(RATE_UNITY, false);
         self.state.store(State::Playing as u8, Ordering::Relaxed);
     }
 
@@ -136,8 +173,7 @@ impl Transport {
     /// Whether STOP should return to a cue point is part of the undecided CUE
     /// semantics, so it is not done here.
     pub fn pause(&self) {
-        self.silent.store(false, Ordering::Relaxed);
-        self.rate.store(RATE_PAUSED.to_bits(), Ordering::Release);
+        self.publish_motion(RATE_PAUSED, false);
         self.state.store(State::Paused as u8, Ordering::Relaxed);
     }
 
@@ -147,8 +183,7 @@ impl Transport {
     /// bit-perfection.
     pub fn begin_seek(&self, forward: bool) {
         let r = if forward { RATE_SEEK } else { -RATE_SEEK };
-        self.silent.store(true, Ordering::Relaxed);
-        self.rate.store(r.to_bits(), Ordering::Release);
+        self.publish_motion(r, true);
         self.state.store(
             if forward {
                 State::SeekingForward as u8
@@ -262,9 +297,61 @@ impl Transport {
         f64::from_bits(self.rate.load(Ordering::Acquire))
     }
 
+    /// Publishes the rate and the silent flag as one indivisible change.
+    ///
+    /// Only the control thread calls this, so the version needs no
+    /// compare-and-swap; the odd value is what tells a reader mid-flight.
+    fn publish_motion(&self, rate: f64, silent: bool) {
+        let v = self.motion.load(Ordering::Relaxed);
+        self.motion.store(v.wrapping_add(1), Ordering::Relaxed);
+        fence(Ordering::Release);
+        self.silent.store(silent, Ordering::Relaxed);
+        self.rate.store(rate.to_bits(), Ordering::Relaxed);
+        self.motion.store(v.wrapping_add(2), Ordering::Release);
+    }
+
+    /// The rate and the silent flag, as one consistent reading.
+    ///
+    /// **Use this, not `rate()` and `is_silent()` separately, anywhere the two
+    /// are decided on together.** Those remain for callers that genuinely want
+    /// one — the display wants the rate, a test wants the flag — but the
+    /// callback's branch depends on the pair, and two loads across two stores
+    /// see combinations that never existed. See "Publishing order" on the type.
+    ///
+    /// Bounded at two attempts, so it stays O(1) as the callback rules
+    /// require. If both race — which needs a control write to land inside a
+    /// window of a few instructions, twice — it reports a paused, silent deck:
+    /// one period of silence, recovered on the next call. That is the only
+    /// reading that is safe to invent, because it neither moves the position
+    /// nor emits anything.
+    #[inline]
+    pub fn motion(&self) -> (f64, bool) {
+        for _ in 0..2 {
+            let before = self.motion.load(Ordering::Acquire);
+            if before & 1 == 0 {
+                let silent = self.silent.load(Ordering::Relaxed);
+                let rate = f64::from_bits(self.rate.load(Ordering::Relaxed));
+                // The two loads above must not sink past this check. The
+                // `Acquire` on the load below orders what *follows* it, not
+                // what precedes it — the same asymmetry that left `src/ring.rs`
+                // unsound, so the fence is not optional here either.
+                fence(Ordering::Acquire);
+                if self.motion.load(Ordering::Relaxed) == before {
+                    return (rate, silent);
+                }
+            }
+            std::hint::spin_loop();
+        }
+        (RATE_PAUSED, true)
+    }
+
     #[inline]
     pub fn is_silent(&self) -> bool {
-        self.silent.load(Ordering::Relaxed)
+        // `Acquire`, pairing with the `Release` on the *clear* in `play`,
+        // `pause` and `reached_end`. Seeing `false` here must also mean
+        // seeing the rate that was stored before it, or the callback decides
+        // on a pair that never existed. See "Publishing order" on the type.
+        self.silent.load(Ordering::Acquire)
     }
 
     pub fn state(&self) -> State {
@@ -305,7 +392,7 @@ impl Transport {
     /// button that owns the mode question.
     #[cfg(test)]
     pub(crate) fn set_rate_for_test(&self, r: f64) {
-        self.rate.store(r.to_bits(), Ordering::Release);
+        self.publish_motion(r, self.silent.load(Ordering::Relaxed));
     }
 
     /// Reports reaching the end of the track. Stops the rate so the position
@@ -331,8 +418,7 @@ impl Transport {
     /// `begin_seek()` — the same split-store hazard the rest of this type is
     /// careful about, introduced to save the caller a line.
     pub fn reached_end(&self) {
-        self.rate.store(RATE_PAUSED.to_bits(), Ordering::Release);
-        self.silent.store(false, Ordering::Relaxed);
+        self.publish_motion(RATE_PAUSED, false);
         self.previewing.store(false, Ordering::Relaxed);
         self.state.store(State::Paused as u8, Ordering::Relaxed);
     }

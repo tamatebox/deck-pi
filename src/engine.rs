@@ -86,8 +86,11 @@ impl Engine {
             self.position = target.min(self.track_frames) as f64;
         }
 
-        let rate = t.rate();
-        let outcome = self.step(t, ring, out, frames, rate);
+        // One reading of the pair the branch below depends on, not two
+        // loads that can straddle a control-thread write. See
+        // `Transport::motion`.
+        let (rate, silent) = t.motion();
+        let outcome = self.step(ring, out, frames, rate, silent);
 
         // Publish after the decision, so the display and the window thread
         // see where the audio actually is.
@@ -98,11 +101,11 @@ impl Engine {
 
     fn step(
         &mut self,
-        t: &Transport,
         ring: &RingReader,
         out: &mut [i32],
         frames: u64,
         rate: f64,
+        silent: bool,
     ) -> Outcome {
         // A silent seek moves the position and emits nothing, so the rate may
         // be anything — including negative — without needing a resampler.
@@ -112,7 +115,7 @@ impl Engine {
         // `EndOfTrack` forever and REW cannot move the position back out of
         // it — the only way off the last frame would be reloading the file.
         // Seeking is a position operation and has to work at the boundaries.
-        if t.is_silent() && rate != RATE_PAUSED {
+        if silent && rate != RATE_PAUSED {
             silence(out);
             self.advance(rate * frames as f64);
             return Outcome::Seeking;
