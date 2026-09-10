@@ -159,7 +159,7 @@ libsndfile is a system library, found through `pkg-config`:
 ```sh
 brew install libsndfile pkg-config          # macOS
 sudo apt install libsndfile1-dev pkg-config # Debian / Raspberry Pi OS
-cargo test    # 192 tests on Linux, 177 on macOS; green in debug and release
+cargo test    # 199 tests on Linux, 184 on macOS; green in debug and release
 ```
 
 Four tests are `#[ignore]`d and none is a skipped assertion. One is the demo-file

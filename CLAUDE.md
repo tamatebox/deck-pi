@@ -15,8 +15,8 @@ changes to either.
 **Status.** The v1 read path is built and tested: the libsndfile FFI, format
 vetting, the locked int32 ring, the window thread, the transport, the audio
 callback, the ALSA sink behind an `AudioSink` trait, the realtime process setup and
-the browser, media watch, the cue store and input. 192 tests green in debug and
-release on Linux/aarch64 (177 on macOS, where the Linux-only paths compile out),
+the browser, media watch, the cue store and input. 199 tests green in debug and
+release on Linux/aarch64 (184 on macOS, where the Linux-only paths compile out),
 clippy clean on both — **and that was never evidence about the things this project
 gets wrong, which is recorded here so the line is not read as though it were.** Of
 the sixteen faults found in the review that produced most of these tests, clippy
