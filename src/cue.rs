@@ -214,7 +214,24 @@ impl CueStore {
         std::fs::rename(&tmp, &self.file).map_err(|e| CueError::Io {
             path: self.file.clone(),
             source: e,
-        })
+        })?;
+
+        // **And fsync the directory, or the rename itself is not durable.**
+        // `sync_all` above puts the *contents* on the card; it says nothing
+        // about the directory entry that names them. On ext4 with the default
+        // five-second commit interval, `set` can return `Ok` and the previous
+        // cue still be there after the power goes — which is the exact
+        // scenario `decisions.md` gives as the reason this writes through at
+        // all: "a deck gets switched off at the wall". Losing the last cue set
+        // is milder than losing the file, but it is silent, and a caller that
+        // reads `Ok` as "saved" is entitled to.
+        //
+        // Best-effort: a filesystem that refuses to open a directory for this
+        // is not a reason to report a failed save, because the save succeeded.
+        if let Ok(d) = std::fs::File::open(dir) {
+            let _ = d.sync_all();
+        }
+        Ok(())
     }
 
     /// The key: the path relative to the mount point, as raw bytes.
