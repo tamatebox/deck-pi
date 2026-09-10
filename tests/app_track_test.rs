@@ -323,7 +323,7 @@ fn the_thread_survives_the_end_of_the_track_and_a_cue_back_into_it() {
     let frames = 2_000u64;
     let path = r.track("piece", frames as usize);
     let tally = Tally::default();
-    let playing = r.load(&path, &tally).expect("loads");
+    let mut playing = r.load(&path, &tally).expect("loads");
 
     r.transport.play();
     wait_for("the track to play out", || tally.frames() >= frames);

@@ -324,12 +324,25 @@ impl<S: AudioSink> Playing<S> {
     /// next stage, and until then this module's caller is its tests. That is
     /// true of [`load`] as well, so it is said once here rather than filed
     /// against each function.
-    pub fn service(&self) {
+    ///
+    /// **`&mut self` is a fence, not a signature.** "The control thread and
+    /// only the control thread" is the precondition this whole arrangement
+    /// turns on, and `&self` would let two threads call it at once while
+    /// `&mut self` makes that unavailable. It costs one `mut` in the tests
+    /// and no test surface, which is `decisions.md`'s deciding question.
+    pub fn service(&mut self) {
         if self.transport.rate() == crate::transport::RATE_PAUSED {
             return;
         }
-        if self.transport.position() >= self.info.frames as f64 {
-            self.transport.reached_end();
+        // **`settled_position`, not `position`** — the pair has to be read in
+        // the mirror of the order the callback writes it, and taking it the
+        // wrong way round is exactly the defect this function was built to
+        // fix, one layer up. `None` means a seek is in flight and the
+        // question is answered next period.
+        if let Some(at) = self.transport.settled_position() {
+            if at >= self.info.frames as f64 {
+                self.transport.reached_end();
+            }
         }
     }
 

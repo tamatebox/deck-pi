@@ -384,6 +384,51 @@ impl Transport {
         f64::from_bits(self.position.load(Ordering::Relaxed))
     }
 
+    /// The position, or `None` while a seek is in flight.
+    ///
+    /// **Use this, not [`position`](Self::position), for anything you are
+    /// about to act on.** The callback's protocol is apply, publish, retire
+    /// ([`peek_seek`](Self::peek_seek)), so a reader has to observe those in
+    /// the mirror order — retire first, position second — and a reader that
+    /// takes them the other way round reads a pre-seek position and then asks
+    /// a question that has already been answered. That is not a smaller
+    /// version of the same mistake; it is the same mistake. The end-of-track
+    /// pause was written with the loads in the wrong order on the day the
+    /// protocol was introduced, by the same hand, one file away.
+    ///
+    /// **The `Acquire` on the peek is what makes it work, and only in this
+    /// order.** Acquire orders what *follows* it, so peeking first puts the
+    /// position load after the retire it is paired with; peeking second
+    /// orders nothing that has already happened. `src/ring.rs`'s module doc
+    /// has the same asymmetry costing 18 corrupt reads in 90.6M, and
+    /// [`motion`](Self::motion) cites it — this is that argument's third
+    /// appearance in this codebase, which is the reason it is spelled once
+    /// here instead of at each call site.
+    ///
+    /// **Measured: no test in this repository can see the order, which is
+    /// why the pair is behind one function rather than left to call sites.**
+    /// Swapping the two lines below turns the whole suite red in **0 runs of
+    /// 10**; so does giving the caller the two loads and letting it take them
+    /// in the wrong order — which is the state that was committed in
+    /// `3492ea4`, green, and found by review rather than by the suite. A
+    /// defect no check can catch is not made safe by care; it is made safe by
+    /// being unavailable. That is what this function is: not a convenience
+    /// over `peek_seek` plus `position`, but the only spelling of the pair
+    /// that a caller cannot get wrong.
+    ///
+    /// `None` means "ask again next period", which is 2.9 ms at 44.1 kHz with
+    /// 128-frame periods. A caller that cannot wait — `cue_down` must do
+    /// *something* with every press, because `hardware.md` refuses controls
+    /// that sometimes do nothing — reads `position` directly and accepts a
+    /// staleness bounded by one period against a 30-50 ms debounce.
+    #[inline]
+    pub fn settled_position(&self) -> Option<f64> {
+        if self.peek_seek().is_some() {
+            return None;
+        }
+        Some(self.position())
+    }
+
     // ---- audio callback ----
 
     /// A queued seek, **without** consuming it. Pair with
@@ -420,6 +465,18 @@ impl Transport {
     /// dropped.** It is then serviced on the next period — one period late,
     /// 2.9 ms at 44.1 kHz with 128-frame periods, against losing a cue jump
     /// outright, which is a button that did nothing.
+    ///
+    /// **The compare-exchange has an ABA and it is benign for one reason
+    /// only.** Request X, peek X, apply, request X again, and this retires
+    /// the *second* X believing it is the first — the request is swallowed.
+    /// That is harmless because applying a seek is idempotent in its target:
+    /// it sets `position = min(target, frames)` and does nothing else, so a
+    /// second request for X wanted exactly where the deck already is. **It
+    /// stops being harmless the moment servicing a seek acquires a side
+    /// effect**, and there is a named candidate — `window::Command::Relocate`,
+    /// which the app loop owes on any seek leaving the resident span. Send
+    /// that per *request* rather than per *applied seek*, or make this a
+    /// counter rather than a value.
     #[inline]
     pub fn consumed_seek(&self, target: u64) {
         let _ = self.seek_to.compare_exchange(
@@ -500,11 +557,17 @@ impl Transport {
         // started. It sits at the cue point having been told to play, and in
         // a venue that reads as a dead PLAY button after every Back Cue.
         //
-        // The guard is exact **because this runs on the control thread**,
-        // which is the only writer of the state it checks and then changes;
-        // nothing can queue a seek between the two. On the audio thread it
-        // would only be narrow, which is where this started — see the
-        // paragraph above.
+        // **Exact about the stores, and about nothing else.** Because this
+        // runs on the control thread — the only writer of what it checks and
+        // then changes — nothing can queue a seek between this guard and the
+        // three stores below; on the audio thread that gap was merely narrow,
+        // which is where this started. What the guard cannot vouch for is the
+        // *premise*: the caller decided the track had ended by reading a
+        // position, and `seek_to` is written by both threads, so a guard
+        // placed after that read cannot make it fresh. Freshness is
+        // [`settled_position`](Self::settled_position)'s job, at the read.
+        // Reading this as closing the whole question is what let the caller
+        // take the pair in the wrong order.
         //
         // It belongs here rather than in the caller for the reason `end_seek`
         // guards itself: a pending seek means the position this conclusion
@@ -833,6 +896,31 @@ mod tests {
         t.consumed_seek(target);
 
         assert_eq!(t.peek_seek(), Some(200), "the newer request must survive");
+    }
+
+    #[test]
+    fn a_position_read_while_a_seek_is_in_flight_has_no_settled_answer() {
+        // The reader's half of the protocol. A caller about to *act* on the
+        // position must observe the retire before the position, and the only
+        // way to offer that is to answer "not yet" while a seek is pending —
+        // the alternative is a pair of loads a caller can take in either
+        // order, and the first caller took them in the wrong one.
+        let t = Transport::new();
+        t.publish_position(2_000.0);
+        assert_eq!(t.settled_position(), Some(2_000.0));
+
+        t.request_seek(0);
+        assert_eq!(
+            t.settled_position(),
+            None,
+            "2,000 is the pre-seek answer and acting on it is the defect"
+        );
+
+        // The callback's order: apply, publish, retire.
+        let target = t.peek_seek().expect("queued");
+        t.publish_position(target as f64);
+        t.consumed_seek(target);
+        assert_eq!(t.settled_position(), Some(0.0));
     }
 
     #[test]
