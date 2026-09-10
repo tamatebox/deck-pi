@@ -14,63 +14,160 @@ use deck_pi::sink::{AudioSink, CaptureSink};
 use deck_pi::transport::Transport;
 use deck_pi::window::Window;
 
+/// What the CLI was asked to do. Exactly one of these, which is the point:
+/// the old parser let `--rt-check` win from any position while silently
+/// ignoring everything else on the line, and let `--device=` win over
+/// `--drain` without saying so.
+#[derive(Debug, PartialEq, Eq)]
+enum Mode {
+    /// Report what the file layer makes of each path, and stop.
+    Report,
+    /// Also pull every frame through the window thread, ring and callback.
+    Drain,
+    /// Play for real through ALSA.
+    Device(String),
+    RtCheck(Option<usize>),
+    MediaCheck(PathBuf),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Args {
+    mode: Mode,
+    paths: Vec<PathBuf>,
+}
+
+/// Hand-rolled, and small enough to stay that way — but **every unrecognised
+/// argument is an error**, which is the whole of what was wrong before.
+///
+/// `deck-pi --drian short.wav` used to print `UNREAD --drian`, then play the
+/// file *without* draining, and exit 0. Three failures in one line: the typo
+/// became a filename, the mode it asked for was silently not applied, and the
+/// exit code said everything was fine. A bring-up tool that reports success
+/// for a run that did not happen is worse than no tool.
+fn parse<I: IntoIterator<Item = std::ffi::OsString>>(argv: I) -> Result<Args, String> {
+    let mut paths = Vec::new();
+    let mut drain = false;
+    let mut device = None;
+    let mut rt_check = None;
+    let mut media_check = None;
+    let mut only_paths = false;
+
+    for arg in argv {
+        let text = arg.to_string_lossy().into_owned();
+        if only_paths || !text.starts_with('-') {
+            paths.push(PathBuf::from(arg));
+            continue;
+        }
+        match text.as_str() {
+            // Everything after `--` is a path, for a file whose name begins
+            // with a dash.
+            "--" => only_paths = true,
+            "--drain" => drain = true,
+            "--rt-check" => rt_check = Some(None),
+            "--media-check" => media_check = Some(PathBuf::from(media::MOUNT_POINT)),
+            _ if text.starts_with("--device=") => {
+                device = Some(text["--device=".len()..].to_string())
+            }
+            _ if text.starts_with("--rt-check=") => {
+                let n = &text["--rt-check=".len()..];
+                // Parsed rather than `.ok()`-ed away: the old code turned
+                // `--rt-check=abc` into an unpinned run, so a typo in the one
+                // argument that exercises core pinning meant the pinning
+                // silently did not happen.
+                let cpu = n
+                    .parse::<usize>()
+                    .map_err(|_| format!("--rt-check= wants a core number, got {n:?}"))?;
+                rt_check = Some(Some(cpu));
+            }
+            _ if text.starts_with("--media-check=") => {
+                media_check = Some(PathBuf::from(&text["--media-check=".len()..]))
+            }
+            "--device" | "--rt-check-" => {
+                return Err(format!("{text} takes its value with '=', as {text}=..."))
+            }
+            _ => return Err(format!("unknown argument {text:?}")),
+        }
+    }
+
+    // The two check modes take over the whole run, so anything else on the
+    // line was ignored — which used to happen in silence.
+    let extras = drain || device.is_some() || !paths.is_empty();
+    match (rt_check, media_check) {
+        (Some(_), Some(_)) => Err("--rt-check and --media-check are separate runs".into()),
+        (Some(_), None) if extras => {
+            Err("--rt-check takes nothing else; it is a check, not a mode".into())
+        }
+        (None, Some(_)) if extras => {
+            Err("--media-check takes nothing else; it is a check, not a mode".into())
+        }
+        (Some(cpu), None) => Ok(Args { mode: Mode::RtCheck(cpu), paths }),
+        (None, Some(at)) => Ok(Args { mode: Mode::MediaCheck(at), paths }),
+        (None, None) => playback(drain, device, paths),
+    }
+}
+
+/// The ordinary run: report, drain, or play to a device.
+fn playback(drain: bool, device: Option<String>, paths: Vec<PathBuf>) -> Result<Args, String> {
+    // Both ask for playback and they are different playbacks. The old parser
+    // let the device win and dropped `--drain` on the floor.
+    if drain && device.is_some() {
+        return Err("--drain and --device= are two different runs; pick one".into());
+    }
+    if paths.is_empty() {
+        return Err("no file given".into());
+    }
+    let mode = match device {
+        Some(d) => Mode::Device(d),
+        None if drain => Mode::Drain,
+        None => Mode::Report,
+    };
+    Ok(Args { mode, paths })
+}
+
+fn usage() {
+    eprintln!("usage: deck-pi [--drain | --device=hw:...] [--] <file>...");
+    eprintln!("       deck-pi --rt-check[=N]");
+    eprintln!("       deck-pi --media-check[=PATH]");
+    eprintln!("  default          reports what the file layer makes of each path");
+    eprintln!("  --drain          also pulls every frame through the window thread,");
+    eprintln!("                   the ring and the callback into a capture sink");
+    eprintln!("  --device=hw:X,Y  plays for real through ALSA, and checks that the");
+    eprintln!("                   card exposes no volume control and that");
+    eprintln!("                   /proc/asound reports the rate and format asked for");
+    eprintln!("                   (Linux only; hw: devices only, never plughw)");
+    eprintln!("  --media-check[=P] reports the medium's state at P, and lists the root");
+    eprintln!("                   folder through the browser if it is browsable");
+    eprintln!("  --rt-check[=N]   applies the realtime setup and reads back what the");
+    eprintln!("                   kernel actually granted; =N also pins to core N");
+    eprintln!("                   (Linux only)");
+    eprintln!("  --               everything after this is a path");
+    eprintln!();
+    eprintln!("exit 0 only if every path was playable and every run succeeded.");
+}
+
 fn main() {
-    let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
-    if let Some(arg) = args
-        .iter()
-        .map(|a| a.to_string_lossy().into_owned())
-        .find(|s| s == "--media-check" || s.starts_with("--media-check="))
-    {
-        let path = arg
-            .strip_prefix("--media-check=")
-            .unwrap_or(media::MOUNT_POINT);
-        std::process::exit(media_check(std::path::Path::new(path)));
-    }
-    if let Some(arg) = args
-        .iter()
-        .map(|a| a.to_string_lossy().into_owned())
-        .find(|s| s == "--rt-check" || s.starts_with("--rt-check="))
-    {
-        // `--rt-check=2` also exercises core pinning, which is the one part
-        // of the setup with nothing to read it back from except the affinity
-        // mask itself.
-        let cpu = arg.strip_prefix("--rt-check=").and_then(|c| c.parse().ok());
-        std::process::exit(rt_check(cpu));
-    }
-    if args.is_empty() {
-        eprintln!("usage: deck-pi [--drain] [--device=hw:...] <file>...");
-        eprintln!("       deck-pi --rt-check");
-        eprintln!("  default          reports what the file layer makes of each path");
-        eprintln!("  --drain          also pulls every frame through the window thread,");
-        eprintln!("                   the ring and the callback into a capture sink");
-        eprintln!("  --device=hw:X,Y  plays for real through ALSA, and checks that the");
-        eprintln!("                   card exposes no mixer control and that");
-        eprintln!("                   /proc/asound reports the rate and format asked for");
-        eprintln!("                   (Linux only; hw: devices only, never plughw)");
-        eprintln!("  --media-check[=P] reports the medium's state at P, and lists the root");
-        eprintln!("                   folder through the browser if it is browsable");
-        eprintln!("  --rt-check[=N]   applies the realtime setup and reads back what the");
-        eprintln!("                   kernel actually granted; =N also pins to core N");
-        eprintln!("                   (Linux only)");
-        std::process::exit(2);
+    let args = match parse(std::env::args_os().skip(1)) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("deck-pi: {e}");
+            eprintln!();
+            usage();
+            std::process::exit(2);
+        }
+    };
+
+    match args.mode {
+        Mode::MediaCheck(at) => std::process::exit(media_check(&at)),
+        Mode::RtCheck(cpu) => std::process::exit(rt_check(cpu)),
+        _ => {}
     }
 
-    let drain = args.iter().any(|a| a == std::ffi::OsStr::new("--drain"));
-    let device: Option<String> = args.iter().find_map(|a| {
-        a.to_string_lossy()
-            .strip_prefix("--device=")
-            .map(|d| d.to_string())
-    });
-    let args: Vec<PathBuf> = args
-        .into_iter()
-        .filter(|a| {
-            let s = a.to_string_lossy();
-            s != "--drain" && !s.starts_with("--device=")
-        })
-        .collect();
-
-    for path in args {
-        match Track::open(&path) {
+    // **The exit code is a result, not a formality.** Every one of these
+    // paths used to end in `exit 0`, so a script could not tell a stick full
+    // of playable files from a stick full of FLAC.
+    let mut bad = 0usize;
+    for path in &args.paths {
+        match Track::open(path) {
             Ok(track) => {
                 let i = track.info();
                 let secs = i.duration_secs();
@@ -92,15 +189,31 @@ fn main() {
                     print!("  [declared length suspect: past the 2 GiB ceiling]");
                 }
                 println!();
-                match device.as_deref() {
-                    Some(d) => play_to_device(&path, d),
-                    None if drain => drain_through_the_ring(&path),
-                    None => {}
+                let played = match &args.mode {
+                    Mode::Device(d) => play_to_device(path, d),
+                    Mode::Drain => {
+                        drain_through_the_ring(path);
+                        true
+                    }
+                    _ => true,
+                };
+                if !played {
+                    bad += 1;
                 }
             }
-            Err(OpenError::Rejected(why)) => println!("REFUSED {}  {}", path.display(), why),
-            Err(OpenError::Unreadable(e)) => println!("UNREAD  {}  {}", path.display(), e),
+            Err(OpenError::Rejected(why)) => {
+                println!("REFUSED {}  {}", path.display(), why);
+                bad += 1;
+            }
+            Err(OpenError::Unreadable(e)) => {
+                println!("UNREAD  {}  {}", path.display(), e);
+                bad += 1;
+            }
         }
+    }
+    if bad > 0 {
+        eprintln!("deck-pi: {bad} of {} did not play", args.paths.len());
+        std::process::exit(1);
     }
 }
 
@@ -239,7 +352,8 @@ fn drain_through_the_ring(path: &std::path::Path) {
 /// hardware half — with the card's mixer inspected first, because a card with
 /// a volume control has its driver scale the stream even on `hw:`.
 #[cfg(target_os = "linux")]
-fn play_to_device(path: &std::path::Path, device: &str) {
+/// Returns whether the device actually played it.
+fn play_to_device(path: &std::path::Path, device: &str) -> bool {
     use deck_pi::sink::alsa::{assert_no_mixer_controls, AlsaSink};
 
     // architecture.md targets 5-10 ms; at 44.1 kHz that means 128-frame
@@ -251,7 +365,7 @@ fn play_to_device(path: &std::path::Path, device: &str) {
         Ok(t) => t.info().rate,
         Err(e) => {
             println!("        device: {}", e);
-            return;
+            return false;
         }
     };
 
@@ -259,7 +373,7 @@ fn play_to_device(path: &std::path::Path, device: &str) {
         Ok(s) => s,
         Err(e) => {
             println!("        device: could not open {} at {} Hz — {}", device, rate, e);
-            return;
+            return false;
         }
     };
     let p = sink.params();
@@ -281,22 +395,26 @@ fn play_to_device(path: &std::path::Path, device: &str) {
 
     if let Err(e) = play(path, &mut sink, "device") {
         println!("        device: FAILED — {}", e);
-        return;
+        return false;
     }
     // `hw_params` is checked inside `play`, once the stream is running, and a
     // mismatch fails the track rather than being printed. Reading it here
     // instead — which is what this did — reports `closed`, because the device
     // has been drained.
     println!("        hw_params: verified in force while playing");
+    true
 }
 
 #[cfg(not(target_os = "linux"))]
-fn play_to_device(_path: &std::path::Path, device: &str) {
+fn play_to_device(_path: &std::path::Path, device: &str) -> bool {
     println!(
         "        device: --device={} needs Linux; ALSA does not exist here. \
          Use --drain for the software path.",
         device
     );
+    // Not a success. Asking a Mac to play through ALSA and getting exit 0
+    // would say the run happened.
+    false
 }
 
 /// Applies the realtime setup and prints what the kernel granted.
@@ -419,5 +537,104 @@ fn media_check(path: &std::path::Path) -> i32 {
             println!("  headers read: {}", b.headers_read());
             0
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_of(args: &[&str]) -> Result<Args, String> {
+        parse(args.iter().map(std::ffi::OsString::from))
+    }
+
+    #[test]
+    fn a_mistyped_flag_is_an_error_and_not_a_filename() {
+        // The whole reason this parser was rewritten. `--drian short.wav`
+        // used to print `UNREAD --drian`, then play the file **without**
+        // draining, and exit 0 — the typo became a path, the mode silently
+        // did not happen, and the exit code said the run was fine.
+        let e = parse_of(&["--drian", "short.wav"]).expect_err("must be refused");
+        assert!(e.contains("--drian"), "the message must name it: {e}");
+    }
+
+    #[test]
+    fn a_value_flag_written_with_a_space_says_so_rather_than_eating_the_value() {
+        // `--device hw:0,0 f` used to treat `hw:0,0` as a file to open, so
+        // the run reported `UNREAD hw:0,0` and then played `f` with no
+        // device at all.
+        let e = parse_of(&["--device", "hw:0,0", "f"]).expect_err("must be refused");
+        assert!(e.contains('='), "the message must say how to write it: {e}");
+    }
+
+    #[test]
+    fn the_two_playback_modes_are_not_silently_ranked() {
+        // `--drain --device=...` used to let the device win and drop
+        // `--drain` without a word, so a run that asked for the software
+        // path could quietly become a hardware one.
+        let e = parse_of(&["--drain", "--device=hw:0,0", "f"]).expect_err("must be refused");
+        assert!(e.contains("pick one"), "{e}");
+    }
+
+    #[test]
+    fn a_check_mode_refuses_to_ignore_the_rest_of_the_line() {
+        // `--rt-check` used to win from any position and discard everything
+        // else, so `deck-pi track.wav --rt-check` looked like it played the
+        // track and did not.
+        assert!(parse_of(&["track.wav", "--rt-check"]).is_err());
+        assert!(parse_of(&["--rt-check", "--drain"]).is_err());
+        assert!(parse_of(&["--rt-check", "--media-check"]).is_err());
+        // Alone, it is fine.
+        assert_eq!(
+            parse_of(&["--rt-check"]).expect("alone"),
+            Args { mode: Mode::RtCheck(None), paths: vec![] }
+        );
+    }
+
+    #[test]
+    fn a_core_number_that_is_not_a_number_is_refused_rather_than_dropped() {
+        // `--rt-check=abc` used to parse to `None` and run unpinned, so a
+        // typo in the one argument that exercises core pinning meant the
+        // pinning silently did not happen — and pinning is the part of the
+        // realtime setup with nothing but the affinity mask to read it back.
+        let e = parse_of(&["--rt-check=abc"]).expect_err("must be refused");
+        assert!(e.contains("core number"), "{e}");
+        assert_eq!(
+            parse_of(&["--rt-check=2"]).expect("a number is fine"),
+            Args { mode: Mode::RtCheck(Some(2)), paths: vec![] }
+        );
+    }
+
+    #[test]
+    fn the_ordinary_forms_still_work_and_a_dash_file_is_reachable() {
+        assert_eq!(
+            parse_of(&["a.wav", "b.wav"]).expect("report"),
+            Args {
+                mode: Mode::Report,
+                paths: vec![PathBuf::from("a.wav"), PathBuf::from("b.wav")]
+            }
+        );
+        assert_eq!(
+            parse_of(&["--drain", "a.wav"]).expect("drain").mode,
+            Mode::Drain
+        );
+        assert_eq!(
+            parse_of(&["--device=hw:1,0", "a.wav"]).expect("device").mode,
+            Mode::Device("hw:1,0".into())
+        );
+        // A file whose name begins with a dash is reachable, which is what
+        // makes "everything starting with - is a flag" safe to enforce.
+        assert_eq!(
+            parse_of(&["--", "--odd-name.wav"]).expect("after --").paths,
+            vec![PathBuf::from("--odd-name.wav")]
+        );
+    }
+
+    #[test]
+    fn no_file_is_an_error_rather_than_a_silent_success() {
+        // `deck-pi --drain` alone used to print nothing and exit 0.
+        assert!(parse_of(&["--drain"]).is_err());
+        assert!(parse_of(&["--device=hw:0,0"]).is_err());
+        assert!(parse_of(&[]).is_err());
     }
 }
