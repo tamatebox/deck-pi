@@ -411,34 +411,46 @@ fn the_thread_fills_before_it_waits_on_the_channel() {
     let bytes = fixtures::build(Kind::Wav, &source, Bits::S16, 44_100, 2);
     let path = fixtures::write(&scratch.dir, "latency", Kind::Wav, &bytes);
 
-    let (window, reader, _) = Window::load(&path, SMALL_WINDOW_BYTES).expect("loads");
-    let (tx, rx) = mpsc::channel();
-    let started = Instant::now();
-    let handle = std::thread::spawn(move || window.run(rx, |_| {}));
+    // One load, timed from the spawn to the first readable frame.
+    let once = || {
+        let (window, reader, _) = Window::load(&path, SMALL_WINDOW_BYTES).expect("loads");
+        let (tx, rx) = mpsc::channel();
+        let started = Instant::now();
+        let handle = std::thread::spawn(move || window.run(rx, |_| {}));
 
-    // Wait for the first frame to become readable. No command is ever sent,
-    // so a thread that waits first cannot beat its own poll interval.
-    let mut buf = vec![0i32; RING_CHANNELS];
-    while reader.read_block(0, &mut buf).is_err() {
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "the window thread never filled anything"
-        );
-        std::thread::yield_now();
-    }
-    let latency = started.elapsed();
+        // No command is ever sent, so a thread that waits first cannot beat
+        // its own poll interval.
+        let mut buf = vec![0i32; RING_CHANNELS];
+        while reader.read_block(0, &mut buf).is_err() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "the window thread never filled anything"
+            );
+            std::thread::yield_now();
+        }
+        let latency = started.elapsed();
+        tx.send(Command::Shutdown).expect("shutdown");
+        handle.join().expect("window thread");
+        latency
+    };
 
-    tx.send(Command::Shutdown).expect("shutdown");
-    handle.join().expect("window thread");
+    // **Three loads, and the best one is the measurement** — which is not a
+    // loosened threshold, because the defect is *systematic*: waiting on the
+    // channel first costs the whole poll interval on every load, so it cannot
+    // hide in a minimum. A scheduler stall can, and was: on a loaded aarch64
+    // container this test went red in 1 of 8 full-suite runs while the
+    // typical figure was ~100 µs against a 5 ms threshold — a 50x margin
+    // losing to an outlier of 5-8 ms. Measured with the fix reverted, the
+    // best of three is still ≥ 10 ms every time.
+    let best = (0..3).map(|_| once()).min().expect("three attempts");
 
-    // Generous against a loaded CI machine, but far below the 10 ms poll
+    // Generous against a loaded machine, and far below the 10 ms poll
     // interval the old ordering imposed.
     assert!(
-        latency < Duration::from_millis(5),
-        "first frame took {:?}; the fill must not wait on the channel",
-        latency
+        best < Duration::from_millis(5),
+        "first frame took {best:?} at best; the fill must not wait on the channel"
     );
-    println!("first frame readable after {:?}", latency);
+    println!("first frame readable after {best:?} (best of three)");
 }
 
 #[test]
