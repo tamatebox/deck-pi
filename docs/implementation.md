@@ -372,6 +372,30 @@ anything worse than O(1), anything whose working set varies, and any third-party
 call that does not promise realtime behaviour — which is the general form of the
 reason libsndfile stays in the window thread.
 
+## `overflow-checks = true` in release, and what it trades
+
+`Cargo.toml`'s release profile turns arithmetic overflow checks **on**, which is
+not the default and is not a leftover. It was undocumented until it was found by
+review, so the reason is written here rather than inferred from the line.
+
+The trade is between two failures in the audio callback. A wrapped index reads
+the wrong part of the ring and emits samples that are plausible and wrong —
+silent, and exactly what this project fears most. A checked overflow panics, and
+the deck stops loudly. **A stop you can hear beats audio you cannot audit**, so
+the checks stay on.
+
+**It does not weaken the "cannot fault" invariant, and the two must not be
+conflated.** `CLAUDE.md`'s no-fault rule is about **page faults**: it is the
+property that dropping mmap bought, so that a stick pulled mid-set cannot raise
+SIGBUS inside the audio thread. A panic is a different thing entirely — it needs
+no page, no device and no mapping. Nothing about `overflow-checks` touches the
+page-fault property, and writing "the callback can now fault" would give away a
+claim that is currently exactly true.
+
+Cost is a compare and a branch per arithmetic op, on a path that is already
+dominated by the copy out of the ring. Not measured, because nothing has run on
+hardware; if it ever matters, measure before turning it off.
+
 ## Enforcing the callback rules
 
 `CLAUDE.md` requires the callback discipline to hold *from the first commit*,

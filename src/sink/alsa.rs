@@ -62,6 +62,34 @@ fn dev_rt(e: alsa::Error) -> SinkError {
 ///
 /// Split out so the rule is testable without a sound card, which is the only
 /// way it can be tested at all off the Pi.
+///
+/// # This tests the name, not the device, and the gap is real
+///
+/// `hw` is not a reserved word — it is an entry in alsa-lib's configuration
+/// tree, and `/etc/asound.conf` or `~/.asoundrc` can redefine it:
+///
+/// ```text
+/// pcm.!hw { type plug slave.pcm "..." }
+/// ```
+///
+/// A name passing this test would then open a plug chain. `SND_PCM_NO_AUTO_*`
+/// does not help — those suppress *automatic* insertion, not a chain the
+/// configuration asked for by name.
+///
+/// **What still catches most of it.** `verify_in_force` reads
+/// `/proc/asound/.../hw_params`, which reports the hardware side, so any
+/// substitution of rate, format or channel count is caught there. And
+/// alsa-lib's softvol registers its control on the card, so
+/// `assert_no_mixer_controls` sees it. What survives both is a plug chain at
+/// the *same* rate and format doing something else to the samples.
+///
+/// **Not closed, deliberately.** `snd_pcm_type` on the open handle is the
+/// one-line fact — but the `alsa` crate exposes neither the function nor the
+/// raw pointer, so reaching it means opening the device a second time through
+/// `alsa-sys` purely to ask, then closing it, before the real open. An extra
+/// open of the audio hardware is not a trade this project should make to
+/// guard against someone deliberately redefining `hw` on the deck itself. If
+/// the crate ever exposes the type, take it.
 pub fn is_hardware_device(name: &str) -> bool {
     name == "hw" || name.starts_with("hw:")
 }

@@ -223,6 +223,7 @@ fn play<S: AudioSink>(
     path: &std::path::Path,
     sink: &mut S,
     label: &str,
+    feed_silence_on_miss: bool,
 ) -> Result<(), String> {
     let period_frames = sink.period_frames();
     let (window, reader, info) = Window::load(path, ring::WINDOW_BYTES_PLACEHOLDER)
@@ -295,6 +296,24 @@ fn play<S: AudioSink>(
                 if failure.lock().unwrap().is_some() {
                     break;
                 }
+                if feed_silence_on_miss {
+                    // **A real device has to be fed.** `engine.rs` fills the
+                    // buffer with silence and calls it "silence, not a
+                    // stall"; discarding it leaves ALSA to run dry, which is
+                    // an xrun, a `prepare()` and a longer gap than the one
+                    // period the engine was offering. The position does not
+                    // advance, so the track resumes where it was and comes
+                    // out one period longer — which is what a dropout is.
+                    //
+                    // A capture sink is fed nothing and waits instead: it has
+                    // no deadline, and the null test wants the track's own
+                    // samples rather than a faithful record of how late the
+                    // filler was.
+                    match sink.write_period(&period) {
+                        Ok(()) | Err(deck_pi::sink::SinkError::Underrun) => {}
+                        Err(e) => return Err(e.to_string()),
+                    }
+                }
                 std::thread::yield_now();
             }
             other => {
@@ -343,7 +362,7 @@ fn drain_through_the_ring(path: &std::path::Path) {
     // Capacity for the whole track, so nothing reallocates mid-run.
     let frames = Track::open(path).map(|t| t.info().frames).unwrap_or(0) as usize;
     let mut sink = CaptureSink::new(rate, PERIOD, frames + PERIOD);
-    if let Err(e) = play(path, &mut sink, "drain") {
+    if let Err(e) = play(path, &mut sink, "drain", false) {
         println!("        drain: FAILED — {}", e);
     }
 }
@@ -393,7 +412,7 @@ fn play_to_device(path: &std::path::Path, device: &str) -> bool {
         Err(e) => println!("        mixer:  WARNING {}", e),
     }
 
-    if let Err(e) = play(path, &mut sink, "device") {
+    if let Err(e) = play(path, &mut sink, "device", true) {
         println!("        device: FAILED — {}", e);
         return false;
     }
