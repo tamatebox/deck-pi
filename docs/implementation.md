@@ -135,6 +135,13 @@ needs a different check and the cheap one clears most of them.**
 | 7 | **Absence of a complaint read as evidence** | break the thing on purpose and confirm the check complains | a linter whose error went to stderr and whose silence was read as a pass; a symmetric null test; a race harness reaching `Overrun` 8.6M times and detecting nothing; a guard whose enforcement depended on **linkage** — an integration test that never touches the crate gets no `#[global_allocator]`, so every `assert_no_alloc` in it silently passes |
 | 8 | True under a reading nobody would take | read your own sentence as a stranger, not as its author | "no code path stores this", written beside the constructor |
 
+**One check deliberately lives elsewhere, so this list is not complete on its
+own.** A sentence that names a source nobody opened belongs to the same family —
+it reads as verified precisely *because* it is citation-shaped — but it is a
+failure of **writing**, which happens continuously, rather than of code met
+while debugging. Its check is in `CLAUDE.md`'s operating principles, where every
+session reads it at start rather than when something is already suspected.
+
 Three of these need more than a row.
 
 **Shapes 2 and 3 are cleared by the check that catches shape 1**, which is the
