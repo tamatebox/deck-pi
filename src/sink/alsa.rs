@@ -50,6 +50,14 @@ fn dev(e: alsa::Error) -> SinkError {
     SinkError::Device(e.to_string())
 }
 
+/// The same, for the audio thread, where `to_string` is not allowed.
+fn dev_rt(e: alsa::Error) -> SinkError {
+    SinkError::DeviceRt {
+        func: e.func(),
+        errno: e.errno(),
+    }
+}
+
 /// True only for a raw hardware device.
 ///
 /// Split out so the rule is testable without a sound card, which is the only
@@ -177,7 +185,7 @@ impl AlsaSink {
     /// accepted what was asked for and substituted nothing. That is a manual
     /// step there; here it is an assertion. Does file I/O, so **not** from
     /// the audio thread — call it once after playback starts.
-    pub fn verify_in_force(&self) -> Result<ProcHwParams, SinkError> {
+    pub fn hw_params_in_force(&self) -> Result<ProcHwParams, SinkError> {
         let p = read_proc_hw_params(self.card, self.device)?;
         if p.rate != self.params.rate {
             return Err(SinkError::Substituted {
@@ -209,6 +217,10 @@ impl AudioSink for AlsaSink {
         self.params
     }
 
+    fn verify_in_force(&self) -> Result<(), SinkError> {
+        self.hw_params_in_force().map(|_| ())
+    }
+
     fn write_period(&mut self, period: &[i32]) -> Result<(), SinkError> {
         if period.len() % SINK_CHANNELS != 0 {
             return Err(SinkError::WrongPeriodLength {
@@ -233,10 +245,10 @@ impl AudioSink for AlsaSink {
                     let xrun = self.pcm.state() == State::XRun;
                     drop(io);
                     if xrun {
-                        self.pcm.prepare().map_err(dev)?;
+                        self.pcm.prepare().map_err(dev_rt)?;
                         return Err(SinkError::Underrun);
                     }
-                    return Err(dev(e));
+                    return Err(dev_rt(e));
                 }
             }
         }
@@ -315,17 +327,37 @@ pub fn parse_proc_hw_params(text: &str) -> Option<ProcHwParams> {
 /// during bring-up.
 pub fn assert_no_mixer_controls(card: i32) -> Result<(), SinkError> {
     let mixer = alsa::mixer::Mixer::new(&format!("hw:{}", card), false).map_err(dev)?;
-    let names: Vec<String> = mixer
+    let scalers: Vec<String> = mixer
         .iter()
-        .filter_map(|e| alsa::mixer::Selem::new(e).map(|s| s.get_id().get_name().unwrap_or("?").to_string()))
+        .filter_map(alsa::mixer::Selem::new)
+        .filter(|s| {
+            // **The question is whether anything can scale or mute the
+            // stream, not whether the card has any control at all**, and the
+            // difference is the whole finding. Every WM8804 card carries one:
+            // `wm8804.c` declares `SND_SOC_DAPM_MUX("Tx Source", ...)`, a DAPM
+            // mux, whose kcontrol is published under the widget's name — and
+            // alsa-lib's `simple_add1` registers any `ENUMERATED` control as a
+            // simple element even when its name matches none of the volume
+            // suffixes. So the previous "any element at all is a failure"
+            // test would have called an input selector a volume control, on
+            // the real Digi2 Pro, every single time.
+            //
+            // That failure mode is worse than it sounds in both directions:
+            // gated in an app loop it would stop the deck booting, and left as
+            // a warning it would teach whoever reads the logs that this
+            // warning is normal — so a genuine volume control would arrive
+            // looking exactly like the one they had learned to ignore.
+            s.has_playback_volume() || s.has_playback_switch() || s.has_capture_volume()
+        })
+        .map(|s| s.get_id().get_name().unwrap_or("?").to_string())
         .collect();
-    if names.is_empty() {
+    if scalers.is_empty() {
         Ok(())
     } else {
         Err(SinkError::Device(format!(
-            "card {} exposes mixer controls {:?} — a volume control means the driver \
-             scales the stream even on hw:",
-            card, names
+            "card {} exposes volume or mute controls {:?} — the driver scales the \
+             stream even on hw:",
+            card, scalers
         )))
     }
 }

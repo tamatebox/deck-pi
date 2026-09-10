@@ -136,6 +136,7 @@ fn play<S: AudioSink>(
     let mut waits = 0u64;
     let mut underruns = 0u64;
     let mut peak: i32 = 0;
+    let mut verified = false;
 
     loop {
         match engine.fill(&transport, &reader, &mut period) {
@@ -144,12 +145,32 @@ fn play<S: AudioSink>(
                     peak = peak.max(s.abs());
                 }
                 match sink.write_period(&period[..frames * RING_CHANNELS]) {
-                    Ok(()) => played += frames as u64,
+                    Ok(()) => {
+                        played += frames as u64;
+                        // Once, as soon as the stream is actually running.
+                        // `hw_params` reads `closed` before that and after
+                        // `drain`, which is why this cannot wait until the
+                        // end — the previous version read it after playback
+                        // and printed it without comparing anything.
+                        if !verified {
+                            verified = true;
+                            if let Err(e) = sink.verify_in_force() {
+                                return Err(format!("ALSA substituted something: {e}"));
+                            }
+                        }
+                    }
                     Err(deck_pi::sink::SinkError::Underrun) => underruns += 1,
                     Err(e) => return Err(e.to_string()),
                 }
             }
-            Outcome::EndOfTrack => break,
+            Outcome::EndOfTrack => {
+                // The deck stops here rather than advancing; see
+                // `Transport::reached_end`. This loop is the only caller
+                // today, which is the whole of what "the app loop" means so
+                // far.
+                transport.reached_end();
+                break;
+            }
             Outcome::Missed(Miss::NotResident) => {
                 waits += 1;
                 if failure.lock().unwrap().is_some() {
@@ -252,18 +273,15 @@ fn play_to_device(path: &std::path::Path, device: &str) {
         Err(e) => println!("        mixer:  WARNING {}", e),
     }
 
-    let card = sink.card();
     if let Err(e) = play(path, &mut sink, "device") {
         println!("        device: FAILED — {}", e);
         return;
     }
-    // Read after playing: the file says `closed` when nothing is running, so
-    // this reports what the last stream actually used only if the driver
-    // keeps it. During a long track, call it while playing instead.
-    match deck_pi::sink::alsa::read_proc_hw_params(card, 0) {
-        Ok(hw) => println!("        hw_params: {:?}", hw),
-        Err(e) => println!("        hw_params: {}", e),
-    }
+    // `hw_params` is checked inside `play`, once the stream is running, and a
+    // mismatch fails the track rather than being printed. Reading it here
+    // instead — which is what this did — reports `closed`, because the device
+    // has been drained.
+    println!("        hw_params: verified in force while playing");
 }
 
 #[cfg(not(target_os = "linux"))]

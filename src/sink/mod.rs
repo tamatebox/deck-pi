@@ -93,13 +93,29 @@ pub enum SinkError {
     /// The buffer handed in is not a whole number of frames, or is not the
     /// device's period size.
     WrongPeriodLength { given: usize, expected: usize },
-    /// Anything the device itself reported.
+    /// Anything the device itself reported, off the audio thread.
     Device(String),
+    /// A device error raised **on the audio thread**, carried without
+    /// allocating.
+    ///
+    /// `Device(String)` cannot be used there: `e.to_string()` allocates, and
+    /// `write_period`'s own contract two doc comments up says implementations
+    /// must not. The error path was doing it anyway — reachable on any
+    /// `writei` failure that is not an xrun (`EINTR`, `EBADFD`, `ESTRPIPE`),
+    /// which under `assert_no_alloc` aborts the process in a debug build and
+    /// buries the actual device error behind the abort.
+    ///
+    /// `alsa::Error` is a `&'static str` and an errno already, so keeping the
+    /// two and formatting them in `Display` costs nothing and loses nothing.
+    DeviceRt { func: &'static str, errno: i32 },
 }
 
 impl fmt::Display for SinkError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            SinkError::DeviceRt { func, errno } => {
+                write!(f, "{} failed on the audio thread: errno {}", func, errno)
+            }
             SinkError::NotHardwareDevice(d) => write!(
                 f,
                 "{:?} is not a hw: device — default mixes and plughw resamples, silently",
@@ -145,6 +161,26 @@ pub trait AudioSink {
     /// Blocks until everything queued has been played. Not realtime; called
     /// when a track ends or the deck stops.
     fn drain(&mut self) -> Result<(), SinkError>;
+
+    /// Checks that the device is running what it was asked for, **while it is
+    /// running**, and fails naming the field that differs.
+    ///
+    /// This is the hardware half of the null test. It is on the trait rather
+    /// than only on `AlsaSink` because the caller that needs it is generic
+    /// over the sink, and a check that nothing can reach is the failure this
+    /// project keeps finding: `AlsaSink::hw_params_in_force` existed, was
+    /// cited in `rt.rs`'s doc comment as the model of the read-back
+    /// discipline, and had **no callers at all** — while `main.rs` printed
+    /// `/proc/asound` with `{:?}` and compared nothing.
+    ///
+    /// The default is `Ok(())`: a sink with no device has nothing that could
+    /// have been substituted underneath it.
+    ///
+    /// Does file I/O on the ALSA implementation, so **not** from the audio
+    /// thread — call it once, after the first period is written.
+    fn verify_in_force(&self) -> Result<(), SinkError> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
