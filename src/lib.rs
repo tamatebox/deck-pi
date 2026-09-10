@@ -7,8 +7,9 @@
 //! Built so far: the file layer and the FFI beneath it, the ring, the window
 //! thread, the transport, the callback, the output sink, the realtime process
 //! setup that makes the callback's "cannot fault" true, the browser, media watch,
-//! the cue store and input. Not started: the display, and the app loop that would
-//! join these together.
+//! the cue store and input, and the app loop that joins them — the period loop,
+//! the track lifecycle, the dispatch and the control loop that reads
+//! `/dev/input`. Not started: the display, and media watch wired to the deck.
 
 pub mod app;
 pub mod browser;

@@ -17,7 +17,7 @@
 //! | `window::Command::Relocate` — "whoever owns the app loop must send this" | [`Deck::apply`] on `Cued::Returned` |
 //! | `Loaded::set_cue`, never `CueStore::set` with a caller's path | [`Deck::apply`] on `Cued::Set` |
 //! | `Transport::reached_end` — "the control thread, and only" | [`Deck::service`] |
-//! | `Devices::read_pending` — "a caller that gets a non-zero answer must reset its decoder" | **not here**: this module takes `Action`s, and the device loop that owes that is the next piece |
+//! | `Devices::read_pending` — "a caller that gets a non-zero answer must reset its decoder" | not here, and deliberately: this module takes `Action`s. [`crate::app::controls`] is the loop that reads the devices, and it is where that one lands |
 //!
 //! # Two "current" things, still
 //!
