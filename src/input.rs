@@ -159,6 +159,12 @@ pub const EV_REL: u16 = 0x02;
 pub const EV_ABS: u16 = 0x03;
 pub const REL_X: u16 = 0x00;
 pub const ABS_X: u16 = 0x00;
+/// `SYN_DROPPED` — the kernel telling us it threw events away.
+///
+/// evdev buffers 64 events per client and **drops the whole queue** when a
+/// reader falls behind, then emits this. What was lost is unknowable, and a
+/// key release is exactly the kind of thing that can be in it.
+pub const SYN_DROPPED: u16 = 0x03;
 
 /// Turns kernel events into [`Action`]s.
 ///
@@ -170,6 +176,8 @@ pub struct Decoder {
     down: [Option<(Duration, bool)>; 6],
     /// The last absolute encoder position, for the `EV_ABS` flavour.
     abs: Option<i32>,
+    /// The axis range, when the device reported one. See `set_abs_range`.
+    abs_range: Option<(i32, i32)>,
 }
 
 impl Default for Decoder {
@@ -184,6 +192,69 @@ impl Decoder {
             hold_after,
             down: [None; 6],
             abs: None,
+            abs_range: None,
+        }
+    }
+
+    /// Tells the decoder the absolute axis's range, so a wrap reads as one
+    /// step instead of a jump the length of the encoder.
+    ///
+    /// **From the device, not from `config.txt`.** `EVIOCGABS` reports
+    /// `minimum` and `maximum`, so nothing here depends on a line nobody has
+    /// run yet — which is the property `hardware.md` asks for and the reason
+    /// this is a setter rather than a constant.
+    ///
+    /// With the overlay's `rollover` parameter the driver wraps 23 to 0, and
+    /// the raw difference is then **-23 for one detent clockwise**. Measured
+    /// on a probe: `[Browse(1), Browse(-23), Browse(1)]`. Folding needs the
+    /// span, and the span is exactly what this supplies.
+    ///
+    /// **What it cannot fix, because the information never arrives:** without
+    /// `rollover` the driver *clamps* the position to `[0, steps]` and the
+    /// input core drops the repeated value, so at either end one direction
+    /// emits nothing at all. From a cold boot the browser will not scroll
+    /// anticlockwise until it has been scrolled clockwise, and after `steps`
+    /// detents clockwise it stops going that way. No decoder can recover an
+    /// event the kernel did not send — this needs `relative_axis` or
+    /// `rollover` in `config.txt`, and [`Decoder::absolute_axis_is_clamped`]
+    /// is how a caller can say so out loud.
+    pub fn set_abs_range(&mut self, min: i32, max: i32) {
+        if max > min {
+            self.abs_range = Some((min, max));
+        }
+    }
+
+    /// True when the axis is bounded and the deck is sitting on a bound, so
+    /// one direction is currently silent.
+    ///
+    /// Advisory, for a caller that wants to warn during bring-up. It cannot
+    /// distinguish "clamped, and stuck" from "rollover, and merely at zero" —
+    /// both look the same from here — so it says what is observable rather
+    /// than guessing the overlay's parameters.
+    pub fn absolute_axis_is_clamped(&self) -> bool {
+        match (self.abs_range, self.abs) {
+            (Some((min, max)), Some(at)) => at == min || at == max,
+            _ => false,
+        }
+    }
+
+    /// Turns a raw difference between absolute positions into detents.
+    ///
+    /// A wrap looks like a jump most of the way round the axis; a real move
+    /// of that size cannot happen between two events. Half the span is the
+    /// discriminator, and it needs no tuning because the encoder cannot
+    /// travel that far in one poll.
+    fn fold_abs(&self, delta: i32) -> i32 {
+        let Some((min, max)) = self.abs_range else {
+            return delta;
+        };
+        let span = (max - min).saturating_add(1);
+        if delta > span / 2 {
+            delta - span
+        } else if delta < -(span / 2) {
+            delta + span
+        } else {
+            delta
         }
     }
 
@@ -207,13 +278,28 @@ impl Decoder {
                 // first event.
                 match self.abs.replace(ev.value) {
                     Some(prev) if ev.value != prev => {
-                        out.push(Action::Browse(ev.value - prev))
+                        let step = self.fold_abs(ev.value.saturating_sub(prev));
+                        if step != 0 {
+                            out.push(Action::Browse(step));
+                        }
                     }
                     _ => {}
                 }
             }
-            // EV_SYN and anything else: nothing to do. Events are acted on
-            // individually, so no frame boundary is needed.
+            // **`SYN_DROPPED` is the one synchronisation event that means
+            // something here.** The rest of `EV_SYN` marks frame boundaries,
+            // which this decoder does not need because it acts on events
+            // individually — but a drop says the kernel discarded its queue,
+            // and a key *release* may have been in it. Carrying on would leave
+            // a button held for ever from the decoder's point of view: the
+            // transport stuck seeking, or the cue preview playing, with no
+            // event ever coming to end it.
+            //
+            // Giving up on the in-flight state is the only correct response,
+            // because the state is exactly what was lost. `reset` closes the
+            // gestures on its way out.
+            EV_SYN if ev.code == SYN_DROPPED => self.reset(out),
+            // Everything else: nothing to do.
             _ => {}
         }
     }
@@ -287,9 +373,36 @@ impl Decoder {
         }
     }
 
-    /// Drops all held state — for a device that went away and came back,
-    /// where the presses that were in flight are no longer knowable.
-    pub fn reset(&mut self) {
+    /// Drops all held state — for a device that went away and came back, or
+    /// for a dropped event stream, where the presses that were in flight are
+    /// no longer knowable.
+    ///
+    /// **It terminates them first, and that is the point.** Dropping the state
+    /// silently leaves whatever the gestures started running for ever: a
+    /// `HoldStart(Ff)` with no `HoldEnd` is a transport stuck in
+    /// `SeekingForward`, and a `Press(Cue)` with no `Release` is the Cue Point
+    /// Sampler playing until the deck is restarted. Nothing downstream can
+    /// recover from that, because nothing downstream knows the press is gone.
+    ///
+    /// So the rule is that every gesture this decoder opens, it closes —
+    /// including when it is giving up. Which button was released is not
+    /// knowable; that it was released is certain, because the decoder is
+    /// about to forget it.
+    pub fn reset(&mut self, out: &mut Vec<Action>) {
+        for button in Button::ALL {
+            let Some((_, fired)) = self.down[button.index()] else {
+                continue;
+            };
+            match button.discipline() {
+                // A hold that started must end. A hold that had not yet
+                // fired was going to be a tap on release — and a tap that
+                // never happened is better dropped than invented, since it
+                // would change track.
+                Discipline::TapOrHold if fired => out.push(Action::HoldEnd(button)),
+                Discipline::Momentary => out.push(Action::Release(button)),
+                _ => {}
+            }
+        }
         self.down = [None; 6];
         self.abs = None;
     }
@@ -332,6 +445,31 @@ mod device {
         })
     }
 
+    /// `struct input_absinfo`, six `__s32`s.
+    #[repr(C)]
+    #[derive(Default)]
+    struct AbsInfo {
+        value: i32,
+        minimum: i32,
+        maximum: i32,
+        fuzz: i32,
+        flat: i32,
+        resolution: i32,
+    }
+
+    /// `_IOR(type, nr, size)` from `asm-generic/ioctl.h`, computed rather
+    /// than pasted.
+    ///
+    /// The generic encoding is what aarch64 and x86 use, and
+    /// `decisions.md` fixes the base at Raspberry Pi OS 64-bit, so that is
+    /// the one that applies. Alpha, MIPS, PowerPC and SPARC lay the direction
+    /// bits out differently — noted because a hardcoded constant would carry
+    /// that assumption invisibly, which is the habit this file already
+    /// follows for `EVENT_LEN`.
+    const fn ioc_read(ty: u8, nr: u8, size: usize) -> libc::c_ulong {
+        (2 << 30) | ((size as libc::c_ulong) << 16) | ((ty as libc::c_ulong) << 8) | nr as libc::c_ulong
+    }
+
     /// One `/dev/input/eventN`.
     pub struct Device {
         file: File,
@@ -350,22 +488,135 @@ mod device {
             })
         }
 
-        /// Waits up to `timeout` for something to read.
+        pub(super) fn raw_fd(&self) -> std::os::fd::RawFd {
+            self.file.as_raw_fd()
+        }
+
+        /// The axis range the device reports, for `Decoder::set_abs_range`.
+        ///
+        /// `None` when the device has no absolute X axis, which is the
+        /// ordinary answer for a button node and for an encoder configured
+        /// with `relative_axis`.
+        pub fn abs_range(&self) -> Option<(i32, i32)> {
+            let mut info = AbsInfo::default();
+            let req = ioc_read(b'E', 0x40 + ABS_X as u8, std::mem::size_of::<AbsInfo>());
+            // SAFETY: an open descriptor this struct owns, and a correctly
+            // sized `input_absinfo` for the size encoded in the request.
+            let rc = unsafe { libc::ioctl(self.file.as_raw_fd(), req as _, &mut info) };
+            if rc < 0 || info.maximum <= info.minimum {
+                return None;
+            }
+            Some((info.minimum, info.maximum))
+        }
+
+        /// Reads whatever is pending and appends the events.
+        ///
+        /// `Ok(false)` means the descriptor reached end of file, which for an
+        /// evdev node means the device is gone. **A zero-length read used to
+        /// be indistinguishable from "nothing arrived"**, so a hung-up
+        /// descriptor became a spin: a `poll` that returns immediately for
+        /// ever and a read that yields nothing. Measured on a FIFO standing in
+        /// for a removed device: **340,838 iterations in 200 ms.** A real
+        /// evdev node returns `ENODEV` rather than EOF, so this was unreachable
+        /// through the kernel — which is to say it depended on the kernel's
+        /// good manners rather than on anything here.
+        pub fn read_pending(&mut self, out: &mut Vec<RawEvent>) -> std::io::Result<bool> {
+            let n = self.file.read(&mut self.buf[self.held..])?;
+            if n == 0 {
+                return Ok(false);
+            }
+            let total = self.held + n;
+            let whole = total / EVENT_LEN;
+            for i in 0..whole {
+                if let Some(ev) = parse_event(&self.buf[i * EVENT_LEN..]) {
+                    out.push(ev);
+                }
+            }
+            // Carry the tail. A short read mid-struct is unusual on an evdev
+            // node but not forbidden, and dropping the remainder would
+            // desynchronise every event after it.
+            let rest = total % EVENT_LEN;
+            self.buf.copy_within(whole * EVENT_LEN..total, 0);
+            self.held = rest;
+            Ok(true)
+        }
+    }
+
+    /// Every input node the deck listens to, polled together.
+    ///
+    /// **There are seven of them, not one.** `hardware.md`'s `config.txt`
+    /// declares one `gpio-key` overlay instance per button and each instance
+    /// creates its **own** `gpio-keys` device node; the rotary encoder adds
+    /// another. A single-descriptor `poll` therefore hears one button and is
+    /// deaf to the rest — and waiting on them in turn is worse than it
+    /// sounds, because each wait would spend the full timeout before the next
+    /// got a look in, so the round trip would be seven times the poll
+    /// interval and `Decoder::tick` would run that much later.
+    ///
+    /// The count is a consequence of the overlay's shape rather than a
+    /// decision, which is why nothing in `architecture.md`'s Input row
+    /// mentions it: the row says the module reads `/dev/input` and emits
+    /// keycodes, and one node per keycode was never stated either way.
+    pub struct Devices {
+        devices: Vec<Device>,
+        /// Parallel to `devices`, rebuilt on every `wait`.
+        polls: Vec<libc::pollfd>,
+    }
+
+    impl Devices {
+        /// Opens all of them. A path that will not open is an error: a deck
+        /// missing one of its buttons should say so at start rather than
+        /// discover it when the button is pressed.
+        pub fn open(paths: &[std::path::PathBuf]) -> std::io::Result<Devices> {
+            let mut devices = Vec::with_capacity(paths.len());
+            for p in paths {
+                devices.push(Device::open(p)?);
+            }
+            Ok(Devices {
+                polls: Vec::with_capacity(devices.len()),
+                devices,
+            })
+        }
+
+        pub fn len(&self) -> usize {
+            self.devices.len()
+        }
+
+        pub fn is_empty(&self) -> bool {
+            self.devices.is_empty()
+        }
+
+        /// The range of the first device that reports an absolute axis.
+        pub fn abs_range(&self) -> Option<(i32, i32)> {
+            self.devices.iter().find_map(Device::abs_range)
+        }
+
+        /// Waits up to `timeout` for any device to have something to read.
         ///
         /// A timeout rather than a blocking read, because a **hold is defined
-        /// by an event not arriving**: block forever and `Decoder::tick`
+        /// by an event not arriving**: block for ever and `Decoder::tick`
         /// never runs, so FF would never start seeking. The timeout is what
-        /// bounds how late a `HoldStart` can be.
-        pub fn wait(&self, timeout: Duration) -> std::io::Result<bool> {
-            let mut fds = libc::pollfd {
-                fd: self.file.as_raw_fd(),
+        /// bounds how late a `HoldStart` can be, and polling all the nodes at
+        /// once is what keeps it one timeout rather than seven.
+        pub fn wait(&mut self, timeout: Duration) -> std::io::Result<bool> {
+            let ms = timeout.as_millis().min(i32::MAX as u128) as i32;
+            if self.devices.is_empty() {
+                // `poll` with no descriptors returns at once, so without this
+                // the caller spins instead of waiting.
+                std::thread::sleep(timeout);
+                return Ok(false);
+            }
+            self.polls.clear();
+            self.polls.extend(self.devices.iter().map(|d| libc::pollfd {
+                fd: d.raw_fd(),
                 events: libc::POLLIN,
                 revents: 0,
+            }));
+            // SAFETY: `polls` is a valid array of that length, describing
+            // descriptors owned by `devices`, which outlive the call.
+            let rc = unsafe {
+                libc::poll(self.polls.as_mut_ptr(), self.polls.len() as libc::nfds_t, ms)
             };
-            let ms = timeout.as_millis().min(i32::MAX as u128) as i32;
-            // SAFETY: one valid `pollfd` describing an open file descriptor
-            // this struct owns.
-            let rc = unsafe { libc::poll(&mut fds, 1, ms) };
             match rc {
                 -1 => {
                     let e = std::io::Error::last_os_error();
@@ -381,29 +632,50 @@ mod device {
             }
         }
 
-        /// Reads whatever is pending and appends the events.
-        pub fn read_pending(&mut self, out: &mut Vec<RawEvent>) -> std::io::Result<()> {
-            let n = self.file.read(&mut self.buf[self.held..])?;
-            let total = self.held + n;
-            let whole = total / EVENT_LEN;
-            for i in 0..whole {
-                if let Some(ev) = parse_event(&self.buf[i * EVENT_LEN..]) {
-                    out.push(ev);
+        /// Reads from whichever devices `wait` found ready, and drops any that
+        /// have gone away.
+        ///
+        /// Returns how many were dropped. **A caller that gets a non-zero
+        /// answer must reset its decoder**, because the presses that were in
+        /// flight on that node can no longer be released by anything — which
+        /// is the stuck-`SeekingForward` failure from the other direction.
+        ///
+        /// `revents` is examined rather than only the return value: `POLLERR`,
+        /// `POLLHUP` and `POLLNVAL` are reported **whether or not they were
+        /// asked for**, and a hung-up descriptor is permanently ready, so
+        /// ignoring them turns an unplugged device into a busy loop.
+        pub fn read_pending(&mut self, out: &mut Vec<RawEvent>) -> std::io::Result<usize> {
+            let mut lost = 0usize;
+            let mut keep = Vec::with_capacity(self.devices.len());
+            for (i, dev) in self.devices.drain(..).enumerate() {
+                let revents = self.polls.get(i).map(|p| p.revents).unwrap_or(0);
+                let broken = revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0;
+                if broken {
+                    lost += 1;
+                    continue;
                 }
+                let mut dev = dev;
+                if revents & libc::POLLIN != 0 {
+                    match dev.read_pending(out) {
+                        Ok(true) => {}
+                        // End of file, or the node reporting the device gone.
+                        Ok(false) | Err(_) => {
+                            lost += 1;
+                            continue;
+                        }
+                    }
+                }
+                keep.push(dev);
             }
-            // Carry the tail. A short read mid-struct is unusual on an evdev
-            // node but not forbidden, and dropping the remainder would
-            // desynchronise every event after it.
-            let rest = total % EVENT_LEN;
-            self.buf.copy_within(whole * EVENT_LEN..total, 0);
-            self.held = rest;
-            Ok(())
+            self.devices = keep;
+            self.polls.clear();
+            Ok(lost)
         }
     }
 }
 
 #[cfg(target_os = "linux")]
-pub use device::{parse_event, Device, EVENT_LEN};
+pub use device::{parse_event, Device, Devices, EVENT_LEN};
 
 #[cfg(test)]
 mod tests {
@@ -566,6 +838,82 @@ mod tests {
     }
 
     #[test]
+    fn an_absolute_encoder_that_wraps_reads_as_one_detent_not_a_jump() {
+        // With the overlay's `rollover` parameter the driver takes 23 to 0
+        // for one detent clockwise, and the raw difference is **-23**. A
+        // probe against the real driver produced exactly
+        // `[Browse(1), Browse(-23), Browse(1)]` — so a browser would jump 23
+        // rows backwards in the middle of scrolling forwards.
+        //
+        // The span comes from `EVIOCGABS`, not from `config.txt`: the device
+        // knows its own range, so nothing here depends on a line nobody has
+        // run yet.
+        let mut d = Decoder::default();
+        d.set_abs_range(0, 23);
+        let mut out = Vec::new();
+
+        let abs = |v: i32| RawEvent { kind: EV_ABS, code: ABS_X, value: v };
+        d.feed(ms(0), abs(22), &mut out); // baseline, emits nothing
+        d.feed(ms(10), abs(23), &mut out);
+        d.feed(ms(20), abs(0), &mut out); // the wrap
+        d.feed(ms(30), abs(1), &mut out);
+        assert_eq!(
+            out,
+            vec![Action::Browse(1), Action::Browse(1), Action::Browse(1)],
+            "three detents clockwise must read as three"
+        );
+
+        // And the other way round the same seam. Two detents, not one: the
+        // encoder is sitting at 1, so 1 -> 0 is the first and 0 -> 23 is the
+        // wrap. Getting this wrong in the first draft of the test is the
+        // small version of the bug itself — a wrap looks like a jump.
+        out.clear();
+        d.feed(ms(40), abs(0), &mut out);
+        d.feed(ms(50), abs(23), &mut out);
+        assert_eq!(
+            out,
+            vec![Action::Browse(-1), Action::Browse(-1)],
+            "1 -> 0 -> 23 is two detents back, and the wrap is not a jump"
+        );
+    }
+
+    #[test]
+    fn without_a_known_range_an_absolute_axis_is_still_read_as_a_difference() {
+        // `EVIOCGABS` can fail, and a device may report no useful range. The
+        // decoder must not then invent one — an unfolded difference is right
+        // everywhere except across a wrap, which is strictly better than
+        // folding against a span that was guessed.
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        let abs = |v: i32| RawEvent { kind: EV_ABS, code: ABS_X, value: v };
+        d.feed(ms(0), abs(10), &mut out);
+        d.feed(ms(10), abs(13), &mut out);
+        assert_eq!(out, vec![Action::Browse(3)]);
+    }
+
+    #[test]
+    fn sitting_on_a_bound_is_reportable_because_one_direction_is_then_silent() {
+        // The half no decoder can fix. Without `rollover` the driver clamps
+        // to `[0, steps]` and the input core drops the repeated value, so at
+        // a bound one direction emits **nothing** — from a cold boot the
+        // browser will not scroll anticlockwise until it has been scrolled
+        // clockwise. The event never arrives, so the only honest thing the
+        // code can do is let a caller say so during bring-up.
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        let abs = |v: i32| RawEvent { kind: EV_ABS, code: ABS_X, value: v };
+
+        d.set_abs_range(0, 23);
+        assert!(!d.absolute_axis_is_clamped(), "nothing seen yet");
+        d.feed(ms(0), abs(0), &mut out);
+        assert!(d.absolute_axis_is_clamped(), "at the bottom of the axis");
+        d.feed(ms(10), abs(5), &mut out);
+        assert!(!d.absolute_axis_is_clamped());
+        d.feed(ms(20), abs(23), &mut out);
+        assert!(d.absolute_axis_is_clamped(), "at the top of the axis");
+    }
+
+    #[test]
     fn autorepeat_is_ignored() {
         // `gpio-key` does not repeat by default. If it ever did, treating a
         // repeat as a fresh press would fire PLAY over and over while a
@@ -614,9 +962,158 @@ mod tests {
         let mut d = Decoder::default();
         let mut out = Vec::new();
         d.feed(ms(0), key(Button::Ff.keycode(), 1), &mut out);
-        d.reset();
+        d.reset(&mut out);
+        out.clear();
         d.tick(ms(10_000), &mut out);
         assert!(out.is_empty(), "a reset device has no presses in flight");
+    }
+
+    #[test]
+    fn reset_closes_the_gestures_it_is_about_to_forget() {
+        // Dropping the state silently is what makes a lost event permanent:
+        // the transport is left in `SeekingForward` and the cue preview left
+        // playing, with nothing downstream able to notice, because nothing
+        // downstream knows the press is gone.
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        d.feed(ms(0), key(Button::Ff.keycode(), 1), &mut out);
+        d.tick(ms(400), &mut out); // the hold has started
+        d.feed(ms(500), key(Button::Cue.keycode(), 1), &mut out); // preview running
+        out.clear();
+
+        d.reset(&mut out);
+        assert!(
+            out.contains(&Action::HoldEnd(Button::Ff)),
+            "a seek that started must be ended, got {out:?}"
+        );
+        assert!(
+            out.contains(&Action::Release(Button::Cue)),
+            "a preview that started must be released, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn a_hold_that_had_not_fired_yet_is_dropped_rather_than_turned_into_a_tap() {
+        // The other half of the rule, and the reason `reset` cannot simply
+        // replay the release path. A `TapOrHold` button released before the
+        // threshold means "next track" — inventing one here would change
+        // track because the kernel dropped some events, which is worse than
+        // doing nothing.
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        d.feed(ms(0), key(Button::Ff.keycode(), 1), &mut out);
+        out.clear();
+        d.reset(&mut out);
+        assert!(out.is_empty(), "no tap may be invented, got {out:?}");
+    }
+
+    #[test]
+    fn a_dropped_event_queue_ends_whatever_was_in_flight() {
+        // `SYN_DROPPED`: evdev buffers 64 events per client and discards the
+        // whole queue when a reader falls behind. A key release can be in
+        // what was lost, so carrying on would leave the button held for ever.
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        d.feed(ms(0), key(Button::Rew.keycode(), 1), &mut out);
+        d.tick(ms(400), &mut out);
+        out.clear();
+
+        d.feed(
+            ms(500),
+            RawEvent { kind: EV_SYN, code: SYN_DROPPED, value: 0 },
+            &mut out,
+        );
+        assert_eq!(
+            out,
+            vec![Action::HoldEnd(Button::Rew)],
+            "a dropped queue must end the seek it can no longer see the end of"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_frame_boundary_is_still_ignored() {
+        // `SYN_REPORT` arrives after every event group. Treating it like a
+        // drop would reset the decoder several times a second.
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        d.feed(ms(0), key(Button::Ff.keycode(), 1), &mut out);
+        d.tick(ms(400), &mut out);
+        out.clear();
+        d.feed(ms(410), RawEvent { kind: EV_SYN, code: 0, value: 0 }, &mut out);
+        assert!(out.is_empty(), "SYN_REPORT means nothing here, got {out:?}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_device_that_hangs_up_is_dropped_rather_than_spun_on() {
+        // A hung-up descriptor is **permanently ready**: `poll` returns at
+        // once, for ever. Measured on a FIFO standing in for a removed
+        // device: **340,838 iterations in 200 ms** before this looked at
+        // `revents`. A real evdev node returns `ENODEV` instead of hanging
+        // up, so the deck was relying on the kernel's good manners rather
+        // than on anything here — and `read_pending` treating a zero-length
+        // read as "nothing arrived" was the same reliance from the other end.
+        //
+        // The count matters as much as the drop: a device going away takes
+        // its in-flight presses with it, and only the caller can reset the
+        // decoder, so this has to *say* it happened rather than quietly
+        // shrink.
+        let dir = std::env::temp_dir().join(format!("deck-pi-fifo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let path = dir.join("evfake");
+        let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).expect("cstring");
+        // SAFETY: a valid NUL-terminated path in a directory this test owns.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo");
+
+        // Opening a FIFO for reading blocks until a writer arrives, so the
+        // writer has to be in flight before `Device::open`.
+        let wp = path.clone();
+        let writer = std::thread::spawn(move || std::fs::OpenOptions::new().write(true).open(wp));
+        let mut devices = Devices::open(&[path]).expect("open");
+        let w = writer.join().expect("writer thread").expect("write end");
+        assert_eq!(devices.len(), 1);
+
+        // Hang it up.
+        drop(w);
+
+        let mut out = Vec::new();
+        let mut spins = 0u32;
+        let deadline = std::time::Instant::now() + Duration::from_millis(200);
+        let mut lost_total = 0usize;
+        while std::time::Instant::now() < deadline {
+            devices.wait(Duration::from_millis(10)).expect("wait");
+            lost_total += devices.read_pending(&mut out).expect("read");
+            spins += 1;
+            if devices.is_empty() {
+                break;
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(lost_total, 1, "the hang-up must be reported to the caller");
+        assert!(devices.is_empty(), "and the device must be dropped");
+        assert!(
+            spins < 10,
+            "a hung-up device must not be spun on; went round {spins} times"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn no_devices_waits_rather_than_returning_at_once() {
+        // `poll` with zero descriptors returns immediately, so a deck whose
+        // input nodes have all gone would busy-loop at 100% of a core
+        // instead of idling — the same failure as the hang-up above, reached
+        // by subtraction rather than by error.
+        let mut devices = Devices::open(&[]).expect("open none");
+        let started = std::time::Instant::now();
+        assert!(!devices.wait(Duration::from_millis(50)).expect("wait"));
+        assert!(
+            started.elapsed() >= Duration::from_millis(40),
+            "waiting on nothing must still wait, took {:?}",
+            started.elapsed()
+        );
     }
 
     #[cfg(target_os = "linux")]
