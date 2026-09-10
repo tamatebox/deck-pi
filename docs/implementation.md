@@ -141,7 +141,7 @@ closed is the transferable part, it is in the prose below.
 | 6 | Partial by physics | ask whether the job is as large as the problem | absolute-axis rollover folds correctly; the clamped case emits no event at all, so nothing is recoverable |
 | 7 | **Absence of a complaint read as evidence** | break the thing on purpose and confirm the check complains | a linter whose error went to stderr and whose silence was read as a pass; a symmetric null test; a race harness reaching `Overrun` 8.6M times and detecting nothing; a guard whose enforcement depended on **linkage** — an integration test that never touches the crate gets no `#[global_allocator]`, so every `assert_no_alloc` in it silently passes |
 | 8 | True under a reading nobody would take | read your own sentence as a stranger, not as its author | "no code path stores this", written beside the constructor |
-| 9 | **A precondition the code states and nothing enforces** | grep doc comments for `must` and read the callers of each | `Transport::reached_end` says "it must be the control thread" and explains the hazard; the first thing that ever called it was the audio loop. Also `window::Command::Relocate`'s "whoever owns the app loop must send this" — **met**: `app::deck::Deck` sends it on `Cued::Returned`, the sweep having been run before the dispatch was written rather than after it broke. And `Devices::read_pending`'s "a caller that gets a non-zero answer must reset its decoder" — no caller yet, which is where the other two started |
+| 9 | **A precondition the code states and nothing enforces** | grep doc comments for `must` and read the callers of each | `Transport::reached_end` says "it must be the control thread" and explains the hazard; the first thing that ever called it was the audio loop. Also `window::Command::Relocate`'s "whoever owns the app loop must send this", found unsent by the first app loop to hold the channel. And `Devices::read_pending`'s "a caller that gets a non-zero answer must reset its decoder", found with no caller at all — which is where the other two started |
 
 **One check deliberately lives elsewhere, so this list is not complete on its
 own.** A sentence that names a source nobody opened belongs to the same family —
@@ -186,11 +186,30 @@ of a function whose name said what it did. **The third is that sentence one
 stage earlier**, and is the more useful find because nothing is broken yet:
 `Devices::read_pending` says a caller getting a non-zero answer *must* reset
 its decoder, or presses in flight on a vanished node can never be released,
-and its only caller anywhere is the hang-up unit test — which asserts the
-count and has no decoder to reset. The caller that will arrive is the input
-dispatch stage. Written, unviolated, one caller away is exactly where
-`Transport::reached_end` sat two stages ago, so the sweep is worth running
-*before* writing a caller and not only after.
+and its only caller at the time was the hang-up unit test, which asserts the
+count and has no decoder to reset. Written, unviolated, one caller away is
+exactly where `Transport::reached_end` sat two stages ago — so the sweep is
+worth running *before* writing a caller and not only after.
+
+**And it can be run before there is a caller at all, which is the only
+prospective evidence in this table.** Every other row records a check that
+found something already wrong: that says the check works and says nothing
+about whether anyone runs it in time. Shape 9 has both readings.
+`Command::Relocate`'s obligation was flagged by the sweep and then met by the
+stage that owed it — `app::deck::Deck` on a Back Cue, through
+`app::track::Playing::relocate` — instead of being broken by it and found
+afterwards. `Devices::read_pending`'s was met by `app::controls::Controls::turn`,
+which resets the decoder on a non-zero answer under a test that goes red
+without it.
+
+**The second is the stronger case, and the difference is worth keeping.** The
+dispatch stage already held the channel its obligation named, so meeting it
+was remembering to use something that was in its hand. The controls loop had
+to *acquire* the very thing that could violate its precondition — it is the
+first code in the repository that can lose a node while holding a gesture —
+and it pre-empted the violation in the same change that made it possible. A check
+that survives being handed a new hazard is worth more than one that survives
+a new caller.
 
 Note what does *not* find any of them: the type checks, the tests pass, the
 comment and the code agree locally, and clippy has nothing to say. Note also
