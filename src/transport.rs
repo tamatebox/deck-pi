@@ -164,7 +164,25 @@ impl Transport {
     /// `was_playing` is the caller's memory of what the transport was doing
     /// before the button went down — releasing FF must not start playback
     /// that was not running.
+    ///
+    /// **It does nothing unless the deck is still seeking, and that guard is
+    /// not defensive tidiness.** `was_playing` is captured when the button
+    /// goes down and is stale the moment anything else changes the state
+    /// underneath it. The case that matters is CUE pressed during a held FF:
+    /// `hardware.md` chooses Back Cue there, which pauses at the cue point —
+    /// and then releasing FF used to hand `was_playing == true` back and
+    /// **start playing**, directly against the CDJ-350's "Back Cue pauses; it
+    /// does not resume", which `decisions.md` quotes. The release is only
+    /// entitled to end a seek it is still in the middle of; if something else
+    /// has already decided the state, that decision stands.
+    ///
+    /// Sound without a lock because every caller of this and of `cue_down` /
+    /// `cue_up` is the control thread, so the read and the write below cannot
+    /// interleave with another state change.
     pub fn end_seek(&self, was_playing: bool) {
+        if !matches!(self.state(), State::SeekingForward | State::SeekingBack) {
+            return;
+        }
         if was_playing {
             self.play();
         } else {

@@ -205,3 +205,74 @@ fn cue_while_paused_away_from_the_point_sets_it_and_makes_no_sound() {
     assert_eq!(deck.transport.cue_point(), 150_000);
     assert_eq!(deck.transport.rate(), RATE_PAUSED, "setting a cue is silent");
 }
+
+#[test]
+fn cue_during_a_held_seek_pauses_and_releasing_the_button_does_not_undo_it() {
+    // Back Cue while FF is held. `hardware.md` chooses this interpretation
+    // deliberately — "anything not paused counts as moving, and returning to
+    // the point is the predictable answer" — and the CDJ-350 rule it inherits
+    // is quoted in `decisions.md`: **"Back Cue pauses; it does not resume."**
+    //
+    // The release used to undo it. `was_playing` below is captured when FF
+    // goes down, and nothing updates it when CUE changes the state, so
+    // `end_seek(true)` started playback that Back Cue had just stopped. The
+    // deck would resume, from the cue point, with no button pressed to say so.
+    //
+    // Fixed in the transport rather than here: `end_seek` now returns unless
+    // the deck is still seeking. Putting it in this struct would have left
+    // every other caller — including the app loop, which does not exist
+    // yet — free to make the same mistake.
+    let mut deck = Deck::new();
+    let mut d = Decoder::default();
+
+    feed(&mut deck, &mut d, ms(0), key(Button::PlayPause, 1));
+    feed(&mut deck, &mut d, ms(0), key(Button::PlayPause, 0));
+    deck.transport.publish_position(500_000.0);
+    assert_eq!(deck.transport.rate(), RATE_UNITY);
+
+    feed(&mut deck, &mut d, ms(100), key(Button::Ff, 1));
+    tick(&mut deck, &mut d, ms(500));
+    assert_eq!(deck.transport.state(), State::SeekingForward);
+
+    // CUE, still holding FF.
+    feed(&mut deck, &mut d, ms(700), key(Button::Cue, 1));
+    feed(&mut deck, &mut d, ms(760), key(Button::Cue, 0));
+    assert_eq!(deck.transport.state(), State::Paused, "Back Cue pauses");
+    assert_eq!(deck.transport.take_seek(), Some(0), "and returns to the point");
+
+    // Now let FF go. This must change nothing.
+    feed(&mut deck, &mut d, ms(1_200), key(Button::Ff, 0));
+    assert_eq!(
+        deck.transport.state(),
+        State::Paused,
+        "releasing FF must not resume playback Back Cue stopped"
+    );
+    assert_eq!(deck.transport.rate(), RATE_PAUSED);
+}
+
+#[test]
+fn play_pressed_during_a_held_seek_is_not_swallowed_by_the_release() {
+    // The same staleness from the other side. PLAY during a held FF pauses
+    // (the deck is not at rate zero, so the toggle pauses), and the release
+    // used to restore `was_playing` and undo it — so the press did nothing at
+    // all. A control that sometimes does nothing is the thing `hardware.md`
+    // says is harder to trust than one that always does the same.
+    let mut deck = Deck::new();
+    let mut d = Decoder::default();
+
+    feed(&mut deck, &mut d, ms(0), key(Button::PlayPause, 1));
+    feed(&mut deck, &mut d, ms(0), key(Button::PlayPause, 0));
+    feed(&mut deck, &mut d, ms(100), key(Button::Ff, 1));
+    tick(&mut deck, &mut d, ms(500));
+    assert_eq!(deck.transport.state(), State::SeekingForward);
+
+    feed(&mut deck, &mut d, ms(700), key(Button::PlayPause, 1));
+    assert_eq!(deck.transport.rate(), RATE_PAUSED, "PLAY takes effect at once");
+
+    feed(&mut deck, &mut d, ms(1_200), key(Button::Ff, 0));
+    assert_eq!(
+        deck.transport.rate(),
+        RATE_PAUSED,
+        "and the release does not put back what PLAY changed"
+    );
+}
