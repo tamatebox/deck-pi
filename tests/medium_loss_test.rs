@@ -181,7 +181,8 @@ fn a_stick_pulled_mid_track_is_reported_as_a_failure_and_not_as_the_end() {
     // not reach either of its two construction sites. `window.rs:369` is
     // behind `fill_step`'s `?`, which for the read path required a negative
     // return that libsndfile never produces; `window.rs:394` sits inside the
-    // `Command::Relocate` arm, which nothing in `src/` ever sends.
+    // `Command::Relocate` arm, which nothing in `src/` sent until
+    // `app::deck::Deck` did — long after this test was written.
     //
     // So the variant was declared, constructed in two places, documented, and
     // unreachable by the single event it was written for. That greps clean,

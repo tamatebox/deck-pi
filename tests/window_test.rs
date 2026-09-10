@@ -695,8 +695,10 @@ fn a_file_with_a_header_and_no_audio_reports_the_end_once_and_stops() {
 
 /// Frames read before `cue` becomes resident after a backwards jump to it.
 ///
-/// `told` chooses whether the app loop does its job: `Command::Relocate` is
-/// what says "this was a jump, not a scrub". `Window::relocate` is the same
+/// `told` chooses whether the command is sent: `Command::Relocate` is what
+/// says "this was a jump, not a scrub". **Both settings are live paths** —
+/// `app::deck::Deck` sends it on `Cued::Returned`, and FF/REW deliberately
+/// does not, because a scrub is motion. `Window::relocate` is the same
 /// operation the command arm performs, called directly so the measurement
 /// needs no thread and no timing.
 fn cost_of_a_backwards_jump(tag: &str, told: bool) -> usize {
@@ -750,7 +752,7 @@ fn cost_of_a_backwards_jump(tag: &str, told: bool) -> usize {
 
 #[test]
 fn a_cue_jump_that_says_it_is_a_jump_costs_a_fraction_of_one_that_does_not() {
-    // **What `Command::Relocate` is worth, and nothing sends it.**
+    // **What `Command::Relocate` is worth — which is what the deck now buys.**
     //
     // Told, the window restarts *at* the cue point and the very first chunk
     // contains it. Not told, the window sees only that the playhead moved
@@ -761,8 +763,13 @@ fn a_cue_jump_that_says_it_is_a_jump_costs_a_fraction_of_one_that_does_not() {
     // At the production window size that is 2.6M frames, an estimated 0.4-0.8 s
     // of silence from a USB stick, on the gesture a DJ deck exists for:
     // press CUE, then PLAY. `decisions.md` calls a cue jump "a discontinuity
-    // rather than motion" and says an explicit seek clears the direction —
-    // the mechanism is here, and no caller uses it.
+    // rather than motion" and says an explicit seek clears the direction.
+    //
+    // **This measured what the deck was losing, and now measures what it
+    // buys.** `app::deck::Deck` sends the command on `Cued::Returned`, so the
+    // `guessed` arm is no longer any production path for a cue jump — it is
+    // the counterfactual, kept because a number is the only thing that says
+    // how much the obligation was worth meeting.
     let told = cost_of_a_backwards_jump("window-jump-told", true);
     let guessed = cost_of_a_backwards_jump("window-jump-guessed", false);
 

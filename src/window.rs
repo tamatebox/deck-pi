@@ -412,8 +412,10 @@ pub enum Event {
 /// inside `fill_step`, so once the window is full and the thread is parked on
 /// the channel, nothing observes a jump until this expires or a command
 /// arrives. At 128-frame periods that is up to 3-4 periods of silence for a
-/// seek that sends no `Command::Relocate`, which today is every seek — see
-/// that variant.
+/// seek that sends no `Command::Relocate` — which is FF/REW, and deliberately
+/// so: a scrub *is* motion, and the direction inference below is right about
+/// it. The Back Cue return is the discontinuity, and it does send the command
+/// — `app::deck::Deck` on `Cued::Returned`. See that variant.
 const POLL: Duration = Duration::from_millis(10);
 
 impl Window {
