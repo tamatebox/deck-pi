@@ -8,8 +8,11 @@
 //!
 //! # Why this is not `rtrb`
 //!
-//! `docs/implementation.md` lists `rtrb` for both the ring and the control
-//! slot. It is right for the control slot and cannot serve the ring:
+//! `docs/implementation.md` named `rtrb` during design, for both the ring and
+//! the control slot. **It is used for neither.** The control slot needed no
+//! queue — it is plain atomics on `Transport` — so the dependency was never
+//! added. The reason it could not have served the ring is kept because it is
+//! what stops the ring becoming a FIFO later:
 //! `architecture.md` requires reads inside the window to be "free in either
 //! direction" and the window to be filled "ahead of **and behind** the
 //! playhead", and an SPSC FIFO's consumer can only move forward — data behind
@@ -319,8 +322,12 @@ impl RingReader {
     }
 
     pub fn resident(&self) -> std::ops::Range<u64> {
-        // Note the load order: `end` first and `start` last can only
-        // understate the span, never overstate it.
+        // Note the load order: `end` first and `start` last understates the
+        // span rather than overstating it — but only **within a generation**.
+        // This accessor does not read `generation`, so across a backwards
+        // relocation it can report `new_start..old_end`, wider than either.
+        // That is why it is informational only: `copy` does its own
+        // generation-checked loads, and it is the one that must not overstate.
         let end = self.shared.end.load(Ordering::Acquire);
         let start = self.shared.start.load(Ordering::Acquire);
         start..end.max(start)

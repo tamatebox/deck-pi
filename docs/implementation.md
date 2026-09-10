@@ -338,10 +338,15 @@ statement about intent unless something checks it, and something can:
   when configured correctly: it is *misconfiguration* that allocates, and the blind
   spot is precisely what makes misconfiguration silent. See **Declare the pitch range
   when creating the resampler**.
-- **`rtrb`** — single-producer single-consumer, lock-free *and* wait-free, fixed
-  capacity allocated once at construction. This is the **control-thread slot**.
+- **`rtrb`** — **named here during design and never used.** It was to be the
+  control-thread slot: single-producer single-consumer, lock-free *and*
+  wait-free, fixed capacity allocated once at construction. The slot was built
+  instead from plain atomics on `Transport` — a rate, a state, a position, a
+  seek request, each a single word — which needs no queue at all, so the
+  dependency was never added and `Cargo.toml` has no `rtrb`.
 
-  It is **not** the ring, and cannot be. `architecture.md` requires reads inside
+  **The argument for why it could not have served the ring is kept, because it
+  is what stops the ring becoming a FIFO later.** `architecture.md` requires reads inside
   the window to be "free in either direction" and the window to be filled ahead
   of *and behind* the playhead; an SPSC FIFO's consumer only moves forward, and
   what it has read is gone. v1 alone would be satisfied by a FIFO — playback
@@ -349,14 +354,30 @@ statement about intent unless something checks it, and something can:
   would work now and make v2's jog a rewrite instead of a substitution.
 
   The ring is a fixed allocation of **`AtomicI32` slots accessed `Relaxed`**,
-  addressed by track frame index modulo capacity. Making the slots atomic is
-  what makes a concurrent read sound by construction rather than by argument,
-  and it is free on the target: a relaxed 32-bit atomic load or store on AArch64
-  is a plain `ldr` / `str`, no barrier and no lock instruction. The resident
-  span is published as `start`, `end` and a `generation` counter; the callback
-  loads `end` first and `start` last, which can only understate what is
-  resident, then re-checks both after copying and reports a miss rather than
-  emitting a stale or torn sample.
+  addressed by track frame index modulo capacity, and it is cheap on the
+  target: a relaxed 32-bit atomic load or store on AArch64 is a plain `ldr` /
+  `str`, no barrier and no lock instruction.
+
+  The resident span is published as `start`, `end` and a `generation` counter.
+  The callback loads `generation`, then `end`, then `start`; copies; then
+  re-loads `start` and `generation` — **not `end`**, which only grows and so
+  can never invalidate what was just read. Within one generation that order
+  understates what is resident rather than overstating it. **Across a
+  relocation it does not**, which is why `relocate` is a seqlock: the
+  generation is bumped twice and is odd while the relocation is in progress,
+  and the reader refuses an odd generation outright.
+
+  **Two `fence` calls carry the invalidate direction, and they are
+  load-bearing.** The `Release`/`Acquire` pair is oriented for *publishing* —
+  fill the slots, then store `end` — and invalidating runs the other way with
+  no pairing of its own. Do not remove them as redundant with the orderings
+  already there: that is precisely the reasoning that left them out, and it
+  cost **18 corrupt `Ok`s in 90.6M reads**. An earlier version of this
+  paragraph claimed the load order "can only understate what is resident" and
+  that atomic slots made the read "sound by construction" — both were unscoped,
+  and the code matched the prose while neither matched reality.
+  **`src/ring.rs`'s module doc is the authority here**, with the full argument
+  and the measurements; this paragraph follows it.
 - **`libc`** — the `SCHED_FIFO` plumbing, and the other two calls with it.
   `thread-priority` was the crate named here, and it is not used: two of the three
   calls (`mlockall`, `sched_setaffinity`) are not in it, and the verification needs
@@ -431,13 +452,15 @@ Useful as a health signal, not as a popularity one.
 | | Role | Health |
 |---|---|---|
 | `alsa` | Output | 21M, current — but see the allocation trap above |
-| `rtrb` | Control slot only — **not** the ring, see above | 11M, current |
+| `alsa-sys` | Pulled in directly for the four open-mode flags `PCM::new` cannot pass | tracks `alsa`; same maintainers |
+| ~~`rtrb`~~ | **Not a dependency.** Named during design for the control slot, which was built from plain atomics instead — see above | n/a |
 | `libc` | `mlockall`, `sched_setscheduler`, `sched_setaffinity` and the read-backs | 400M+, current |
 | `embedded-graphics` | Drawing API | 2.6M, current |
 | `linux-embedded-hal` | Panel drivers onto `/dev/i2c`, `/dev/spidev` | 5.9M, current |
 | `assert_no_alloc` | Enforcement, not runtime | 4.3M but stale since 2021 |
 | panel driver | One, chosen after open question 1 | thin, and it varies a lot: `ssd1309` 13k / 2023, `ssd1327` 1.7k / **2020** |
-| libsndfile | Reading, via hand-written FFI | C library healthy; no crate dependency |
+| libsndfile | Reading, via hand-written FFI. **`build.rs` requires >= 1.0.28**, which is where RF64 read support arrives — relax that pin and the Track length ceiling argument in `architecture.md` goes with it, silently | C library healthy; no crate dependency |
+| `pkg-config` | Build-dependency. `build.rs` uses it to resolve libsndfile on both the development Mac and the Pi, so the link line is not hardcoded | 300M+, current |
 | libsoxr | v2 resampling, hand-written FFI | C library static since 2023 |
 
 What matters is that risk sits in the right places. The crates that are **hard to
