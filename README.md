@@ -159,7 +159,7 @@ libsndfile is a system library, found through `pkg-config`:
 ```sh
 brew install libsndfile pkg-config          # macOS
 sudo apt install libsndfile1-dev pkg-config # Debian / Raspberry Pi OS
-cargo test    # 183 tests on Linux, 170 on macOS; green in debug and release
+cargo test    # 192 tests on Linux, 177 on macOS; green in debug and release
 ```
 
 Four tests are `#[ignore]`d and none is a skipped assertion. One is the demo-file
@@ -177,6 +177,19 @@ the memory-ordering fences in `src/ring.rs`, the most serious defect found in th
 codebase, and their measured detection rate is 10-20% per run. Removing the fences
 leaves the default suite green on both platforms. `tests/ring_race_test.rs` carries
 the numbers and says what would actually fix it.
+
+**Checking the Linux-only half needs a Linux toolchain, and `cargo clippy` needs
+one more step there than you would expect.** The container this project uses ships
+no `cargo-clippy`, so the invocation fails and prints its error to stderr — and a
+pipeline reading "no warnings" as success cannot tell that apart from a clean run.
+It was apart from a clean run for a while: the sink, `src/rt.rs` and the whole
+`device` module had never been linted while the status line said clippy was clean
+on both platforms.
+
+```sh
+rustup component add clippy   # inside the container, once
+cargo clippy --all-targets -- -D warnings
+```
 
 **Most of it builds and is tested off the target.** The ALSA sink is Linux-only and
 sits behind an `AudioSink` trait, so on a Mac the same engine drives a capture sink

@@ -15,10 +15,22 @@ changes to either.
 **Status.** The v1 read path is built and tested: the libsndfile FFI, format
 vetting, the locked int32 ring, the window thread, the transport, the audio
 callback, the ALSA sink behind an `AudioSink` trait, the realtime process setup and
-the browser, media watch, the cue store and input. 183 tests green in debug and
-release on Linux/aarch64 (170 on macOS, where the Linux-only paths compile out),
-clippy clean on both. **Four more are `#[ignore]`d and are not part of that
-number**: two probabilistic ring-race probes and two demos. The ring pair is the
+the browser, media watch, the cue store and input. 192 tests green in debug and
+release on Linux/aarch64 (177 on macOS, where the Linux-only paths compile out),
+clippy clean on both — **and that was never evidence about the things this project
+gets wrong, which is recorded here so the line is not read as though it were.** Of
+the sixteen faults found in the review that produced most of these tests, clippy
+caught **zero**. That is not a failure of the tool: memory ordering, a mechanism
+with no caller, a comment that agrees with the code and is wrong anyway, an
+unstated premise about the hardware — every one of them is invisible to a lint by
+construction, because they are about what the code *means* against what a document,
+a device or a peer does. A linter that finds `map_identity` is doing its job. The
+mistake would be counting it as verification. Read the line as "no default-group
+lint fires" and nothing else; `docs/implementation.md`'s *What reads as handled and
+is not* is where the checks that would have found those sixteen are written down.
+
+**Four more tests are `#[ignore]`d and are not part of that number**: two
+probabilistic ring-race probes and two demos. The ring pair is the
 regression guard for the most serious defect found so far and it is *opt-in* —
 see `tests/ring_race_test.rs`, which records its own measured detection rate of
 10-20% per run. Bit-perfection is verified end to end at both depths and all
