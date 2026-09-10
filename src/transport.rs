@@ -57,7 +57,21 @@ pub const RATE_SEEK: f64 = 4.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum State {
-    /// Nothing loaded, or stopped.
+    /// **Nothing loaded** — and *only* that. Not the DJ's "stopped": a CDJ has
+    /// no STOP, because returning to the cue point and pausing is what
+    /// stopping means (`decisions.md`), so that gesture and a track reaching
+    /// its end both land on `Paused`, still loaded and sitting on a frame.
+    ///
+    /// **A one-way door.** A fresh `Transport` really is `Stopped` — it is
+    /// the value the type is constructed with, and the test below asserts it
+    /// — but no `state.store` anywhere targets it. The machine can be in this
+    /// state and cannot get back to it.
+    ///
+    /// That is not an oversight. Nothing *unloads* a track, because no module
+    /// owns "what is loaded", which is
+    /// [#14](https://github.com/tamatebox/deck-pi/issues/14); the transition
+    /// in should arrive when that lands. A reader who greps for a writer and
+    /// finds only the constructor has not missed one.
     Stopped = 0,
     Playing = 1,
     Paused = 2,

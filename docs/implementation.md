@@ -116,44 +116,65 @@ Use `alsacap` during bring-up to enumerate what the Digi2 Pro actually offers �
 supported rates, formats, and buffer and period ranges — rather than assuming the
 datasheet's six rates all appear.
 
-## A declared mechanism is not a reached one
+## What reads as handled and is not
 
-The recurring defect in this codebase is not a wrong line. It is a mechanism
-that exists, is typed, is documented, is named in a design document — and is
-never reached. A review pass found six at once, so it is a pattern rather than
-a run of bad luck.
+The recurring defect here is not a wrong line. It is something that **reads as
+verified** — typed, documented, named in a design document, sometimes tested —
+and is not. A five-way review and the fixes after it turned up enough instances
+to sort into shapes, and **the shapes matter more than the list, because each
+needs a different check and the cheap one clears most of them.**
 
-**Two shapes, and the second survives the check that catches the first.**
+| | Shape | The check that finds it | Instance |
+|---|---|---|---|
+| 1 | Declared, never reached | grep **construction sites**, not definitions | `BrowseError::OutsideRoot`, `verify_in_force`, `Transport::reached_end`, `Command::Relocate` |
+| 2 | Wired, unreachable **for its stated cause** | ask whether the *stated cause* can reach the site | `window::Event::Failed` — two construction sites, neither reachable by a pulled stick |
+| 3 | A one-way door | ask which transitions lead **into** each state | `State::Stopped` — constructed, never stored; correct pending [#14](https://github.com/tamatebox/deck-pi/issues/14) |
+| 4 | An unstated premise, true of the code and false of the hardware | name the cardinality the code chose, where no document states one | `Device::wait` polled 1 of the 7 nodes `config.txt` creates — most buttons dead |
+| 5 | Correct only because something else chose to behave | ask what the code relies on the other side *choosing* to do | `wait` ignored `revents`; a hung-up fd spun 340,838 times in 200 ms, hidden because real evdev returns `ENODEV` |
+| 6 | Partial by physics | ask whether the job is as large as the problem | absolute-axis rollover folds correctly; the clamped case emits no event at all, so nothing is recoverable |
+| 7 | **Absence of a complaint read as evidence** | break the thing on purpose and confirm the check complains | a linter whose error went to stderr and whose silence was read as a pass; a symmetric null test; a race harness reaching `Overrun` 8.6M times and detecting nothing |
+| 8 | True under a reading nobody would take | read your own sentence as a stranger, not as its author | "no code path stores this", written beside the constructor |
 
-*Declared and never reached.* `BrowseError::OutsideRoot` was constructed
-nowhere; `verify_in_force` had no callers; `Transport::reached_end` was called
-only by its own tests; `Command::Relocate` had a match arm and no sender.
-Each greps dirty the moment anyone looks.
+Three of these need more than a row.
 
-*Wired, but unreachable for its stated cause.* `window::Event::Failed` had two
-construction sites, a doc comment naming a pulled stick as its dominant cause,
-and a design sentence promising the behaviour — and neither site could fire for
-that cause: one sat behind `Command::Relocate`, which nothing sent, and the
-other needed a negative return from `sf_readf_int`, which libsndfile never
-produces. **A reachability check answers "yes" here.** One dead mechanism was
-concealing another, so per-site inspection is not enough; the deadness was
-inherited.
+**Shapes 2 and 3 are cleared by the check that catches shape 1**, which is the
+whole reason to separate them. `Event::Failed` greps clean — a type, a doc
+comment, two construction sites, and an affirmative answer to "is this
+reachable?" — because one site sat behind `Command::Relocate`, which nothing
+sent, so the deadness was *inherited* rather than local. `State::Stopped` greps
+clean for the opposite reason: the constructor is right there, and what is
+missing is a transition back.
 
-**And an unexercised branch predicts unexercised *consumers*.** `Miss::Relocated`
-was noted as a coverage gap — no test in the repository had ever caused it to
-be returned. That was also a prediction. When the `relocate` seqlock made it
-routine, two consumers were immediately found to have had it wrong all along:
-one matched a single variant and sent the rest to `panic!`, the other to a
-`break` that ended playback, both treating "the window moved, come back" as a
-fault. Nothing had ever asked them. So when a dormant branch is made live,
-**audit what receives it in the same change** — the branch working is not the
-question.
+**Shape 4 has a wrong repair that looks right.** Waiting on each of the seven
+nodes in turn spends the full timeout on each, so the round trip becomes seven
+poll intervals and `Decoder::tick` runs that much later — dead buttons traded
+for a drifting hold threshold. It has to be one `poll` over all of them.
 
-**What this costs to check** is grep for construction sites rather than
-definitions, and, for the second shape, asking whether the *stated cause* can
-reach them. Neither is expensive. Both were skipped because the type, the
-comment and the document agreed with each other — which is evidence about the
-comment and the document, and none at all about the code.
+**Shape 7 is the one to internalise, because it invalidates evidence rather
+than code.** In each instance nothing complained, and nothing complaining was
+taken as a result: a check that never ran, a check that was symmetric so the
+error cancelled, a probe optimised out because its allocation was unused, a
+harness with no measured sensitivity. **The only way to know a check works is to
+make it fail** — remove the fix and confirm the test goes red. Where that is
+probabilistic, the detection rate is itself a measurement: this repository's
+ring-race guard was measured at 1 detection in 5 runs on macOS and 1 in 10 on
+Linux, so a clean run is the *expected* outcome with the bug present, and three
+clean runs was not the evidence it read as.
+
+### Two rules that cut across all eight
+
+**Agreement between a comment and its code is evidence about the comment and
+never about the code.** Several of these survived because the type, the doc
+comment and the design document agreed with one another, and all three were
+wrong together.
+
+**An unexercised branch predicts unexercised *consumers*.** `Miss::Relocated`
+was recorded as a coverage gap; that was also a prediction. When the `relocate`
+seqlock made it routine, two consumers were found to have been wrong all along —
+one sending every other variant to `panic!`, the other to a `break` that ended
+playback, both treating "the window moved, come back" as a fault. Nothing had
+ever asked them. When a dormant branch is made live, **audit what receives it in
+the same change**; the branch working is not the question.
 
 ## Reading files
 
