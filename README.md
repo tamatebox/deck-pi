@@ -7,9 +7,11 @@ samples reaching the DAC untouched.
 **Status.** The v1 read path is built and tested — libsndfile FFI, format vetting,
 the locked int32 ring, the window thread, the transport, the audio callback, the
 ALSA sink, the realtime process setup, the browser, media watch, the cue store and
-input — with bit-perfection verified end to end across every container, depth and
-rate in scope. That is the software half only. **Not started: the display, and the
-app loop that would join these modules together.**
+input — with bit-perfection verified end to end at both depths and all six rates,
+across four of the five containers in scope. **Wave64 is accepted and untested**;
+the other four are WAV, AIFF, AIFF-C `sowt` and RF64. That is the software half
+only. **Not started: the display, and the app loop that would join these modules
+together.**
 
 **Nothing has run on hardware.** The Pi and the boards are not assembled, so the
 ALSA sink has never opened a real device and the `hw_params` half of the null test
@@ -157,13 +159,24 @@ libsndfile is a system library, found through `pkg-config`:
 ```sh
 brew install libsndfile pkg-config          # macOS
 sudo apt install libsndfile1-dev pkg-config # Debian / Raspberry Pi OS
-cargo test    # 167 tests on Linux, 160 on macOS; green in debug and release
+cargo test    # 183 tests on Linux, 170 on macOS; green in debug and release
 ```
 
-Two tests are `#[ignore]`d and neither is a skipped assertion: one is the demo-file
-generator below, and the other is the *subject* of a negative control — the test
-that proves the no-allocation enforcement actually aborts spawns it deliberately,
-so running it directly would abort the harness.
+Four tests are `#[ignore]`d and none is a skipped assertion. One is the demo-file
+generator below. One is the *subject* of a negative control — the test that proves
+the no-allocation enforcement actually aborts spawns it deliberately, so running it
+directly would abort the harness. The other two are the ring's concurrency probes:
+
+```sh
+cargo test --release --test ring_race_test -- --ignored --nocapture
+```
+
+They need seconds of wall clock and release codegen, which is why they are not in
+the default run — **and that is a real gap, not a tidy arrangement.** They guard
+the memory-ordering fences in `src/ring.rs`, the most serious defect found in this
+codebase, and their measured detection rate is 10-20% per run. Removing the fences
+leaves the default suite green on both platforms. `tests/ring_race_test.rs` carries
+the numbers and says what would actually fix it.
 
 **Most of it builds and is tested off the target.** The ALSA sink is Linux-only and
 sits behind an `AudioSink` trait, so on a Mac the same engine drives a capture sink

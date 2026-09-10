@@ -15,11 +15,19 @@ changes to either.
 **Status.** The v1 read path is built and tested: the libsndfile FFI, format
 vetting, the locked int32 ring, the window thread, the transport, the audio
 callback, the ALSA sink behind an `AudioSink` trait, the realtime process setup and
-the browser, media watch, the cue store and input. 167 tests green in debug and
-release on Linux/aarch64 (160 on macOS, where the Linux-only paths compile out),
-clippy clean on both. Bit-perfection is
-verified end to end for every container and depth in scope at all six rates — **but
-only the software half.**
+the browser, media watch, the cue store and input. 183 tests green in debug and
+release on Linux/aarch64 (170 on macOS, where the Linux-only paths compile out),
+clippy clean on both. **Four more are `#[ignore]`d and are not part of that
+number**: two probabilistic ring-race probes and two demos. The ring pair is the
+regression guard for the most serious defect found so far and it is *opt-in* —
+see `tests/ring_race_test.rs`, which records its own measured detection rate of
+10-20% per run. Bit-perfection is verified end to end at both depths and all
+six rates for **four** of the five containers in scope — WAV, AIFF, AIFF-C `sowt`
+and RF64. **Wave64 is accepted and never tested**: `tests/fixtures` writes its
+files by hand on purpose, so covering it means writing a Wave64 encoder rather
+than adding a line, and the sample path after the header is byte-identical to
+WAV's. Said plainly because "every container" was the claim here and it was one
+short. And all of this is **only the software half.**
 
 **Not started, no file at all:** the display, and the app loop that would join
 these modules to each other — `src/main.rs` is still a bring-up CLI.
