@@ -1,6 +1,9 @@
 # Decisions
 
-Design settled 2026-09-09. No code exists yet.
+Design settled 2026-09-09. **Code now exists** — `CLAUDE.md` carries what is
+built and what is not, deliberately in one place so this file does not have to
+be re-read to find out. What is here is the reasoning, which does not expire
+when a module lands.
 
 ## Settled
 
