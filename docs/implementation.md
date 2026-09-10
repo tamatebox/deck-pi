@@ -161,6 +161,11 @@ ring-race guard was measured at 1 detection in 5 runs on macOS and 1 in 10 on
 Linux, so a clean run is the *expected* outcome with the bug present, and three
 clean runs was not the evidence it read as.
 
+It recurs while being written down. The commit that hardened the argument
+parser closed one route to an unpinned realtime run and tested it, and left the
+duplicate-flag route beside it unchecked — six passing parser tests standing in
+for a parser nobody had tried to break, in the change that documents this shape.
+
 ### Two rules that cut across all eight
 
 **Agreement between a comment and its code is evidence about the comment and
