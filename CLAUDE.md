@@ -14,26 +14,28 @@ changes to either.
 
 **Status.** The v1 read path is built and tested: the libsndfile FFI, format
 vetting, the locked int32 ring, the window thread, the transport, the audio
-callback, the ALSA sink behind an `AudioSink` trait, the realtime process setup and
-the browser, media watch, the cue store and input. 199 tests green in debug and
-release on Linux/aarch64 (184 on macOS, where the Linux-only paths compile out),
-clippy clean on both — **and that was never evidence about the things this project
-gets wrong, which is recorded here so the line is not read as though it were.** Of
-the sixteen faults found in the review that produced most of these tests, clippy
-caught **zero**. That is not a failure of the tool: memory ordering, a mechanism
-with no caller, a comment that agrees with the code and is wrong anyway, an
-unstated premise about the hardware — every one of them is invisible to a lint by
-construction, because they are about what the code *means* against what a document,
-a device or a peer does. A linter that finds `map_identity` is doing its job. The
-mistake would be counting it as verification. Read the line as "no default-group
-lint fires" and nothing else; `docs/implementation.md`'s *What reads as handled and
-is not* is where the checks that would have found those sixteen are written down.
+callback, the ALSA sink behind an `AudioSink` trait, the realtime process setup
+and the browser, media watch, the cue store and input. The suite is green in
+debug and release on Linux/aarch64 and on macOS, where the Linux-only paths
+compile out, and clippy is clean on both — **and that was never evidence about
+the things this project gets wrong, which is recorded here so the line is not
+read as though it were.** Of the sixteen faults found in the review that
+produced most of these tests, clippy caught **zero**. That is not a failure of
+the tool: memory ordering, a mechanism with no caller, a comment that agrees
+with the code and is wrong anyway, an unstated premise about the hardware —
+every one of them is invisible to a lint by construction, because they are about
+what the code *means* against what a document, a device or a peer does. A linter
+that finds `map_identity` is doing its job. The mistake would be counting it as
+verification. Read the line as "no default-group lint fires" and nothing else;
+`docs/implementation.md`'s *What reads as handled and is not* is where the
+checks that would have found those sixteen are written down.
 
-**Four more tests are `#[ignore]`d and are not part of that number**: two
-probabilistic ring-race probes and two demos. The ring pair is the
-regression guard for the most serious defect found so far and it is *opt-in* —
-see `tests/ring_race_test.rs`, which records its own measured detection rate of
-10-20% per run. Bit-perfection is verified end to end at both depths and all
+**Some tests are `#[ignore]`d and green does not include them**: the ring-race
+probes and the demos. The ring pair is the regression guard for the most serious
+defect found so far and it is *opt-in* — see `tests/ring_race_test.rs`, which
+records its own measured detection rate of 10-20% per run.
+
+Bit-perfection is verified end to end at both depths and all
 six rates for **four** of the five containers in scope — WAV, AIFF, AIFF-C `sowt`
 and RF64. **Wave64 is accepted and never tested**: `tests/fixtures` writes its
 files by hand on purpose, so covering it means writing a Wave64 encoder rather
@@ -91,6 +93,19 @@ promote things from it into the design doc.
   into a fact. The same goes for a premise: an unlabelled one is indistinguishable
   from a settled fact three turns later, which is exactly how the five above
   survived as long as they did.
+- **No number in this file may change when you commit.** Hardware figures, rates,
+  pin numbers, the arithmetic behind a design choice — all fine, they are
+  properties of the thing. A count of passing tests is not: it is a measurement of
+  the tree at one instant, in the file every session loads at start and nobody
+  re-reads. It went stale within six commits, twice in one day, and a stale
+  measurement is worse than none because it still reads as measured. Say the suite
+  is green; the exact figure belongs next to the command that prints it, in
+  `README.md`, where the reader sees the real one seconds later.
+
+  The same test applies to anything else here: if landing an ordinary commit could
+  falsify the sentence, it is status and does not belong. `decisions.md` had this
+  problem first — a status line at the top of the reasoning log, three months
+  stale — and moving it here fixed the wrong half.
 - The 3B+ is specified at 1.4 GHz but **sizing is against 1.2 GHz**, because its
   soft temperature limit drops the clock there at 60 C. Do not "correct" the
   1.2 GHz figures upward — see `docs/hardware.md`.
