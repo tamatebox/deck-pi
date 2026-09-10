@@ -128,7 +128,7 @@ needs a different check and the cheap one clears most of them.**
 |---|---|---|---|
 | 1 | Declared, never reached | grep **construction sites**, not definitions | `BrowseError::OutsideRoot`, `verify_in_force`, `Transport::reached_end`, `Command::Relocate` |
 | 2 | Wired, unreachable **for its stated cause** | ask whether the *stated cause* can reach the site | `window::Event::Failed` — two construction sites, neither reachable by a pulled stick |
-| 3 | A one-way door | ask which transitions lead **into** each state | `State::Stopped` — constructed, never stored; correct pending [#14](https://github.com/tamatebox/deck-pi/issues/14) |
+| 3 | A one-way door | ask which transitions lead **into** each state | `State::Stopped` — constructed, never stored. Was "pending [#14](https://github.com/tamatebox/deck-pi/issues/14)"; #14 has landed and `Loaded::unload` exists, so what is missing is now the app loop that would wire it to `Transport` |
 | 4 | An unstated premise, true of the code and false of the hardware | name the cardinality the code chose, where no document states one | `Device::wait` polled 1 of the 7 nodes `config.txt` creates — most buttons dead |
 | 5 | Correct only because something else chose to behave | ask what the code relies on the other side *choosing* to do | `wait` ignored `revents`; a hung-up fd spun 340,838 times in 200 ms, hidden because real evdev returns `ENODEV` |
 | 6 | Partial by physics | ask whether the job is as large as the problem | absolute-axis rollover folds correctly; the clamped case emits no event at all, so nothing is recoverable |

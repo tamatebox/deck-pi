@@ -67,11 +67,15 @@ pub enum State {
     /// — but no `state.store` anywhere targets it. The machine can be in this
     /// state and cannot get back to it.
     ///
-    /// That is not an oversight. Nothing *unloads* a track, because no module
-    /// owns "what is loaded", which is
-    /// [#14](https://github.com/tamatebox/deck-pi/issues/14); the transition
-    /// in should arrive when that lands. A reader who greps for a writer and
-    /// finds only the constructor has not missed one.
+    /// That is not an oversight, and the reason has changed once already —
+    /// which is why it says what it is waiting for rather than just "later".
+    /// It was that nothing *unloaded* a track, because no module owned "what
+    /// is loaded" ([#14](https://github.com/tamatebox/deck-pi/issues/14)).
+    /// That has landed: `Loaded::unload` exists. What is missing now is
+    /// smaller and more specific — `unload` clears only its own field, and
+    /// the app loop that would call it and store `Stopped` here is not built.
+    /// A reader who greps for a writer and finds only the constructor has not
+    /// missed one.
     Stopped = 0,
     Playing = 1,
     Paused = 2,
