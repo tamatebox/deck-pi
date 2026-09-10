@@ -202,14 +202,17 @@ afterwards. `Devices::read_pending`'s was met by `app::controls::Controls::turn`
 which resets the decoder on a non-zero answer under a test that goes red
 without it.
 
-**The second is the stronger case, and the difference is worth keeping.** The
-dispatch stage already held the channel its obligation named, so meeting it
-was remembering to use something that was in its hand. The controls loop had
-to *acquire* the very thing that could violate its precondition — it is the
-first code in the repository that can lose a node while holding a gesture —
-and it pre-empted the violation in the same change that made it possible. A check
-that survives being handed a new hazard is worth more than one that survives
-a new caller.
+**The second is the stronger case, and the difference is the age of the
+hazard rather than of the capability.** `Relocate`'s hazard pre-existed the
+dispatch: every cue jump already rebuilt the window *below* the target, which
+`tests/window_test.rs` measures at 2.6M frames — an estimated 0.4-0.8 s of
+silence on the gesture a DJ deck exists for. So the dispatch removed a hazard
+that had been live since the window thread was written. `read_pending`'s did
+not exist until `Controls` did, nothing before it having held both a device
+set and a decoder, so the commit that created the hazard is the commit that
+closed it — and it is the first code in the repository that can lose a node
+while holding a gesture. A check that survives being handed a new hazard is
+worth more than one that survives a new caller.
 
 Note what does *not* find any of them: the type checks, the tests pass, the
 comment and the code agree locally, and clippy has nothing to say. Note also
