@@ -52,6 +52,29 @@ fn parse<I: IntoIterator<Item = std::ffi::OsString>>(argv: I) -> Result<Args, St
     let mut media_check = None;
     let mut only_paths = false;
 
+    // **A flag given twice is an error, not the last one winning.** Refusing
+    // contradictions *between* flags while accepting them *within* one is the
+    // hole the first version of this parser left, and it reopened the door
+    // the same commit had just closed: `--rt-check=2 --rt-check` produced
+    // `cpu None` — pinning silently not happening, on the one flag that
+    // exists to exercise pinning.
+    //
+    // `--device=hw:0,0 --device=hw:9,9` is the one that costs most here. This
+    // CLI's whole job is bring-up, and an operator editing a shell line to
+    // change cards, leaving the old flag behind, would test `hw:9,9` while
+    // believing they tested `hw:0,0`. Silent, and wrong about the only thing
+    // the run was for.
+    //
+    // `--drain` twice is harmless and is refused anyway, so a reader does not
+    // have to learn which flags tolerate repetition.
+    fn once<T>(slot: &mut Option<T>, flag: &str, value: T) -> Result<(), String> {
+        if slot.is_some() {
+            return Err(format!("{flag} given more than once"));
+        }
+        *slot = Some(value);
+        Ok(())
+    }
+
     for arg in argv {
         let text = arg.to_string_lossy().into_owned();
         if only_paths || !text.starts_with('-') {
@@ -62,11 +85,24 @@ fn parse<I: IntoIterator<Item = std::ffi::OsString>>(argv: I) -> Result<Args, St
             // Everything after `--` is a path, for a file whose name begins
             // with a dash.
             "--" => only_paths = true,
-            "--drain" => drain = true,
-            "--rt-check" => rt_check = Some(None),
-            "--media-check" => media_check = Some(PathBuf::from(media::MOUNT_POINT)),
+            "--drain" => {
+                if drain {
+                    return Err("--drain given more than once".into());
+                }
+                drain = true;
+            }
+            "--rt-check" => once(&mut rt_check, "--rt-check", None)?,
+            "--media-check" => once(
+                &mut media_check,
+                "--media-check",
+                PathBuf::from(media::MOUNT_POINT),
+            )?,
+            // `--device` written with a space would take the value as a path,
+            // so it is caught by name. `--rt-check` and `--media-check` need
+            // no such arm: both are valid with no value at all.
+            "--device" => return Err("--device takes its value with '=', as --device=...".into()),
             _ if text.starts_with("--device=") => {
-                device = Some(text["--device=".len()..].to_string())
+                once(&mut device, "--device=", text["--device=".len()..].to_string())?
             }
             _ if text.starts_with("--rt-check=") => {
                 let n = &text["--rt-check=".len()..];
@@ -77,14 +113,13 @@ fn parse<I: IntoIterator<Item = std::ffi::OsString>>(argv: I) -> Result<Args, St
                 let cpu = n
                     .parse::<usize>()
                     .map_err(|_| format!("--rt-check= wants a core number, got {n:?}"))?;
-                rt_check = Some(Some(cpu));
+                once(&mut rt_check, "--rt-check", Some(cpu))?;
             }
-            _ if text.starts_with("--media-check=") => {
-                media_check = Some(PathBuf::from(&text["--media-check=".len()..]))
-            }
-            "--device" | "--rt-check-" => {
-                return Err(format!("{text} takes its value with '=', as {text}=..."))
-            }
+            _ if text.starts_with("--media-check=") => once(
+                &mut media_check,
+                "--media-check",
+                PathBuf::from(&text["--media-check=".len()..]),
+            )?,
             _ => return Err(format!("unknown argument {text:?}")),
         }
     }
@@ -647,6 +682,41 @@ mod tests {
             parse_of(&["--", "--odd-name.wav"]).expect("after --").paths,
             vec![PathBuf::from("--odd-name.wav")]
         );
+    }
+
+    #[test]
+    fn a_flag_given_twice_is_refused_rather_than_letting_the_last_one_win() {
+        // **Found by review after the first version of this parser shipped**,
+        // and it reopened the door the same commit had just closed. The commit
+        // message said a typo in `--rt-check=` "meant the pinning silently did
+        // not happen"; `--rt-check=2 --rt-check` produced exactly that by a
+        // different route, giving `cpu None`.
+        //
+        // Measured on the built binary, not reasoned:
+        //   --rt-check=2 --rt-check          -> cpu None
+        //   --rt-check --rt-check=2          -> cpu Some(2)
+        //   --device=hw:0,0 --device=hw:9,9  -> ran hw:9,9, said nothing
+        //
+        // The shape: contradictions *between* flags were refused, and
+        // contradictions *within* one flag were not, because each was
+        // `x = Some(..)` in a loop that could not tell a first from a second.
+        //
+        // `--device=` is the one that costs most. This CLI exists for
+        // bring-up; an operator editing a shell line to change cards and
+        // leaving the old flag behind tests the wrong card while believing
+        // otherwise, which is silent and wrong about the only thing the run
+        // was for.
+        assert!(parse_of(&["--rt-check=2", "--rt-check"]).is_err());
+        assert!(parse_of(&["--rt-check", "--rt-check=2"]).is_err());
+        assert!(parse_of(&["--device=hw:0,0", "--device=hw:9,9", "x.wav"]).is_err());
+        assert!(parse_of(&["--media-check=/a", "--media-check=/b"]).is_err());
+        // `--drain` twice is harmless and refused anyway, so nobody has to
+        // learn which flags tolerate repetition.
+        assert!(parse_of(&["--drain", "--drain", "x.wav"]).is_err());
+
+        // And the messages name the flag.
+        let e = parse_of(&["--device=a", "--device=b", "x"]).expect_err("refused");
+        assert!(e.contains("--device"), "{e}");
     }
 
     #[test]

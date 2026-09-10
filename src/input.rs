@@ -425,7 +425,25 @@ mod device {
     /// bytes and the struct is 16, so "fixed" is true only of the base
     /// `decisions.md` chose. Deriving it costs one `size_of` and removes the
     /// assumption.
-    const TIME_LEN: usize = std::mem::size_of::<libc::timeval>();
+    /// **Derived from `__kernel_ulong_t`, not from userspace's `timeval`.**
+    ///
+    /// The kernel's `struct input_event` carries two `__kernel_ulong_t`s, and
+    /// `__kernel_ulong_t` is `unsigned long` — 8 bytes on a 64-bit build, 4 on
+    /// a 32-bit one. Userspace's `timeval` usually matches, which is why
+    /// `size_of::<libc::timeval>()` gave the right answer and why it was used.
+    ///
+    /// It stops matching under `__USE_TIME_BITS64`, where a 32-bit userspace
+    /// gets a 16-byte `timeval` while the kernel's event stays at 16 bytes
+    /// total. Reading 24 where the kernel writes 16 corrupts every second
+    /// event — and libc 0.2 already carries `gnu_time_bits64` and
+    /// `musl32_time64` behind environment gates, with a deprecation note
+    /// saying it will follow by default in future.
+    ///
+    /// No effect on this deck: `decisions.md` fixes the base at Raspberry Pi
+    /// OS **64-bit**, where both derivations give 24. Changed anyway because
+    /// the old one was right by coincidence, and the coincidence is scheduled
+    /// to end.
+    const TIME_LEN: usize = 2 * std::mem::size_of::<libc::c_ulong>();
     pub const EVENT_LEN: usize = TIME_LEN + 2 + 2 + 4;
 
     /// Splits one event out of its bytes. The timestamp is skipped
@@ -1119,16 +1137,21 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn the_event_struct_is_the_size_the_kernel_header_says() {
-        // Measured against `linux/input.h` on aarch64: sizeof 24, with
-        // `type` at 16, `code` at 18 and `value` at 20. Derived from
-        // `timeval` rather than hardcoded, because a 32-bit build makes it
-        // 16 — so "a fixed 24-byte struct" is true of the chosen base and
-        // not of the struct.
-        assert_eq!(
-            EVENT_LEN,
-            std::mem::size_of::<libc::timeval>() + 8,
-            "the event layout moved"
-        );
+        // Measured against `linux/input.h` on aarch64 with a C probe: sizeof
+        // 24, with `type` at 16, `code` at 18 and `value` at 20. So "a fixed
+        // 24-byte struct" is true of the base `decisions.md` chose and not of
+        // the struct.
+        //
+        // **Asserted against the number, not against the derivation.** The
+        // previous version compared `EVENT_LEN` with
+        // `size_of::<timeval>() + 8`, which was the definition restated — it
+        // could not fail, and it would have gone on passing under
+        // `__USE_TIME_BITS64`, where userspace's `timeval` grows to 16 on a
+        // 32-bit build and the kernel's event does not.
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(EVENT_LEN, 24, "the event layout moved on a 64-bit build");
+        #[cfg(target_pointer_width = "32")]
+        assert_eq!(EVENT_LEN, 16, "the event layout moved on a 32-bit build");
 
         // And a round trip through the byte form the kernel writes.
         let mut bytes = vec![0u8; EVENT_LEN];

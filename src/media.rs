@@ -345,3 +345,44 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod positive_tests {
+    use super::*;
+
+    /// **The first positive case for `is_mount_point`, and it needs no
+    /// privilege.**
+    ///
+    /// Every other test of this function is negative — a path that is not a
+    /// mount, a path that does not exist, a file where a directory should be
+    /// — because mounting something needs root, so the only evidence that the
+    /// `st_dev` comparison says *yes* to a real mount was a figure in a
+    /// comment: 79 against 76 in a container. A rule verified only in the
+    /// direction that returns `false` would go on passing if it returned
+    /// `false` for everything.
+    ///
+    /// `/proc` closes that without mounting anything: it is a real mount on
+    /// every Linux system, so its `st_dev` differs from `/`'s by definition.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_real_mount_point_is_recognised_as_one() {
+        assert!(
+            is_mount_point(Path::new("/proc")).expect("stat /proc"),
+            "/proc is a mount on every Linux system"
+        );
+        // And the negative half against the same parent, so the test is not
+        // just asserting that something is true somewhere.
+        assert!(!is_mount_point(Path::new("/etc")).expect("stat /etc"));
+    }
+
+    /// macOS has no `/proc`, and its firmlinks make the equivalent check
+    /// unreliable — `/System/Volumes/Data` is a real mount that reports the
+    /// **same** `st_dev` as `/`. So the positive case is Linux-only, which is
+    /// where the deck runs, and this test records why rather than leaving the
+    /// gap unexplained.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn the_positive_case_is_linux_only() {
+        assert!(!is_mount_point(Path::new("/etc")).expect("stat /etc"));
+    }
+}

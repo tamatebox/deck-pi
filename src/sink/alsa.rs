@@ -83,13 +83,19 @@ fn dev_rt(e: alsa::Error) -> SinkError {
 /// `assert_no_mixer_controls` sees it. What survives both is a plug chain at
 /// the *same* rate and format doing something else to the samples.
 ///
-/// **Not closed, deliberately.** `snd_pcm_type` on the open handle is the
-/// one-line fact — but the `alsa` crate exposes neither the function nor the
-/// raw pointer, so reaching it means opening the device a second time through
-/// `alsa-sys` purely to ask, then closing it, before the real open. An extra
-/// open of the audio hardware is not a trade this project should make to
-/// guard against someone deliberately redefining `hw` on the deck itself. If
-/// the crate ever exposes the type, take it.
+/// **Not closed, deliberately, and not because of the cost.**
+/// `snd_pcm_type` on the open handle is the one-line fact — but the `alsa`
+/// crate exposes neither the function nor the raw pointer, so reaching it
+/// means opening the device a second time through `alsa-sys` purely to ask,
+/// then closing it, before the real open.
+///
+/// The objection is not that this is expensive. **`hw:` access is exclusive**,
+/// so a probe open can fail outright, or race the real one, on the single
+/// resource this program exists to hold. Trading a possible failure to play
+/// for a guard against someone deliberately redefining `hw` *on the deck* is
+/// the wrong way round. If the crate ever exposes the type on the handle we
+/// already hold, take it — that version costs nothing and contends with
+/// nothing.
 pub fn is_hardware_device(name: &str) -> bool {
     name == "hw" || name.starts_with("hw:")
 }

@@ -168,11 +168,13 @@ pub trait AudioSink {
     /// device failure. Nothing in this trait said so, and "or the deck stops"
     /// reads as though the sink survives stopping.
     ///
-    /// That costs nothing here, because the design already opens a device per
-    /// track: the output rate follows the source, so a rate change reopens it
-    /// anyway, and `architecture.md` records that as free — the other deck is
-    /// a separate Pi, so nothing audible is interrupted. Written down because
-    /// it is a contract, not because it is a limitation.
+    /// That costs nothing here, and it is worth naming what it leans on
+    /// rather than reading as a free property. The output rate follows the
+    /// source, so a track at a new rate reopens the device anyway; and
+    /// reopening is free **because one Pi is one deck** — the other deck is a
+    /// separate machine, so nothing audible is interrupted. Two decisions
+    /// deep, both in `decisions.md`. If either ever changed, this contract
+    /// would start costing something.
     fn drain(&mut self) -> Result<(), SinkError>;
 
     /// Checks that the device is running what it was asked for, **while it is

@@ -268,6 +268,15 @@ impl Browser {
         }
 
         // Keep the selection visible, moving the window by the minimum.
+        //
+        // **This clamp is why `back()` setting `first = 0` is cosmetic and
+        // not a bug.** Returning from a folder restores the selection but not
+        // the scroll position, so the row can arrive below the viewport — and
+        // it is pulled back in here, on the next render, always. What is left
+        // is that it lands on the **bottom** row rather than where it was,
+        // which on the two-row panel of open question 1 is a full-height
+        // jump. Recorded so the next reader does not have to re-find the
+        // clamp before concluding the same thing.
         if self.selected < self.first {
             self.first = self.selected;
         } else if self.selected >= self.first + height {

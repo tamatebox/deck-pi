@@ -49,11 +49,19 @@ impl std::error::Error for SndFileError {}
 /// other's reason.
 ///
 /// Never wrong *audio* — the `Err` is still an `Err` and the file still does
-/// not open — only a wrong *why*, which on a deck whose stated principle is
-/// saying why rather than just that is worth knowing about. Not fixed: the
-/// alternative is a mutex around every open, on a path that already blocks,
-/// to improve a message. Revisit if the browser ever shows a reason that does
-/// not match the file.
+/// not open — but **"only the *why*" understates it here.** `decisions.md`
+/// makes "say *why*, not just *that*" the reason the UI distinguishes "no
+/// stick" from "stick I cannot read", and the four header rejections exist to
+/// name which one applies. A wrong reason is a failure of the principle in
+/// the one place the principle is named.
+///
+/// Not fixed today, and the honest price is lower than "a mutex is too
+/// expensive": **every `sf_open` in this program is off the deadline by
+/// construction** — the window thread and the browser, never the callback —
+/// so a lock around open-plus-`sf_strerror` would cost nothing that matters.
+/// What it costs is a lock in a file that currently has none. Left as a known
+/// trade rather than a dismissal; take it the moment a reason is seen that
+/// does not match its file.
 fn last_error(handle: *mut ffi::SNDFILE) -> SndFileError {
     // SAFETY: sf_strerror accepts null (meaning "the last error with no
     // handle"), and returns a static, NUL-terminated string owned by the

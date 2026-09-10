@@ -250,6 +250,28 @@ impl CueStore {
         } else {
             track
         };
+        // **The key is bytes, so nothing normalises it — which means two
+        // spellings of one file are two cues.** `a.wav`, `./a.wav` and
+        // `b/../a.wav` all name the same track and would each get their own
+        // entry, and `../../etc/passwd` would be accepted as a key.
+        //
+        // Unreachable through the browser, which builds absolute paths from
+        // `read_dir` entries and never produces a `.` or `..` component. That
+        // is the argument for refusing rather than normalising: normalising
+        // would make the odd spellings *work*, and quietly accept a caller
+        // that is doing something this store cannot mean — a path leaving the
+        // medium, or a relative path whose base nobody stated. Refusing keeps
+        // the key exactly what `decisions.md` says it is, the path relative to
+        // the mount point, and turns a caller's mistake into a message rather
+        // than a second cue on the same track.
+        if rel
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::CurDir))
+        {
+            return Err(CueError::OutsideMedium {
+                path: track.to_path_buf(),
+            });
+        }
         Ok(rel.as_os_str().as_bytes().to_vec())
     }
 }
@@ -331,7 +353,21 @@ fn unescape(bytes: &[u8]) -> Vec<u8> {
                 i += 2;
             }
             Some(b'x') if i + 3 < bytes.len() => {
-                let hex = std::str::from_utf8(&bytes[i + 2..i + 4]).ok();
+                // Two hex digits, checked here rather than left to
+                // `from_str_radix` — which accepts a **sign**, so `\x+f`
+                // parsed as 0x0f and `\x-1` would have too. The escaper
+                // never emits either, so this only ever mattered for a file
+                // someone edited by hand — and a `.cues` file is meant to be
+                // editable by hand, which is why the format is line-based and
+                // greppable in the first place. Accepting a form it cannot
+                // produce means a round trip through the deck silently
+                // rewrites the line.
+                let pair = &bytes[i + 2..i + 4];
+                let hex = if pair.iter().all(|b| b.is_ascii_hexdigit()) {
+                    std::str::from_utf8(pair).ok()
+                } else {
+                    None
+                };
                 match hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
                     Some(b) => {
                         out.push(b);
@@ -385,9 +421,9 @@ mod tests {
     use super::*;
     use std::ffi::OsStr;
 
-    struct Dir(PathBuf);
+    pub(super) struct Dir(pub(super) PathBuf);
     impl Dir {
-        fn new(tag: &str) -> Dir {
+        pub(super) fn new(tag: &str) -> Dir {
             let d = std::env::temp_dir()
                 .join(format!("deck-pi-cue-{}-{}", tag, std::process::id()));
             let _ = std::fs::remove_dir_all(&d);
@@ -633,5 +669,67 @@ mod tests {
             Some(v) => unsafe { std::env::set_var("XDG_STATE_HOME", v) },
             None => unsafe { std::env::remove_var("XDG_STATE_HOME") },
         }
+    }
+}
+
+#[cfg(test)]
+mod tail_tests {
+    use super::tests::Dir;
+    use super::*;
+
+    fn store(dir: &Path) -> CueStore {
+        CueStore::load(dir, "1A2B-3C4D", Path::new("/media/stick")).expect("load")
+    }
+
+    #[test]
+    fn one_track_cannot_become_two_cues_by_being_spelled_differently() {
+        // The key is raw bytes and nothing normalises it, so two spellings of
+        // one file would be two entries — a cue set on one and looked up by
+        // the other reads as "no cue", which is frame zero, and frame zero is
+        // a plausible answer rather than an obvious failure.
+        //
+        // **Measured which spellings actually differ, rather than assuming.**
+        // `Path::components` drops a `.` that is not at the start, and
+        // `strip_prefix` compares by component, so an absolute
+        // `/media/stick/./a.wav` already arrives as `a.wav` and was never a
+        // second key. What survives is `..` anywhere, and a leading `.` on a
+        // *relative* path — those are the two this refuses.
+        //
+        // Refused rather than normalised: the browser builds absolute paths
+        // out of `read_dir` entries and cannot produce either, so a caller
+        // sending one is doing something the store has no meaning for.
+        let d = Dir::new("cue-spelling");
+        let mut s = store(&d.0);
+        assert!(s.set(Path::new("/media/stick/b/../a.wav"), 1).is_err());
+        assert!(s.get(Path::new("./a.wav")).is_err());
+
+        // The ordinary spelling works, and the absolute `.` form is the same
+        // key rather than a refusal — pinned so the normalisation above is
+        // recorded as a fact rather than left to be rediscovered.
+        s.set(Path::new("/media/stick/a.wav"), 1).expect("plain path");
+        assert_eq!(s.get(Path::new("/media/stick/./a.wav")).expect("get"), 1);
+    }
+
+    #[test]
+    fn a_key_cannot_climb_out_of_the_medium() {
+        // `../../etc/passwd` is a path the store has no meaning for, and it
+        // used to be accepted as a key.
+        let d = Dir::new("cue-escape");
+        let mut s = store(&d.0);
+        assert!(s.set(Path::new("../../etc/passwd"), 1).is_err());
+    }
+
+    #[test]
+    fn an_escape_the_writer_cannot_produce_is_not_read_as_one() {
+        // `u8::from_str_radix` accepts a sign, so `\x+f` parsed as 0x0f. The
+        // escaper never emits that — but a `.cues` file is line-based and
+        // greppable *so that it can be edited by hand*, and accepting a form
+        // the writer cannot produce means the deck silently rewrites the line
+        // on its next save.
+        assert_eq!(unescape(br"\x0f"), vec![0x0f]);
+        assert_eq!(unescape(br"\x+f"), br"\x+f".to_vec());
+        assert_eq!(unescape(br"\x-1"), br"\x-1".to_vec());
+        // And a genuinely malformed tail is left alone rather than eaten.
+        assert_eq!(unescape(br"\xzz"), br"\xzz".to_vec());
     }
 }
