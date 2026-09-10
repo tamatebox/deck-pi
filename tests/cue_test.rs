@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use deck_pi::cue::CueStore;
-use deck_pi::transport::{State, Transport, RATE_PAUSED};
+use deck_pi::transport::{Cued, State, Transport, RATE_PAUSED};
 
 struct Dir(PathBuf);
 impl Dir {
@@ -48,14 +48,15 @@ fn a_cue_set_on_the_deck_comes_back_after_a_power_cycle() {
     // Load the track: restore whatever the store has, which is nothing yet.
     let mut store = CueStore::load(&state.0, HFSPLUS, Path::new(MOUNT)).expect("load");
     let t = Transport::new();
+    t.track_loaded(0);
     t.set_cue_point(store.get(&track).expect("get"));
     assert_eq!(t.cue_point(), 0, "an unseen track cues at frame zero");
 
     // Pause somewhere and press CUE — Setting Cue, per the CDJ-350.
     t.pause();
     t.publish_position(90_000.0);
-    t.cue_down();
-    t.cue_up();
+    let _ = t.cue_down();
+    let _ = t.cue_up();
     assert_eq!(t.cue_point(), 90_000);
 
     // The application persists it. `set` writes through, so nothing has to
@@ -69,6 +70,7 @@ fn a_cue_set_on_the_deck_comes_back_after_a_power_cycle() {
 
     let store = CueStore::load(&state.0, HFSPLUS, Path::new(MOUNT)).expect("reload");
     let t = Transport::new();
+    t.track_loaded(0);
     t.set_cue_point(store.get(&track).expect("get"));
     assert_eq!(t.cue_point(), 90_000, "the cue must survive the deck being switched off");
 }
@@ -140,12 +142,13 @@ fn back_cue_returns_to_the_restored_point_rather_than_to_zero() {
     store.set(&track, 1_234_567).expect("set");
 
     let t = Transport::new();
+    t.track_loaded(0);
     t.set_cue_point(store.get(&track).expect("get"));
     t.play();
     t.publish_position(2_000_000.0);
 
-    t.cue_down(); // Back Cue: return to the point and pause
-    t.cue_up();
+    assert_eq!(t.cue_down(), Cued::Returned(1_234_567), "Back Cue");
+    let _ = t.cue_up();
     assert_eq!(t.peek_seek(), Some(1_234_567));
     // `is_silent` is the FF/REW silent-seek flag, not "paused" — a
     // confusable pair, and the first version of this test used the wrong

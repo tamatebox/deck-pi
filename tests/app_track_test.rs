@@ -354,7 +354,7 @@ fn the_thread_survives_the_end_of_the_track_and_a_cue_back_into_it() {
     // paused the deck the operator had just started. Left as two calls,
     // deliberately — it is what the panel does.
     let before = tally.loud();
-    r.transport.back_cue();
+    let _ = r.transport.back_cue();
     r.transport.play();
     wait_for("audio to flow again", || {
         playing.service();

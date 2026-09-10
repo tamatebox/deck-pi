@@ -102,6 +102,7 @@ fn the_callback_body_allocates_nothing_on_any_branch() {
     w.append(&block);
 
     let t = Transport::new();
+    t.track_loaded(0);
     let mut e = Engine::new(frames);
     let mut period = vec![0i32; 128 * RING_CHANNELS];
     let mut seen: [Option<Outcome>; 9] = [None; 9];
@@ -165,6 +166,7 @@ fn the_callback_and_the_sink_together_allocate_nothing() {
     w.append(&block);
 
     let t = Transport::new();
+    t.track_loaded(0);
     let mut e = Engine::new(frames);
     let mut period = vec![0i32; 128 * RING_CHANNELS];
     let mut sink = CaptureSink::new(44_100, 128, frames as usize + 128);
@@ -187,8 +189,8 @@ fn the_callback_and_the_sink_together_allocate_nothing() {
         }
         // CUE runs on the control thread, but nothing stops it landing
         // between two periods, so its slot writes are on this budget too.
-        t.cue_down();
-        t.cue_up();
+        let _ = t.cue_down();
+        let _ = t.cue_up();
         let _ = e.fill(&t, &r, &mut period);
         sink.drain().unwrap();
     });

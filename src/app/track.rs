@@ -179,7 +179,7 @@ pub struct Playing<S: AudioSink> {
     failure: Arc<Mutex<Option<String>>>,
     commands: mpsc::Sender<Command>,
     window: Option<JoinHandle<()>>,
-    audio: Option<JoinHandle<(audio::Deck<S>, Stopped, Report)>>,
+    audio: Option<JoinHandle<(audio::Parts<S>, Stopped, Report)>>,
     /// Filled by the first shutdown, so `unload` and `Drop` can both run.
     ended: Option<Ended>,
 }
@@ -251,7 +251,7 @@ where
         })
     });
 
-    let deck = audio::Deck {
+    let deck = audio::Parts {
         transport: Arc::clone(transport),
         reader,
         // From the transport, so a load has one answer to "where does this
@@ -303,6 +303,28 @@ impl<S: AudioSink> Playing<S> {
             Some(h) => h.is_finished(),
             None => true,
         }
+    }
+
+    /// Tells the window thread the playhead is about to **jump** rather than
+    /// move.
+    ///
+    /// `window::Command::Relocate` states this obligation on "whoever owns
+    /// the app loop", and this type is what holds the channel. Without it the
+    /// window sees only that the playhead dropped, infers a scrub, and
+    /// rebuilds itself *below* the new position — so the cue point, the one
+    /// frame the callback wants first, is read last. `src/window.rs`'s module
+    /// doc has the measurement.
+    ///
+    /// **Send it on every explicit seek, without asking whether the target is
+    /// already resident**, which this type cannot answer anyway — the reader
+    /// lives on the audio thread. Relocating to a resident frame discards a
+    /// good window and costs a refill, and that is free here: every seek a
+    /// v1 panel can produce is a Back Cue, and Back Cue **pauses**, so the
+    /// refill happens in silence and is finished long before PLAY. If a seek
+    /// that does not pause is ever added, this becomes a real choice and the
+    /// resident span has to reach the control thread.
+    pub fn relocate(&self, frame: u64) {
+        let _ = self.commands.send(Command::Relocate(frame));
     }
 
     /// One turn of the control loop's obligations to this track.

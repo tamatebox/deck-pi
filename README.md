@@ -12,12 +12,14 @@ across four of the five containers in scope. **Wave64 is accepted and untested**
 the other four are WAV, AIFF, AIFF-C `sowt` and RF64. That is the software half
 only.
 
-**The app loop is partly built.** `src/app/audio.rs` is the period loop and
-`src/app/track.rs` the track lifecycle, and between them `State::Stopped` is now
-actually stored — it had been a one-way door since the first commit. Still missing:
-the dispatch from input to the transport, browser and `Loaded`, the media and cue
-wiring, and **the display, which has no file at all**. `src/main.rs` is still a
-bring-up CLI, not the deck.
+**The app loop is partly built.** `src/app/audio.rs` is the period loop,
+`src/app/track.rs` the track lifecycle, and `src/app/deck.rs` the dispatch — a
+press in, the transport, browser and `Loaded` moved. Between them `State::Stopped`
+is now actually stored, having been a one-way door since the first commit, and a
+cue set while browsing elsewhere lands on the track you can hear. Still missing:
+media watch wired to the deck, the loop that reads `/dev/input` and drives it, and
+**the display, which has no file at all**. `src/main.rs` is still a bring-up CLI,
+not the deck.
 
 **Nothing has run on hardware.** The Pi and the boards are not assembled, so the
 ALSA sink has never opened a real device and the `hw_params` half of the null test

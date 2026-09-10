@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use deck_pi::app::audio::{AtEnd, Deck};
+use deck_pi::app::audio::{AtEnd, Parts};
 use deck_pi::engine::Engine;
 use deck_pi::file::{OpenError, Track};
 use deck_pi::browser::{Browser, Row, Verdict};
@@ -281,8 +281,16 @@ fn play<S: AudioSink>(
     });
 
     let transport = std::sync::Arc::new(Transport::new());
+    // **Load before playing.** `Transport` refuses control while
+    // `State::Stopped`, which is what "nothing loaded" means, so `play()` on
+    // a fresh transport does nothing — and `AtEnd::Stop` ends at the end of
+    // the *track*, so a deck that never starts never ends. That combination
+    // hung `--drain` for as long as it took to notice, which was one test
+    // run. The app loop reaches this through `app::track::load`; this is the
+    // bring-up CLI doing the same thing by hand, cue point zero.
+    transport.track_loaded(0);
     transport.play();
-    let deck = Deck {
+    let deck = Parts {
         transport: std::sync::Arc::clone(&transport),
         reader,
         engine: Engine::new(info.frames),

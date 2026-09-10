@@ -98,6 +98,42 @@ impl State {
 
 /// The lock-free slot between the control thread and the callback.
 ///
+/// What a CUE press or release did, and therefore what the caller now owes.
+///
+/// **Returned rather than inferred, and that is the point.** `cue_down` picks
+/// one of three behaviours from the deck's own state, and a caller that needs
+/// to know which — the cue store must be written when the point is *set*, the
+/// window must be told when the deck *returns* — used to have to read that
+/// state before the call and reason about which branch it implied. Two of
+/// this project's worst defects are that pattern: a decision made from a
+/// value somebody else could change, and a pair of loads taken in the wrong
+/// order. The branch is known exactly at the point it is taken, so it is
+/// returned from there.
+///
+/// `#[must_use]` on the methods is the enforcement. `implementation.md`'s
+/// ninth shape is a precondition the code states and nothing checks; an
+/// obligation carried in a return value the compiler will not let you drop is
+/// the one form of it that cannot go unmet by omission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cued {
+    /// Nothing to do. Nothing was loaded, or a release that was not a
+    /// preview.
+    Nothing,
+    /// **Setting Cue.** The point is now this frame, and the caller owns
+    /// persisting it — `Loaded::set_cue`, never `CueStore::set` with a path
+    /// of the caller's own choosing.
+    Set(u64),
+    /// **Back Cue.** A seek to this frame is queued and the deck is paused.
+    /// The caller owns telling the window it is a *jump* and not motion —
+    /// `window::Command::Relocate`, via `app::track::Playing::relocate`.
+    /// Without it the window infers a scrub and rebuilds below the target, so
+    /// the one frame wanted first arrives last.
+    Returned(u64),
+    /// **Cue Point Sampler.** Playing while the button is held; the release
+    /// will be a `Returned`.
+    Previewing,
+}
+
 /// Every field is a single atomic, so there is no torn state to guard and no
 /// lock for the callback to take. `f64`s travel as their bit patterns, which
 /// is exact — this is a reinterpretation, not a conversion.
@@ -185,14 +221,39 @@ impl Transport {
     // ---- control thread ----
 
     pub fn play(&self) {
+        if self.nothing_loaded() {
+            return;
+        }
         self.publish_motion(RATE_UNITY, false);
         self.state.store(State::Playing as u8, Ordering::Relaxed);
+    }
+
+    /// **Nothing loaded, so nothing to control.**
+    ///
+    /// `Stopped` means no track (the type's own doc), so every control that
+    /// would move a playhead has to be a no-op here — PLAY on an empty deck
+    /// would otherwise set rate 1.0 and `State::Playing`, and the display
+    /// would read "playing" over a deck holding nothing.
+    ///
+    /// **This became reachable and was not audited in the same change**,
+    /// which is `implementation.md`'s own rule about a dormant branch: for
+    /// as long as `Stopped` was constructed and never stored, no deck was
+    /// ever in it after the first press, so nothing that reads it could be
+    /// wrong. `Playing::unload` stores it now. The branch going live is what
+    /// made these guards necessary, and the audit that should have come with
+    /// it is this.
+    #[inline]
+    fn nothing_loaded(&self) -> bool {
+        self.state() == State::Stopped
     }
 
     /// Also the STOP half of `CUE / STOP`: the position is left where it is.
     /// Whether STOP should return to a cue point is part of the undecided CUE
     /// semantics, so it is not done here.
     pub fn pause(&self) {
+        if self.nothing_loaded() {
+            return;
+        }
         self.publish_motion(RATE_PAUSED, false);
         self.state.store(State::Paused as u8, Ordering::Relaxed);
     }
@@ -202,6 +263,9 @@ impl Transport {
     /// would give v1 a second mode and break its unconditional
     /// bit-perfection.
     pub fn begin_seek(&self, forward: bool) {
+        if self.nothing_loaded() {
+            return;
+        }
         let r = if forward { RATE_SEEK } else { -RATE_SEEK };
         self.publish_motion(r, true);
         self.state.store(
@@ -252,7 +316,11 @@ impl Transport {
     /// or REW is held. Treated here as Back Cue, on the grounds that anything
     /// other than paused is "moving" and returning to the point is the
     /// predictable answer; noted because it is a reading, not a quotation.
-    pub fn cue_down(&self) {
+    #[must_use = "a CUE press carries an obligation — see `Cued`"]
+    pub fn cue_down(&self) -> Cued {
+        if self.nothing_loaded() {
+            return Cued::Nothing;
+        }
         let paused = self.rate() == RATE_PAUSED;
         let at_cue = self.position() == self.cue_point() as f64;
 
@@ -260,30 +328,38 @@ impl Transport {
             // Cue Point Sampler: plays while held.
             self.previewing.store(true, Ordering::Relaxed);
             self.play();
+            Cued::Previewing
         } else if paused {
             // Setting Cue. "No sound is output at this time" — nothing here
             // starts the transport, so that holds by construction.
-            self.cue.store(self.position() as u64, Ordering::Release);
+            let at = self.position() as u64;
+            self.cue.store(at, Ordering::Release);
+            Cued::Set(at)
         } else {
             // Back Cue: return to the point and pause. It does not resume;
             // PLAY restarts from the point.
-            self.back_cue();
+            Cued::Returned(self.back_cue())
         }
     }
 
     /// CUE released. Only meaningful after a preview, which is momentary.
-    pub fn cue_up(&self) {
+    #[must_use = "a CUE release carries an obligation — see `Cued`"]
+    pub fn cue_up(&self) -> Cued {
         if self.previewing.swap(false, Ordering::AcqRel) {
-            self.back_cue();
+            Cued::Returned(self.back_cue())
+        } else {
+            Cued::Nothing
         }
     }
 
     /// Returns to the cue point and pauses. Both halves already existed: a
     /// one-shot seek request and `r = 0`.
-    pub fn back_cue(&self) {
+    pub fn back_cue(&self) -> u64 {
         self.previewing.store(false, Ordering::Relaxed);
         self.pause();
-        self.request_seek(self.cue_point());
+        let to = self.cue_point();
+        self.request_seek(to);
+        to
     }
 
     /// The track's cue point, in frames.
@@ -659,10 +735,38 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_deck_refuses_every_control_rather_than_pretending() {
+        // **This became reachable in the change that made `Stopped` a state
+        // the deck is actually in.** While it was constructed and never
+        // stored, no deck was ever empty after the first press and nothing
+        // that reads the state could be wrong; `Playing::unload` stores it
+        // now. PLAY on an empty deck would set rate 1.0 and `Playing`, and
+        // the display would read "playing" over a deck holding nothing.
+        let t = Transport::new();
+        assert_eq!(t.state(), State::Stopped);
+
+        t.play();
+        assert_eq!(t.rate(), RATE_PAUSED, "PLAY must not start an empty deck");
+        assert_eq!(t.state(), State::Stopped);
+
+        t.begin_seek(true);
+        assert_eq!(t.state(), State::Stopped, "and there is nothing to seek");
+        assert_eq!(t.cue_down(), Cued::Nothing, "nor anything to cue");
+        assert_eq!(take(&t), None, "no seek may be queued");
+
+        // Loading is the only way out, which is the state machine's shape:
+        // `Stopped` is left by loading a track and entered by unloading one.
+        t.track_loaded(0);
+        t.play();
+        assert_eq!(t.state(), State::Playing);
+    }
+
+    #[test]
     fn play_and_pause_are_the_rate_variable_and_nothing_else() {
         let t = Transport::new();
+        t.track_loaded(0);
         assert_eq!(t.rate(), RATE_PAUSED);
-        assert_eq!(t.state(), State::Stopped);
+        assert_eq!(t.state(), State::Paused, "loaded and waiting");
 
         t.play();
         assert_eq!(t.rate(), RATE_UNITY);
@@ -677,6 +781,7 @@ mod tests {
     #[test]
     fn a_held_seek_mutes_but_keeps_the_position_moving() {
         let t = Transport::new();
+        t.track_loaded(0);
         t.play();
         t.begin_seek(true);
         assert!(t.is_silent(), "v1's seek is silent");
@@ -691,6 +796,7 @@ mod tests {
     #[test]
     fn releasing_a_seek_resumes_only_what_was_running() {
         let t = Transport::new();
+        t.track_loaded(0);
         t.play();
         t.begin_seek(true);
         t.end_seek(true);
@@ -708,6 +814,7 @@ mod tests {
     #[test]
     fn a_seek_request_is_consumed_exactly_once() {
         let t = Transport::new();
+        t.track_loaded(0);
         assert_eq!(take(&t), None);
         t.request_seek(12_345);
         assert_eq!(take(&t), Some(12_345));
@@ -730,6 +837,7 @@ mod tests {
         // not a conversion. If it were ever routed through f32, the position
         // invariant would be silently lost.
         let t = Transport::new();
+        t.track_loaded(0);
         for v in [0.0, 1.0, -4.0, 1.0 / 3.0, 8_388_609.5, f64::MAX] {
             t.publish_position(v);
             assert_eq!(t.position(), v, "position {} did not round trip", v);
@@ -741,36 +849,39 @@ mod tests {
         // Not at "where sound starts": auto cue is deliberately not adopted,
         // because a long-form piece may open below -78 dB on purpose.
         let t = Transport::new();
+        t.track_loaded(0);
         assert_eq!(t.cue_point(), 0);
     }
 
     #[test]
     fn cue_while_paused_sets_the_point_and_makes_no_sound() {
         let t = Transport::new();
+        t.track_loaded(0);
         t.pause();
         t.publish_position(50_000.0);
-        t.cue_down();
+        assert_eq!(t.cue_down(), Cued::Set(50_000), "Setting Cue");
         assert_eq!(t.cue_point(), 50_000);
         assert_eq!(t.rate(), RATE_PAUSED, "\"No sound is output at this time\"");
         assert_eq!(take(&t), None, "setting a point must not move the deck");
-        t.cue_up();
+        assert_eq!(t.cue_up(), Cued::Nothing, "a release that was not a preview");
         assert_eq!(t.rate(), RATE_PAUSED, "release after setting must do nothing");
 
         // "When a new cue point is set, the previously set cue point is
         // canceled." One point, not a set of hot cues.
         t.publish_position(120_000.0);
-        t.cue_down();
+        let _ = t.cue_down();
         assert_eq!(t.cue_point(), 120_000);
     }
 
     #[test]
     fn cue_while_playing_returns_to_the_point_and_pauses_without_resuming() {
         let t = Transport::new();
+        t.track_loaded(0);
         t.set_cue_point(1_000);
         t.play();
         t.publish_position(80_000.0);
 
-        t.cue_down();
+        assert_eq!(t.cue_down(), Cued::Returned(1_000), "Back Cue");
         assert_eq!(t.rate(), RATE_PAUSED, "Back Cue pauses; it does not resume");
         assert_eq!(t.state(), State::Paused);
         assert_eq!(take(&t), Some(1_000), "returns to the cue point");
@@ -787,11 +898,12 @@ mod tests {
         // Cue Point Sampler. "Playback continues while the button is held in"
         // — so release means stop and return, with no latching.
         let t = Transport::new();
+        t.track_loaded(0);
         t.set_cue_point(4_410);
         t.pause();
         t.publish_position(4_410.0);
 
-        t.cue_down();
+        assert_eq!(t.cue_down(), Cued::Previewing, "Cue Point Sampler");
         assert_eq!(t.rate(), RATE_UNITY, "plays while held");
         assert_eq!(t.state(), State::Playing);
         assert_eq!(take(&t), None, "already at the point; nothing to seek");
@@ -799,7 +911,7 @@ mod tests {
 
         // Pretend the callback advanced during the preview.
         t.publish_position(9_000.0);
-        t.cue_up();
+        assert_eq!(t.cue_up(), Cued::Returned(4_410), "release returns");
         assert_eq!(t.rate(), RATE_PAUSED, "release stops");
         assert_eq!(take(&t), Some(4_410), "and returns to the point");
     }
@@ -809,14 +921,15 @@ mod tests {
         // The latch is consumed, so a stray release cannot silently re-cue a
         // deck the user has since started playing.
         let t = Transport::new();
+        t.track_loaded(0);
         t.pause();
         t.publish_position(0.0);
-        t.cue_down();
-        t.cue_up();
+        let _ = t.cue_down();
+        let _ = t.cue_up();
         assert_eq!(take(&t), Some(0));
 
         t.play();
-        t.cue_up();
+        assert_eq!(t.cue_up(), Cued::Nothing, "the second release does nothing");
         assert_eq!(t.rate(), RATE_UNITY, "a spurious release must not stop playback");
         assert_eq!(take(&t), None);
     }
@@ -826,11 +939,12 @@ mod tests {
         // The manual does not cover this combination; this is the reading
         // recorded in the module docs, asserted so it cannot drift silently.
         let t = Transport::new();
+        t.track_loaded(0);
         t.set_cue_point(2_000);
         t.play();
         t.begin_seek(true);
         t.publish_position(60_000.0);
-        t.cue_down();
+        assert_eq!(t.cue_down(), Cued::Returned(2_000), "a held seek is not paused");
         assert_eq!(t.rate(), RATE_PAUSED);
         assert!(!t.is_silent(), "back cue leaves the deck ready to play, not muted");
         assert_eq!(take(&t), Some(2_000));
@@ -841,17 +955,19 @@ mod tests {
         // A preview that ran into the end of the track must not leave the
         // latch set, or the next release would cue a deck nobody previewed.
         let t = Transport::new();
+        t.track_loaded(0);
         t.pause();
         t.publish_position(0.0);
-        t.cue_down();
+        let _ = t.cue_down();
         t.reached_end();
-        t.cue_up();
+        let _ = t.cue_up();
         assert_eq!(take(&t), None, "the latch must have been cleared");
     }
 
     #[test]
     fn reaching_the_end_stops_the_rate_and_advances_nothing() {
         let t = Transport::new();
+        t.track_loaded(0);
         t.play();
         t.reached_end();
         assert_eq!(t.rate(), RATE_PAUSED);
@@ -869,7 +985,8 @@ mod tests {
         // nothing after every Back Cue.
         let t = Transport::new();
         t.track_loaded(0);
-        t.back_cue();
+        t.track_loaded(0);
+        let _ = t.back_cue();
         t.play();
 
         t.reached_end();
@@ -889,6 +1006,7 @@ mod tests {
         // lands between the peek and the retire survives to the next period.
         // A plain swap would have discarded it: a cue jump that did nothing.
         let t = Transport::new();
+        t.track_loaded(0);
         t.request_seek(100);
         let target = t.peek_seek().expect("queued");
 
@@ -906,6 +1024,7 @@ mod tests {
         // the alternative is a pair of loads a caller can take in either
         // order, and the first caller took them in the wrong one.
         let t = Transport::new();
+        t.track_loaded(0);
         t.publish_position(2_000.0);
         assert_eq!(t.settled_position(), Some(2_000.0));
 
@@ -932,6 +1051,7 @@ mod tests {
         // right. With the retire first it is wrong for a few instructions,
         // which is what pauses a deck the operator has just started.
         let t = Transport::new();
+        t.track_loaded(0);
         t.publish_position(2_000.0);
         t.request_seek(50);
 
@@ -950,6 +1070,7 @@ mod tests {
     #[test]
     fn a_load_restores_the_cue_point_and_still_waits_at_frame_zero() {
         let t = Transport::new();
+        t.track_loaded(0);
         t.track_loaded(120_000);
         assert_eq!(t.cue_point(), 120_000, "the stored point must be restored");
         assert_eq!(t.position(), 0.0, "decisions.md: waits at zero, not at the cue");
@@ -965,14 +1086,15 @@ mod tests {
         // release stop a deck nobody previewed.
         let t = Transport::new();
         t.track_loaded(0);
+        t.track_loaded(0);
         t.play();
         t.request_seek(900);
         t.pause();
-        t.cue_down();
+        let _ = t.cue_down();
 
         t.track_loaded(50);
         assert_eq!(take(&t), None, "a seek must not survive a load");
-        t.cue_up();
+        let _ = t.cue_up();
         assert_eq!(
             take(&t),
             None,
@@ -983,6 +1105,7 @@ mod tests {
     #[test]
     fn an_unload_is_the_transition_into_stopped_that_this_type_lacked() {
         let t = Transport::new();
+        t.track_loaded(0);
         t.track_loaded(4_410);
         t.play();
         assert_eq!(t.state(), State::Playing);

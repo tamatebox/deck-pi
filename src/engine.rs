@@ -246,6 +246,7 @@ mod tests {
     fn at_unity_the_period_is_the_source_and_the_position_is_exact() {
         let (ring, frames) = filled(4096);
         let t = Transport::new();
+        t.track_loaded(0);
         let mut e = Engine::new(frames);
         t.play();
 
@@ -267,6 +268,7 @@ mod tests {
     fn pause_is_silence_and_a_frozen_position() {
         let (ring, frames) = filled(1024);
         let t = Transport::new();
+        t.track_loaded(0);
         let mut e = Engine::new(frames);
         t.play();
         let mut out = vec![0i32; 64 * RING_CHANNELS];
@@ -285,6 +287,7 @@ mod tests {
     fn a_held_seek_moves_the_position_at_four_times_and_stays_silent() {
         let (ring, frames) = filled(8192);
         let t = Transport::new();
+        t.track_loaded(0);
         let mut e = Engine::new(frames);
         t.play();
         let mut out = vec![0i32; 128 * RING_CHANNELS];
@@ -316,6 +319,7 @@ mod tests {
         let frames = 1_000u64;
         let (ring, _) = filled(frames);
         let t = Transport::new();
+        t.track_loaded(0);
         let mut e = Engine::new(frames);
         let mut out = vec![0i32; 128 * RING_CHANNELS];
 
@@ -340,6 +344,7 @@ mod tests {
     fn rew_cannot_drive_the_position_negative() {
         let (ring, frames) = filled(2048);
         let t = Transport::new();
+        t.track_loaded(0);
         let mut e = Engine::new(frames);
         t.begin_seek(false);
         let mut out = vec![0i32; 256 * RING_CHANNELS];
@@ -357,6 +362,7 @@ mod tests {
         // the rate is set here through the test-only door.
         let (ring, frames) = filled(2048);
         let t = Transport::new();
+        t.track_loaded(0);
         let mut e = Engine::new(frames);
         t.play();
         let mut out = vec![9i32; 64 * RING_CHANNELS];
@@ -379,6 +385,7 @@ mod tests {
     fn a_fractional_position_is_refused_rather_than_approximated() {
         let (ring, frames) = filled(2048);
         let t = Transport::new();
+        t.track_loaded(0);
         let mut e = Engine::new(frames);
         t.play();
         let mut out = vec![9i32; 64 * RING_CHANNELS];
@@ -407,6 +414,7 @@ mod tests {
         let frames = 1000u64;
         let (ring, _) = filled(frames);
         let t = Transport::new();
+        t.track_loaded(0);
         let mut e = Engine::new(frames);
         t.play();
         let mut out = vec![0i32; 256 * RING_CHANNELS];
@@ -434,6 +442,7 @@ mod tests {
     fn a_miss_is_silence_and_does_not_move_the_position() {
         let (mut w, r) = ring::new(1024);
         let t = Transport::new();
+        t.track_loaded(0);
         let mut e = Engine::new(4096);
         t.play();
         let mut out = vec![7i32; 128 * RING_CHANNELS];
@@ -457,6 +466,7 @@ mod tests {
     fn a_seek_request_lands_and_is_clamped_to_the_track() {
         let (ring, frames) = filled(2048);
         let t = Transport::new();
+        t.track_loaded(0);
         let mut e = Engine::new(frames);
         t.play();
         let mut out = vec![0i32; 64 * RING_CHANNELS];

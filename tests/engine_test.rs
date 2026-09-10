@@ -45,6 +45,7 @@ fn play_to_completion(path: &std::path::Path, frames: u64) -> Vec<i32> {
     let thread = std::thread::spawn(move || window.run(rx, |_| {}));
 
     let transport = Transport::new();
+    transport.track_loaded(0);
     let mut engine = Engine::new(frames);
     transport.play();
 
@@ -192,6 +193,7 @@ fn a_silent_seek_produces_no_audio_and_playback_resumes_where_it_left_off() {
     let thread = std::thread::spawn(move || window.run(rx, |_| {}));
 
     let t = Transport::new();
+    t.track_loaded(0);
     let mut e = Engine::new(frames);
     t.play();
     let mut period = vec![0i32; PERIOD * RING_CHANNELS];
@@ -278,6 +280,7 @@ fn a_track_that_reaches_its_end_leaves_the_deck_stopped() {
     let thread = std::thread::spawn(move || window.run(rx, |_| {}));
 
     let transport = Transport::new();
+    transport.track_loaded(0);
     let mut engine = Engine::new(info.frames);
     transport.play();
 

@@ -17,7 +17,7 @@ mod fixtures;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 
-use deck_pi::app::audio::{self, AtEnd, Deck, Stopped};
+use deck_pi::app::audio::{self, AtEnd, Parts, Stopped};
 use deck_pi::engine::Engine;
 use deck_pi::sink::CaptureSink;
 use deck_pi::transport::{State, Transport, RATE_PAUSED};
@@ -37,7 +37,7 @@ struct Rig {
     transport: Arc<Transport>,
 }
 
-fn rig(tag: &str, frames: usize) -> (Rig, Deck<CaptureSink>) {
+fn rig(tag: &str, frames: usize) -> (Rig, Parts<CaptureSink>) {
     let scratch = Scratch::new(tag);
     let samples = fixtures::signal(Bits::S24, 2, frames);
     let bytes = fixtures::build(Kind::Wav, &samples, Bits::S24, 44_100, 2);
@@ -56,8 +56,19 @@ fn rig(tag: &str, frames: usize) -> (Rig, Deck<CaptureSink>) {
     });
 
     let transport = Arc::new(Transport::new());
+    transport.track_loaded(0);
     transport.play();
-    let deck = Deck {
+    // **A hang is a bad way for a test to fail, so fail here instead.** With
+    // the deck refusing control while nothing is loaded, forgetting the line
+    // above leaves the loop serving `Outcome::Paused` for ever under
+    // `AtEnd::Stop` — no output, no failure, just a test binary that never
+    // returns. That is what it did.
+    assert_eq!(
+        transport.state(),
+        State::Playing,
+        "the rig must hand `run` a deck that is actually playing"
+    );
+    let deck = Parts {
         transport: Arc::clone(&transport),
         reader,
         engine: Engine::new(info.frames),

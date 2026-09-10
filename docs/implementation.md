@@ -141,7 +141,7 @@ closed is the transferable part, it is in the prose below.
 | 6 | Partial by physics | ask whether the job is as large as the problem | absolute-axis rollover folds correctly; the clamped case emits no event at all, so nothing is recoverable |
 | 7 | **Absence of a complaint read as evidence** | break the thing on purpose and confirm the check complains | a linter whose error went to stderr and whose silence was read as a pass; a symmetric null test; a race harness reaching `Overrun` 8.6M times and detecting nothing; a guard whose enforcement depended on **linkage** — an integration test that never touches the crate gets no `#[global_allocator]`, so every `assert_no_alloc` in it silently passes |
 | 8 | True under a reading nobody would take | read your own sentence as a stranger, not as its author | "no code path stores this", written beside the constructor |
-| 9 | **A precondition the code states and nothing enforces** | grep doc comments for `must` and read the callers of each | `Transport::reached_end` says "it must be the control thread" and explains the hazard; the first thing that ever called it was the audio loop. Also `window::Command::Relocate`'s "whoever owns the app loop must send this" — the app loop now exists and does not. And `Devices::read_pending`'s "a caller that gets a non-zero answer must reset its decoder" — no caller yet, which is where the other two started |
+| 9 | **A precondition the code states and nothing enforces** | grep doc comments for `must` and read the callers of each | `Transport::reached_end` says "it must be the control thread" and explains the hazard; the first thing that ever called it was the audio loop. Also `window::Command::Relocate`'s "whoever owns the app loop must send this" — **met**: `app::deck::Deck` sends it on `Cued::Returned`, the sweep having been run before the dispatch was written rather than after it broke. And `Devices::read_pending`'s "a caller that gets a non-zero answer must reset its decoder" — no caller yet, which is where the other two started |
 
 **One check deliberately lives elsewhere, so this list is not complete on its
 own.** A sentence that names a source nobody opened belongs to the same family —
@@ -602,6 +602,88 @@ costs, a saturation table and three usage regimes. All of it described a resampl
 created with a 1:1 ratio. The figures were internally consistent and arithmetically
 correct, which is exactly why checking them could not catch it — they were right
 about the wrong thing. `decisions.md` records the reversal.
+
+## The image's own configuration
+
+Moved here from `hardware.md`, which was carrying it because the pins are physical.
+The pins are; **these lines are not** — they are what to type, and every one of
+them fails silently when the spelling is wrong, which is this file's subject and
+not that one's.
+
+## Wireless
+
+Off. Ethernet is the only network path, so **confirm wired connectivity before
+disabling anything** — the web-free UI is local, but SSH is the only way in.
+
+```ini
+dtoverlay=disable-wifi
+dtoverlay=disable-bt
+```
+
+```sh
+sudo systemctl disable --now hciuart bluetooth
+```
+
+On a Pi 3B+, Bluetooth occupies PL011, the good UART, leaving the serial console
+on the mini-UART — whose baud rate tracks the core clock. `disable-bt` moves
+PL011 to GPIO 14/15, so turning Bluetooth off and getting a solid serial console
+are the same action. The 3B+ radio is dual-band, so this drops a 5 GHz
+transmitter as well as the 2.4 GHz one.
+
+The older note here — that `enable_uart=1` pins `core_freq` to 250 MHz — **is not
+confirmed for the 3B+**; the current `enable_uart` documentation does not mention
+`core_freq` at all. It also matters less once PL011 is in use, since PL011 does
+not take its baud rate from the core clock. What *does* still ride the core clock
+is **I2C**, and that bus carries both the WM8804 and the display.
+`core_freq_fixed=1` is the documented lever — it "ensures that any peripherals
+that use the core clock will maintain a consistent speed". A candidate, not a
+decision, until measured.
+
+During development, toggle with `rfkill` (state persists across reboots via
+systemd-rfkill) and only commit to the overlays once measured. `config.txt` lives
+on the FAT partition, so a mistake there is recoverable by reading the card on a
+Mac; a mistake in the ext4 rootfs is not.
+
+## config.txt
+
+```ini
+dtoverlay=hifiberry-digi-pro
+dtoverlay=disable-wifi
+dtoverlay=disable-bt
+enable_uart=1
+gpu_mem=16
+```
+
+Set the Digi2 Pro overlay explicitly rather than relying on HAT auto-detection —
+the ID EEPROM lines may not survive the isolator.
+
+`gpu_mem=16` reclaims ~50 MB on a headless box.
+
+Button and encoder overlays are one instance per device; check parameter names
+with `dtoverlay -h gpio-key` and `dtoverlay -h rotary-encoder` on the actual
+image before trusting the spelling.
+
+```ini
+dtoverlay=gpio-key,gpio=23,keycode=158,label=BACK
+dtoverlay=gpio-key,gpio=24,keycode=164,label=PLAYPAUSE
+dtoverlay=gpio-key,gpio=25,keycode=128,label=CUE
+dtoverlay=gpio-key,gpio=22,keycode=28,label=ENTER
+dtoverlay=gpio-key,gpio=16,keycode=168,label=REW
+dtoverlay=gpio-key,gpio=26,keycode=208,label=FF
+```
+
+168 and 208 are `KEY_REWIND` and `KEY_FASTFORWARD` — the *held* meaning, since one
+pin carries one keycode and the tap meaning is a userspace interpretation. 128 is
+`KEY_STOP`, standing in for CUE because Linux has no cue keycode; the button's
+three behaviours are all userspace interpretation of one keycode.
+`KEY_PREVIOUSSONG` (165) and `KEY_NEXTSONG` (163) exist if the two meanings are
+ever split onto separate buttons. **Read all of these off `input-event-codes.h` on
+the actual image** rather than trusting the numbers here — the same caution as the
+overlay parameter names above.
+
+Standard Linux input codes, so `/dev/input` events read as what they mean.
+Decode encoders and debounce buttons **in the kernel**, never by polling from
+userspace — polling quantises jog velocity to the poll interval and drops steps.
 
 ## Dependencies
 

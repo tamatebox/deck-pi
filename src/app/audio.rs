@@ -74,8 +74,14 @@ pub struct Report {
 /// of a track could not be cued back into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AtEnd {
-    /// End the run. `src/main.rs`'s answer: one file, pulled through, then a
-    /// report.
+    /// End the run **at the end of the track**. `src/main.rs`'s answer: one
+    /// file, pulled through, then a report.
+    ///
+    /// **So a deck that never starts never ends.** `Transport` refuses
+    /// control while `State::Stopped`, so a caller that plays a fresh
+    /// transport without loading a track first gets a loop serving
+    /// `Outcome::Paused` for ever — silently, because a paused deck is
+    /// ordinary and the loop is right to keep going. Load, then play.
     Stop,
     /// Keep the device fed and the thread alive. **The deck's answer.** The
     /// engine has already written silence into the period, so this costs one
@@ -85,12 +91,19 @@ pub enum AtEnd {
 
 /// Everything the loop needs from outside itself.
 ///
+/// **Named `Parts` and not `Deck`.** It was `Deck`, and `app::Deck` — the
+/// thing an operator would call the deck — then had to be something else.
+/// `architecture.md` spends a paragraph on this type family's confusable
+/// names and says each has to be read off the code rather than guessed;
+/// adding a fourth pair differing only by module path is how that paragraph
+/// gets longer.
+///
 /// A struct rather than eight arguments because the audio thread takes
 /// ownership of all of it: the thread returns them, and **the control thread
 /// is what drops them**. Dropping the ring here would free 64 MiB on the
 /// deadline — the last `Arc<Shared>` goes with the reader — which is the
 /// hazard `implementation.md` names under the language-specific note.
-pub struct Deck<S: AudioSink> {
+pub struct Parts<S: AudioSink> {
     pub transport: std::sync::Arc<Transport>,
     pub reader: RingReader,
     pub engine: Engine,
@@ -102,11 +115,11 @@ pub struct Deck<S: AudioSink> {
 ///
 /// Returns the deck it was given, so the caller drops it off the deadline.
 pub fn run<S: AudioSink>(
-    mut deck: Deck<S>,
+    mut deck: Parts<S>,
     stop: &AtomicBool,
     medium_lost: &AtomicBool,
     rt: Option<&RtRequest>,
-) -> (Deck<S>, Stopped, Report) {
+) -> (Parts<S>, Stopped, Report) {
     // First, on this thread. See the module doc.
     if let Some(req) = rt {
         if let Err(e) = rt::apply(req, deck.reader.capacity() * crate::ring::RING_FRAME_BYTES as u64)
