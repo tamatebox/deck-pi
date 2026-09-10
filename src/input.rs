@@ -63,7 +63,7 @@ pub enum Discipline {
 }
 
 impl Button {
-    /// The keycodes `config.txt` assigns, from `hardware.md`.
+    /// The keycodes `config.txt` assigns, from `implementation.md`.
     ///
     /// **Verify these against `input-event-codes.h` on the actual image**
     /// rather than trusting them here — `hardware.md` says so, and one wrong
@@ -562,7 +562,7 @@ mod device {
 
     /// Every input node the deck listens to, polled together.
     ///
-    /// **There are seven of them, not one.** `hardware.md`'s `config.txt`
+    /// **There are seven of them, not one.** `implementation.md`'s `config.txt`
     /// declares one `gpio-key` overlay instance per button and each instance
     /// creates its **own** `gpio-keys` device node; the rotary encoder adds
     /// another. A single-descriptor `poll` therefore hears one button and is

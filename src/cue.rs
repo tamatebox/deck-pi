@@ -7,7 +7,7 @@
 //! decks, because they are two machines.
 //!
 //! One cue point per track, in frames, and **frame zero until set** — the
-//! CDJ-350 behaviour `hardware.md` transcribes. A cue deliberately set at
+//! CDJ-350 behaviour `controls.md` transcribes. A cue deliberately set at
 //! frame zero is therefore indistinguishable from an unset one, which is fine
 //! because they behave identically; it also means zeros need not be stored.
 //!

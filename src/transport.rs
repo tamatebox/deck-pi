@@ -288,7 +288,7 @@ impl Transport {
     /// not defensive tidiness.** `was_playing` is captured when the button
     /// goes down and is stale the moment anything else changes the state
     /// underneath it. The case that matters is CUE pressed during a held FF:
-    /// `hardware.md` chooses Back Cue there, which pauses at the cue point —
+    /// `controls.md` chooses Back Cue there, which pauses at the cue point —
     /// and then releasing FF used to hand `was_playing == true` back and
     /// **start playing**, directly against the CDJ-350's "Back Cue pauses; it
     /// does not resume", which `decisions.md` quotes. The release is only
