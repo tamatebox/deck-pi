@@ -17,6 +17,36 @@ use deck_pi::ring::{self, Miss};
 use deck_pi::sink::{AudioSink, CaptureSink};
 use deck_pi::transport::Transport;
 
+/// `assert_no_alloc`, made to mean the same thing in both profiles.
+///
+/// **In release it did not.** `Cargo.toml` selects `warn_release`, under which
+/// a violation prints one line and increments a counter — `assert_no_alloc`
+/// itself does not panic. None of the five regions below looked at that
+/// counter, so **each of them passed in release whether or not the callback
+/// allocated**, and `CLAUDE.md`'s "green in debug and release" carried no
+/// allocation-freedom claim for the release half at all. Verified by putting a
+/// `Vec::with_capacity(4096)` inside a region: release printed
+/// `violations counted: 2` and the test passed.
+///
+/// Release is the profile that matters here — it is what runs on the deck, and
+/// its codegen is what could introduce a temporary the debug build does not.
+///
+/// The counter only exists when the warn feature is active for the profile,
+/// hence the `cfg`; in debug the wrapper is plain `assert_no_alloc`, which
+/// aborts.
+fn no_alloc<T>(f: impl FnOnce() -> T) -> T {
+    #[cfg(not(debug_assertions))]
+    assert_no_alloc::reset_violation_count();
+    let out = assert_no_alloc(f);
+    #[cfg(not(debug_assertions))]
+    assert_eq!(
+        assert_no_alloc::violation_count(),
+        0,
+        "the callback allocated in release — see the line printed above"
+    );
+    out
+}
+
 /// Everything the audio callback does, on a resident window.
 #[test]
 fn the_read_path_allocates_nothing() {
@@ -28,7 +58,7 @@ fn the_read_path_allocates_nothing() {
     // the ring is allocated at track load and the period buffer by ALSA.
     let mut out = vec![0i32; 256 * RING_CHANNELS];
 
-    assert_no_alloc(|| {
+    no_alloc(|| {
         for start in [0u64, 256, 512, 1024, 1792] {
             r.read_block(start, &mut out).expect("resident");
         }
@@ -54,7 +84,7 @@ fn the_miss_paths_allocate_nothing() {
     w.append(&block);
     let mut out = vec![7i32; 128 * RING_CHANNELS];
 
-    assert_no_alloc(|| {
+    no_alloc(|| {
         // Not yet filled.
         assert_eq!(r.read_block(600, &mut out), Err(Miss::NotResident));
         assert!(out.iter().all(|&s| s == 0));
@@ -78,7 +108,7 @@ fn detecting_an_overrun_allocates_nothing() {
     r.read_block(0, &mut out).expect("resident before the drop");
     w.drop_before(200);
 
-    assert_no_alloc(|| {
+    no_alloc(|| {
         assert_eq!(r.read_block(0, &mut out), Err(Miss::NotResident));
         assert!(out.iter().all(|&s| s == 0));
     });
@@ -105,7 +135,7 @@ fn the_callback_body_allocates_nothing_on_any_branch() {
     let mut period = vec![0i32; 128 * RING_CHANNELS];
     let mut seen: [Option<Outcome>; 9] = [None; 9];
 
-    assert_no_alloc(|| {
+    no_alloc(|| {
         t.play();
         seen[0] = Some(e.fill(&t, &r, &mut period)); // playing
 
@@ -170,7 +200,7 @@ fn the_callback_and_the_sink_together_allocate_nothing() {
     let mut wrote = 0usize;
     let mut errors = 0usize;
 
-    assert_no_alloc(|| {
+    no_alloc(|| {
         t.play();
         for _ in 0..20 {
             match e.fill(&t, &r, &mut period) {
