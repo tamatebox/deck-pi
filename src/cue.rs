@@ -174,6 +174,11 @@ impl CueStore {
     ///
     /// Left public because the store is a unit in its own right and its own
     /// tests drive it directly — a nudge, not a fence.
+    ///
+    /// **Which makes this paragraph the only thing between a future caller
+    /// and that defect, so it is load-bearing rather than a courtesy.** Do not
+    /// trim it as boilerplate: there is no compiler error waiting behind it,
+    /// and the failure it describes returns `Ok`.
     pub fn set(&mut self, track: &Path, frame: u64) -> Result<(), CueError> {
         let key = self.key(track)?;
         if frame == 0 {
