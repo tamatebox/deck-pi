@@ -494,7 +494,29 @@ needed for v1, but the gesture is free if it is ever wanted.
 
 ### FF and REW
 
-Hold to seek, tap to change track. **Each half earns its keep on different
+Hold to seek, tap to change track. **A tap loads the next track and waits at its
+head — it does not start playing, even if the deck was playing.**
+
+**This is a departure from the CDJ-350, and an earlier version of this paragraph
+said the opposite.** Read off the manual rather than recalled: TRACK SEARCH there
+keeps playing, and pausing at the start happens **only with auto cue on** — p.17,
+"when auto cue is turned on, the set searches for the beginning of the track and
+pauses there". Selecting a track with the rotary selector is more emphatic still:
+"the track is loaded and playback begins."
+
+Taking the pause anyway is deliberate, and it separates the two halves of auto cue
+rather than adopting it. What `decisions.md` rejects is auto cue **deciding where
+the music begins** — the -36 to -78 dB threshold, an alteration this project will
+not make. Auto cue's other half is simply *pausing on arrival*, which decides
+nothing about the audio. So the deck takes the pause and not the threshold, and
+the rule it buys is one line for the whole panel: **nothing produces sound that
+the operator did not press PLAY for**, whether a track ended by itself or was
+changed on purpose.
+
+It also means a track change always has a pause in it, which the software design
+leans on — see `architecture.md`.
+
+**Each half earns its keep on different
 material.** Hold-to-seek is what makes a long track usable at all — without it the
 only entry point into an 80-minute piece is the beginning, since the jog is v2.
 Tap-for-next carries more weight across a folder of short tracks, where changing
