@@ -76,7 +76,45 @@ extern "C" {
     /// Passing null asks for the last error not attached to a handle — which
     /// is what a failed `sf_open` leaves behind.
     pub fn sf_strerror(sndfile: *mut SNDFILE) -> *const c_char;
+
+    /// The error number on a handle, `SF_ERR_NO_ERROR` when clean.
+    ///
+    /// **This is the only way to see a read failure.** `sf_readf_int` does
+    /// not report one: a failed `read(2)` is logged into the handle and the
+    /// call returns the frames it managed, which is usually zero — the same
+    /// value a clean end of file returns. Checking the return value for a
+    /// negative count, as this FFI once did, tests for something the library
+    /// never produces.
+    ///
+    /// **Two facts, from `VALIDATE_SNDFILE_AND_ASSIGN_PSF`'s third argument
+    /// in `src/sndfile.c`**, which decides whether an entry point clears
+    /// `psf->error` on the way in. Read the macro rather than re-deriving
+    /// either of these from an experiment:
+    ///
+    /// - The read and seek families both pass **1**, so they clear. A check
+    ///   deferred past a later `sf_seek` therefore reports "No Error" for a
+    ///   medium that has gone — read it *immediately*.
+    /// - `sf_readf_int` clears on entry too, which is the more useful half:
+    ///   an error seen after a read was necessarily set **by that read**. It
+    ///   cannot be inherited from `sf_open`, from an earlier seek, or from
+    ///   any prior history — so checking it here cannot turn a healthy track
+    ///   into a failure, which is the way this fix could have inverted the
+    ///   bug rather than removed it.
+    ///
+    /// `sf_error` and `sf_strerror` both pass **0**, so asking does not
+    /// destroy the answer and the message still matches the code. Had
+    /// `sf_error` cleared, `last_error` would report "No Error" for every
+    /// failure.
+    ///
+    /// Sourced from libsndfile `master`; the behaviour was confirmed
+    /// empirically against the installed **1.2.2**. Two sources for one
+    /// claim, not one source twice — the macro is longstanding, but if this
+    /// ever surprises you, read the tag you are linking against.
+    pub fn sf_error(sndfile: *mut SNDFILE) -> c_int;
 }
+
+/// `sf_error`'s clean value.
+pub const SF_ERR_NO_ERROR: c_int = 0;
 
 #[cfg(test)]
 mod tests {

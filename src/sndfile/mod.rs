@@ -78,6 +78,14 @@ impl SndFile {
 
     /// Reads up to `frames` frames as left-justified int32, interleaved.
     /// `buf` must hold `frames * channels` samples.
+    ///
+    /// A short read is not an error — it is the end of the track. **A short
+    /// read with an error set on the handle is the medium going away**, and
+    /// telling those two apart is the whole reason `sf_error` is called
+    /// here. `sf_readf_int` returns the frames it managed in both cases, so
+    /// the return value cannot distinguish them; an earlier version tested
+    /// `got < 0`, which libsndfile never returns from a read, and a pulled
+    /// stick therefore arrived at the caller as a clean end of file.
     pub fn read_frames(&mut self, buf: &mut [i32], frames: i64) -> Result<i64, SndFileError> {
         let wanted = frames
             .checked_mul(self.info.channels as i64)
@@ -93,7 +101,12 @@ impl SndFile {
         // SAFETY: the handle is non-null and open; `buf` has room for
         // `frames * channels` ints, asserted above.
         let got = unsafe { ffi::sf_readf_int(self.handle, buf.as_mut_ptr(), frames) };
-        if got < 0 {
+        // Immediately, and before anything else touches the handle: an
+        // `sf_seek` clears the error on its way through, so a check deferred
+        // past one reports a healthy file for a stick that has been pulled.
+        // SAFETY: the handle is non-null and open.
+        let err = unsafe { ffi::sf_error(self.handle) };
+        if err != ffi::SF_ERR_NO_ERROR {
             return Err(last_error(self.handle));
         }
         Ok(got)
@@ -112,8 +125,15 @@ impl SndFile {
 
 impl Drop for SndFile {
     fn drop(&mut self) {
+        // The return is **deliberately** discarded, and this line says so
+        // because a silently ignored libsndfile return is exactly the shape
+        // of the read bug above. `sf_close` reports a failure to flush, and
+        // handles here are opened `SFM_READ` only, so there is nothing to
+        // flush and nothing it can tell us that we could act on inside a
+        // `Drop`.
+        //
         // SAFETY: handle is non-null, open, and never closed twice — `Drop`
         // runs once and nothing else calls `sf_close`.
-        unsafe { ffi::sf_close(self.handle) };
+        let _ = unsafe { ffi::sf_close(self.handle) };
     }
 }
