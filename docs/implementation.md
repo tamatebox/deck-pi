@@ -116,6 +116,45 @@ Use `alsacap` during bring-up to enumerate what the Digi2 Pro actually offers �
 supported rates, formats, and buffer and period ranges — rather than assuming the
 datasheet's six rates all appear.
 
+## A declared mechanism is not a reached one
+
+The recurring defect in this codebase is not a wrong line. It is a mechanism
+that exists, is typed, is documented, is named in a design document — and is
+never reached. A review pass found six at once, so it is a pattern rather than
+a run of bad luck.
+
+**Two shapes, and the second survives the check that catches the first.**
+
+*Declared and never reached.* `BrowseError::OutsideRoot` was constructed
+nowhere; `verify_in_force` had no callers; `Transport::reached_end` was called
+only by its own tests; `Command::Relocate` had a match arm and no sender.
+Each greps dirty the moment anyone looks.
+
+*Wired, but unreachable for its stated cause.* `window::Event::Failed` had two
+construction sites, a doc comment naming a pulled stick as its dominant cause,
+and a design sentence promising the behaviour — and neither site could fire for
+that cause: one sat behind `Command::Relocate`, which nothing sent, and the
+other needed a negative return from `sf_readf_int`, which libsndfile never
+produces. **A reachability check answers "yes" here.** One dead mechanism was
+concealing another, so per-site inspection is not enough; the deadness was
+inherited.
+
+**And an unexercised branch predicts unexercised *consumers*.** `Miss::Relocated`
+was noted as a coverage gap — no test in the repository had ever caused it to
+be returned. That was also a prediction. When the `relocate` seqlock made it
+routine, two consumers were immediately found to have had it wrong all along:
+one matched a single variant and sent the rest to `panic!`, the other to a
+`break` that ended playback, both treating "the window moved, come back" as a
+fault. Nothing had ever asked them. So when a dormant branch is made live,
+**audit what receives it in the same change** — the branch working is not the
+question.
+
+**What this costs to check** is grep for construction sites rather than
+definitions, and, for the second shape, asking whether the *stated cause* can
+reach them. Neither is expensive. Both were skipped because the type, the
+comment and the document agreed with each other — which is evidence about the
+comment and the document, and none at all about the code.
+
 ## Reading files
 
 libsndfile, in the window thread, through a **hand-written FFI** rather than a

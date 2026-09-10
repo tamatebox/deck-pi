@@ -292,6 +292,15 @@ impl RingWriter {
 }
 
 /// Why a read could not be served in full.
+///
+/// **Every variant is a period of silence, and none of them is an error.**
+/// The response is the same in all three cases — emit silence for what could
+/// not be served and carry on — so a consumer should match `Missed(_)` and
+/// tell the variants apart only in order to *report* them. Two consumers got
+/// this wrong by matching one variant and treating the rest as a fault: one
+/// panicked, the other ended playback. An earlier version of this comment
+/// called `Overrun` "a different fault to report", which is the wording that
+/// invited it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Miss {
     /// The window thread has not reached these frames yet, or the track ended.
@@ -299,10 +308,16 @@ pub enum Miss {
     NotResident,
     /// The frames were resident when the read began and were recycled while
     /// it ran. Distinguished from `NotResident` because it means the window
-    /// thread is being outrun, which is a different fault to report.
+    /// thread is being outrun — worth reporting, still not an error.
     Overrun,
     /// The window was relocated mid-read — a seek or a track change landed
     /// while the callback was working. The next block will be correct.
+    ///
+    /// **Routine rather than exceptional, and newly so.** The seqlock in
+    /// `relocate` returns this for any read landing during a relocation, and
+    /// a window relocates at the start of every track — so it fires on
+    /// ordinary track loads. Before the seqlock it was very nearly
+    /// unreachable, which is precisely why its consumers were wrong.
     Relocated,
 }
 
