@@ -15,6 +15,7 @@ pub mod cue;
 pub mod engine;
 pub mod file;
 pub mod input;
+pub mod loaded;
 pub mod media;
 pub mod ring;
 pub mod rt;

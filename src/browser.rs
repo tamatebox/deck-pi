@@ -137,15 +137,15 @@ impl std::fmt::Display for BrowseError {
 impl std::error::Error for BrowseError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EntryKind {
+pub(crate) enum EntryKind {
     Folder,
     File,
 }
 
 #[derive(Debug, Clone)]
-struct Entry {
-    name: OsString,
-    kind: EntryKind,
+pub(crate) struct Entry {
+    pub(crate) name: OsString,
+    pub(crate) kind: EntryKind,
 }
 
 pub struct Browser {
@@ -449,7 +449,16 @@ fn read_header(path: &Path) -> Verdict {
 /// Entries whose type cannot be determined are dropped rather than guessed
 /// at: on a read-only medium the only way that happens is the medium going
 /// away, and a row that cannot be classified cannot be acted on either.
-fn read_folder(dir: &Path) -> Result<Vec<Entry>, BrowseError> {
+/// The listing, in the order the browser shows it.
+///
+/// `pub(crate)` so `src/loaded.rs` can re-derive a playing track's neighbours
+/// through the **same** function. Reimplementing the walk there would let the
+/// two orders drift, and the first thing they would drift on is the dotfile
+/// rule: `decisions.md` records it as not cosmetic on this medium, because an
+/// HFS+ volume prepared on a Mac carries `._piece.wav` right beside
+/// `piece.wav`. A "next track" that stepped onto an AppleDouble twin would
+/// land on a file libsndfile cannot open, next to the one that plays.
+pub(crate) fn read_folder(dir: &Path) -> Result<Vec<Entry>, BrowseError> {
     let read = std::fs::read_dir(dir).map_err(|e| BrowseError::Unreadable {
         path: dir.to_path_buf(),
         reason: e.to_string(),

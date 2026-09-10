@@ -164,6 +164,16 @@ impl CueStore {
     /// Setting zero **removes** the entry rather than storing it: zero is the
     /// unset value, so the two are already indistinguishable in behaviour and
     /// keeping the file free of them costs nothing.
+    /// **Prefer `Loaded::set_cue`.** This takes the path from its caller, and
+    /// the only module that held paths before `src/loaded.rs` existed was the
+    /// browser — whose selection moves independently of what is playing. Ask
+    /// the browser and a cue lands on whatever was highlighted, atomically,
+    /// returning `Ok`, with nothing to notice until weeks later. That is
+    /// [#14](https://github.com/tamatebox/deck-pi/issues/14), and
+    /// `Loaded::set_cue` is the shape that cannot make the mistake.
+    ///
+    /// Left public because the store is a unit in its own right and its own
+    /// tests drive it directly — a nudge, not a fence.
     pub fn set(&mut self, track: &Path, frame: u64) -> Result<(), CueError> {
         let key = self.key(track)?;
         if frame == 0 {
