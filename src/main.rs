@@ -8,7 +8,7 @@ use deck_pi::engine::{Engine, Outcome};
 use deck_pi::file::{OpenError, Track, RING_CHANNELS};
 use deck_pi::browser::{Browser, Row, Verdict};
 use deck_pi::media::{self, Medium};
-use deck_pi::ring::{self, Miss};
+use deck_pi::ring;
 use deck_pi::rt;
 use deck_pi::sink::{AudioSink, CaptureSink};
 use deck_pi::transport::Transport;
@@ -171,7 +171,13 @@ fn play<S: AudioSink>(
                 transport.reached_end();
                 break;
             }
-            Outcome::Missed(Miss::NotResident) => {
+            // Any miss: the window thread has not got here yet, or it is
+            // mid-relocation. Both are transient and both are a period of
+            // silence, not a failure — matching `Miss` as a whole rather than
+            // naming one variant is deliberate, because `Relocated` used to
+            // fall through to the arm below and end playback. It is common at
+            // the start of a track, where the window relocates to frame zero.
+            Outcome::Missed(_) => {
                 waits += 1;
                 if failure.lock().unwrap().is_some() {
                     break;

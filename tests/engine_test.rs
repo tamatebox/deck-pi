@@ -61,10 +61,19 @@ fn play_to_completion(path: &std::path::Path, frames: u64) -> Vec<i32> {
                     .expect("sink accepted the period");
             }
             Outcome::EndOfTrack => break,
-            // The filler has not reached here yet. A real callback would have
-            // emitted this period of silence and moved on; the test waits,
-            // because it is checking content rather than timing.
-            Outcome::Missed(Miss::NotResident) => std::thread::yield_now(),
+            // **Every miss is transient and none of them is an error.** A real
+            // callback emits that period of silence and comes back; the test
+            // waits instead, because it is checking content rather than
+            // timing.
+            //
+            // `Relocated` belongs here and used to be treated as a fault. It
+            // became common when the ring learned to refuse a read taken
+            // while a relocation is in flight — before that the reader could
+            // sail through the middle of one and return samples from the
+            // window being discarded, which is the bug the seqlock fixed. So
+            // the outcome is not new; noticing it is. It arrives at the start
+            // of a track, where the window relocates to frame zero.
+            Outcome::Missed(_) => std::thread::yield_now(),
             other => panic!("unexpected outcome at frame {}: {:?}", engine.position(), other),
         }
         assert!(Instant::now() < deadline, "playback never completed");
