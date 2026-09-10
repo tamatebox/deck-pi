@@ -25,22 +25,48 @@
 //! `ldr` / `str` with no barrier and no lock instruction.
 //!
 //! The resident span is published as three separate atomics rather than one
-//! consistent snapshot, which is safe because the reader reads them in an
-//! order that can only ever *understate* what is resident:
-//!
-//! - `end` grows only within a generation, so loading it **first** gives a
-//!   lower bound on the true end.
-//! - `start` grows only within a generation, so loading it **last** gives an
-//!   upper bound on the true start.
-//! - `generation` changes when the writer relocates the window (a seek out of
-//!   range, or a new track), which is the only time `start` moves backwards.
+//! consistent snapshot. Within a generation that understates rather than
+//! overstates what is resident, because `end` only grows and `start` only
+//! grows: loading `end` **first** gives a lower bound on the true end and
+//! `start` **last** an upper bound on the true start. `generation` changes
+//! when the writer relocates, which is the only time `start` moves backwards.
 //!
 //! So the reader loads `generation`, `end`, `start`, reads, then re-loads
 //! `start` and `generation`. A miss is reported rather than stale audio. That
 //! is one bounded pass with no retry loop, so it stays O(1) — the callback
 //! rules exclude anything worse (docs/implementation.md, "Process setup").
+//!
+//! # Two fences, and why the release/acquire pair is not enough
+//!
+//! **This section describes a defect that was found by measurement and
+//! fixed, and the fences below are load-bearing. Do not remove them as
+//! redundant with the `Release`/`Acquire` on `start` — that is precisely the
+//! reasoning that left them out.**
+//!
+//! The acquire/release pair is oriented for *publishing*: the writer fills
+//! slots and then stores `end` with `Release`, the reader loads `end` with
+//! `Acquire` and then reads slots. That direction is sound.
+//!
+//! *Invalidating* runs the other way and has no pairing of its own.
+//! `drop_before` stores `start` with `Release` before the slots below it are
+//! reused — but `Release` orders what comes *before* the store, so the
+//! writer's later `Relaxed` slot writes may still become visible ahead of it.
+//! Symmetrically the reader's `start.load(Acquire)` orders what comes
+//! *after* it, so its earlier `Relaxed` slot loads may complete after it.
+//! Either reordering produces the same outcome: the reader reads an
+//! overwritten slot, re-checks against a `start` that has not moved yet, and
+//! returns `Ok` with a sample from another frame.
+//!
+//! Measured on AArch64 with a writer recycling right behind the reader:
+//! **18 corrupt `Ok`s in 90.6M reads** without the fences, **0 in 52.7M**
+//! with them. One `dmb` each, once per block, off the per-sample path.
+//!
+//! The ordinary fill policy never recycles ahead of the playhead
+//! (`window.rs` drops only below `playhead - below_target`), so this is the
+//! last line of defence rather than a hot path. That is what let a claim of
+//! being "sound by construction" stand here while being untrue.
 
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{fence, AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::file::RING_CHANNELS;
@@ -182,10 +208,23 @@ impl RingWriter {
     /// This is the only operation that moves `start` backwards, so it is also
     /// the only one that bumps the generation. Used when a seek lands outside
     /// the resident span and when a track is loaded.
+    ///
+    /// **Bumped twice, so the generation is odd while the relocation is in
+    /// progress.** A single bump was not enough, and the hole it left is the
+    /// mirror image of the fence one: `start` is stored before `end`, while
+    /// the reader loads `end` before `start`. A reader that observed the new
+    /// generation, the *old* `end` and the *new* `start` — reachable on a
+    /// **backwards** relocate, which is a cue jump or a REW landing outside
+    /// the window — computes a span that has **grown**, `new_start..old_end`.
+    /// Its re-check then passes, because the generation has not moved again
+    /// and the new `start` is below `from`, and it returns slots from the
+    /// window that no longer exists. Odd means "do not trust the span", which
+    /// the reader can test with one load it was already doing.
     pub fn relocate(&mut self, frame: u64) {
         self.shared.generation.fetch_add(1, Ordering::AcqRel);
         self.shared.start.store(frame, Ordering::Release);
         self.shared.end.store(frame, Ordering::Release);
+        self.shared.generation.fetch_add(1, Ordering::AcqRel);
     }
 
     /// Discards everything before `frame`, making room ahead.
@@ -229,6 +268,12 @@ impl RingWriter {
         );
 
         let end = self.shared.end.load(Ordering::Relaxed);
+        // Any `start` published by a preceding `drop_before` must be visible
+        // before the slots it freed are overwritten. `Release` on that store
+        // does not give this — it orders what came before it, not what comes
+        // after — so the ordering has to be asked for here. See the module
+        // doc; this was measured, not reasoned.
+        fence(Ordering::Release);
         let mut slot = self.shared.slot_of(end);
         let limit = self.shared.slots.len();
         for &s in src {
@@ -343,6 +388,13 @@ impl RingReader {
         if frames == 0 {
             return Ok(0);
         }
+        // Odd means a relocation is in flight, so `start` and `end` are not
+        // two halves of the same span. Cheaper to refuse than to reason about
+        // which of them is stale.
+        if gen_before & 1 == 1 {
+            self.silence(dst);
+            return Err(Miss::Relocated);
+        }
         if from < start || from >= end {
             self.silence(dst);
             return Err(Miss::NotResident);
@@ -358,6 +410,12 @@ impl RingReader {
                 slot = 0;
             }
         }
+
+        // The slot loads above are `Relaxed` and must not sink past the
+        // re-check below, or an overwrite read before `start` moved reads as
+        // an overwrite that never happened. `Acquire` on the re-check itself
+        // does not give this — it orders what follows it. See the module doc.
+        fence(Ordering::Acquire);
 
         // Re-check in the reverse order of the writer's publishes.
         if self.shared.generation.load(Ordering::Acquire) != gen_before {
