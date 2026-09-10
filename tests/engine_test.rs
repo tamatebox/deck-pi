@@ -237,3 +237,77 @@ fn a_silent_seek_produces_no_audio_and_playback_resumes_where_it_left_off() {
     let _ = tx.send(Command::Shutdown);
     let _ = thread.join();
 }
+
+#[test]
+fn a_track_that_reaches_its_end_leaves_the_deck_stopped() {
+    // `decisions.md`: "A track that reaches its end stops. Nothing starts on
+    // its own... The engine already reports `EndOfTrack` and decides nothing,
+    // **so this is where the decision lands.**"
+    //
+    // It landed nowhere. `Transport::reached_end` existed, was documented, was
+    // named in that decision — and `grep` found its only callers were its own
+    // two unit tests. The engine returns the outcome and does not touch the
+    // transport, deliberately, because `fill` runs on the audio thread and
+    // those stores would race the control thread. So the obligation belongs to
+    // whatever drives the loop, and until the app loop exists nothing was
+    // discharging it: at the end of a track the deck read `Playing` at rate
+    // 1.0 for ever. The display would say "playing" over silence, and the next
+    // PLAY press would pause.
+    //
+    // Written as a loop rather than as a call to `reached_end` because the
+    // defect was never in that function — it was in nobody calling it. Same
+    // reason `input_test.rs` models the dispatch it is testing, which is how
+    // the stale `was_playing` was found.
+    let scratch = Scratch::new("engine-endstate");
+    let frames = 6_000usize;
+    let source = signal(Bits::S24, 2, frames);
+    let bytes = fixtures::build(Kind::Wav, &source, Bits::S24, 44_100, 2);
+    let path = fixtures::write(&scratch.dir, "short", Kind::Wav, &bytes);
+
+    let (window, reader, info) = Window::load(&path, WINDOW_BYTES).expect("loads");
+    let (tx, rx) = mpsc::channel();
+    let thread = std::thread::spawn(move || window.run(rx, |_| {}));
+
+    let transport = Transport::new();
+    let mut engine = Engine::new(info.frames);
+    transport.play();
+
+    let mut period = vec![0i32; PERIOD * RING_CHANNELS];
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match engine.fill(&transport, &reader, &mut period) {
+            Outcome::Played { .. } | Outcome::PlayedTail { .. } => {}
+            Outcome::EndOfTrack => {
+                transport.reached_end();
+                break;
+            }
+            Outcome::Missed(Miss::NotResident) => std::thread::yield_now(),
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+        assert!(Instant::now() < deadline, "playback never completed");
+    }
+    let _ = tx.send(Command::Shutdown);
+    let _ = thread.join();
+
+    assert_eq!(
+        transport.rate(),
+        deck_pi::transport::RATE_PAUSED,
+        "the deck must not still be running at unity after the last frame"
+    );
+    // **`Paused`, not `Stopped`** — the third confusable pair this suite has
+    // had to pin down. `State::Stopped` means "nothing loaded"; a track that
+    // reached its end is still loaded and sitting on its last frame, which is
+    // the CDJ's own idea of stopping — `hardware.md`: "returning to the cue
+    // point and standing by *is* stopping", which is why there is no separate
+    // STOP button. The first version of this assertion expected `Stopped` and
+    // was wrong about the design rather than about the code.
+    assert_eq!(
+        transport.state(),
+        deck_pi::transport::State::Paused,
+        "and it must say so, or the display reads Playing over silence"
+    );
+    assert!(
+        transport.position() <= info.frames as f64,
+        "the position must not run past the last frame"
+    );
+}

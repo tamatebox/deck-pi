@@ -315,6 +315,21 @@ impl Transport {
     /// its own. In a venue, a next track beginning while attention is
     /// elsewhere is worse than a silence, and PLAY is right there."
     /// Auto-advance is a later addition if wanted, not an omission here.
+    ///
+    /// **Whoever drives the playback loop must call this when the engine
+    /// returns `Outcome::EndOfTrack`, and it must be the control thread.**
+    /// Nothing called it for a long time: the engine reported the outcome and
+    /// touched the transport not at all, so at the end of a track the deck
+    /// read `Playing` at rate 1.0 for ever — a display saying "playing" over
+    /// silence, and a PLAY press that pauses. `decisions.md` says the
+    /// decision "lands" here; it landed nowhere, and the two tests below
+    /// exercised a function with no callers.
+    ///
+    /// **The engine deliberately does not call it itself**, tempting as that
+    /// is when it already holds a `&Transport`. `fill` runs on the audio
+    /// thread, and these stores would then race a control-thread `play()` or
+    /// `begin_seek()` — the same split-store hazard the rest of this type is
+    /// careful about, introduced to save the caller a line.
     pub fn reached_end(&self) {
         self.rate.store(RATE_PAUSED.to_bits(), Ordering::Release);
         self.silent.store(false, Ordering::Relaxed);
