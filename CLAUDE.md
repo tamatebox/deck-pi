@@ -15,17 +15,24 @@ changes to either.
 **Status.** The v1 read path is built and tested: the libsndfile FFI, format
 vetting, the locked int32 ring, the window thread, the transport, the audio
 callback, the ALSA sink behind an `AudioSink` trait, the realtime process setup
-and the browser, media watch, the cue store and input. The suite is green in
-debug and release on Linux/aarch64 and on macOS, where the Linux-only paths
-compile out, and clippy is clean on both — **and that was never evidence about
-the things this project gets wrong, which is recorded here so the line is not
-read as though it were.** Of the sixteen faults found in the review that
-produced most of these tests, clippy caught **zero**. That is not a failure of
-the tool: memory ordering, a mechanism with no caller, a comment that agrees
-with the code and is wrong anyway, an unstated premise about the hardware —
-every one of them is invisible to a lint by construction, because they are about
-what the code *means* against what a document, a device or a peer does. A linter
-that finds `map_identity` is doing its job. The mistake would be counting it as
+and the browser, media watch, the cue store and input. **Linux/aarch64 is the
+gate**: the suite is green there in debug and release, and clippy is clean. It
+also builds and mostly runs on macOS, which is worth having for the speed of the
+loop and is **not evidence about the deck** — the paths that compile out there
+are exactly the hardware-facing ones, `src/rt.rs`, the ALSA sink,
+`src/input.rs`'s device module and the `/proc` half of media watch. A green
+macOS run says nothing about any of them. Clippy has the same shape and needed
+fixing: the container ships no `cargo-clippy`, so "clean on both" once meant
+macOS plus a Linux invocation that failed silently — `README.md` has the extra
+step. Clippy is clean on both — **and that was never evidence about the things
+this project gets wrong, which is recorded here so the line is not read as
+though it were.** Of the sixteen faults found in the review that produced most
+of these tests, clippy caught **zero**. That is not a failure of the tool:
+memory ordering, a mechanism with no caller, a comment that agrees with the code
+and is wrong anyway, an unstated premise about the hardware — every one of them
+is invisible to a lint by construction, because they are about what the code
+*means* against what a document, a device or a peer does. A linter that finds
+`map_identity` is doing its job. The mistake would be counting it as
 verification. Read the line as "no default-group lint fires" and nothing else;
 `docs/implementation.md`'s *What reads as handled and is not* is where the
 checks that would have found those sixteen are written down.
@@ -70,6 +77,22 @@ promote things from it into the design doc.
 - Hardware facts — jumper positions, pin assignments, power feed — are
   load-bearing and silent when wrong. Never guess one. Cite `docs/hardware.md`
   or ask.
+- **A fact from a document this project cites is read, not recalled.** The
+  CDJ-350 manual by page, the kernel by file, the datasheets by table — where
+  the text names a source, someone must have opened it.
+
+  "Never guess" above does not reach this and did not catch it. Someone
+  guessing knows they are guessing; **someone recalling believes they know**,
+  so the rule reads as addressed to another person and the sentence comes out
+  confident *and citation-shaped*. That is the harm: **a sentence that names a
+  source is believed harder than one that does not**, so the error travels
+  further before anyone thinks to test it. It has happened — "pausing at the
+  head of the next track is the CDJ's own behaviour for TRACK SEARCH" was
+  written from memory into two files, and the manual says the opposite.
+
+  `docs/hardware.md` already refuses third-party mirrors of Ian Canada's
+  manuals because one transcribes a table backwards. Opening the one you cite
+  is the other half of that rule, not a new one.
 - Before deferring something to "when the hardware arrives", check whether it is
   actually a *driver* question. Formats, rates and pin roles are declared
   statically in kernel source and can be settled now; the boards' own jumpers and
