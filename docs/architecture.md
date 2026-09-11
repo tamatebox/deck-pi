@@ -175,29 +175,41 @@ inaudible, and the null test catches its absence.
 
 ## Shape of the program
 
-The primary division is by **deadline**, not by phase — insert, browse, play
-describe what the user does, not where the seams are. Exactly one thing has a
-deadline: the audio callback.
+The primary division is by **deadline**, not by phase — insert, browse, play describe
+what the user does, not where the seams are. Exactly one thing has a deadline: the
+audio callback, which reads the ring and nothing else.
+
+**Mount is not ours** — a udev rule and `systemd-mount`, zero application code.
 
 | | |
 |---|---|
-| **Mount** — *not ours* | A udev rule and `systemd-mount`. Zero application code; `implementation.md`. |
-| **Media watch** | `src/media.rs`. The fixed mount point, the volume UUID, three states. **Polled, not event-driven**: the check is two `stat` calls, and `inotify` would report directory creation rather than mounting — exactly the distinction that had to be made. |
-| **File layer** | The hand-written libsndfile FFI. Opens a header, reads frames into the ring's layout. **Shared** by the browser and playback. |
-| **Browser** | `src/browser.rs`. Walks the tree, caches headers by path, holds the selection. **The row count is a parameter, not a constant** — `view(height)` takes the viewport, the panel candidates giving two to twelve rows. `view` is the only thing that opens a file *speculatively*, which is what makes "reads ride the render" structural rather than a habit. |
-| **Display** | `embedded-graphics` over one panel driver, the redraw budget, the idle timers. **Cuts across** browsing and transport alike. |
-| **Input** | `src/input.rs`. Reads `/dev/input` directly, decodes tap-versus-hold for FF and REW, and **knows nothing about GPIO** — it emits keycodes, and which pin makes which is a line in `config.txt`. It emits gestures and interprets none of them. |
-| **Transport** | The rate variable, the float64 position, and what each control means. Writes the lock-free slot; never touches the ring. **Three of its names are confusable and the code is the authority, not the name** — the CDJ's vocabulary describes what the player does to the *music*, the state machine's what it does to the *position*, and they do not line up. `Stopped` means *nothing loaded* and refuses every control; `is_silent` is the position moving with output muted, which is what makes v1's FF/REW a seek; `headers_read` counts opens performed, not entries held. Two of the three were got wrong here before they were named. |
-| **Audio engine** | The window thread that fills the ring, the callback that drains it, the per-track ALSA setup. |
-| **Dispatch** | `src/app/deck.rs`. What a press means, and **which of the two "current" things it acts on: ENTER the selection, FF/REW the playing track.** One button's two gestures must not address two objects. |
-| **Track lifecycle** | `src/app/track.rs`, period loop in `src/app/audio.rs`. The window thread, audio thread and sink a track owns — created together, joined together. **Per *track*, not per *play*:** PAUSE, the end of a track and a Back Cue into it all happen inside one run, so the device is not reopened to resume. That rests on a track change always containing a pause. **Every decision happens on the control thread** — the audio thread publishes the position and nothing else. |
-| **Control loop** | `src/app/controls.rs`. Reads the events and produces the press. **`Deck::service` runs before the presses, not after**: the end of a track and the press that follows are discovered on the same turn, and applying first would let PLAY/PAUSE read a transport still claiming rate 1.0, take the pause branch, and vanish into a state that was about to change anyway. **A lost device node resets the decoder**, a `HoldStart` whose button no longer exists having nothing left to end it. The event source is a trait for the same reason the sink is. |
-| **Loaded** | `src/loaded.rs`. The playing track's path and folder position — what the browser, transport and engine each did *not* own. Neighbours are re-derived through `browser::read_folder` rather than snapshotted, which is what stops two orders drifting on the dotfile rule. `None` at a folder boundary, and doing nothing is stopping. It owns the **cue key**, because a cue set while browsing elsewhere landed on the browsed file, atomically and silently. |
-| **Cue store** | `src/cue.rs`. The only state the application persists. Key is the path *relative* to the mount and held as raw bytes, so a remount elsewhere keeps its cues and two undecodable names cannot collide. Writes through atomically on every set. |
+| Media watch | `src/media.rs` |
+| File layer | `src/sndfile/`, `src/file.rs` |
+| Browser | `src/browser.rs` |
+| Input | `src/input.rs` |
+| Transport | `src/transport.rs` |
+| Loaded | `src/loaded.rs` |
+| Cue store | `src/cue.rs` |
+| Audio engine | `src/window.rs`, `src/ring.rs`, `src/sink/`, `src/app/audio.rs` |
+| Dispatch | `src/app/deck.rs` |
+| Track lifecycle | `src/app/track.rs` |
+| Control loop | `src/app/controls.rs` |
+| Display | not written |
 
-A module is not a thread: the file layer is called from the window thread when
-filling the ring and from the browser when reading a header, and has to be safe for
-both without either becoming the other's problem.
+**What each module owns is in its own doc comment**, which says it first-hand and
+cannot drift from the code. This table is the map, not the description. Four rules
+live *between* modules, which is why they are here and not there:
+
+- **A module is not a thread.** The file layer is called from the window thread when
+  filling the ring and from the browser when reading a header, and must be safe for
+  both without either becoming the other's problem.
+- **ENTER acts on the selection, FF/REW on the playing track.** One button's two
+  gestures must not address two objects.
+- **Every decision happens on the control thread.** The audio thread publishes the
+  position and nothing else. The first version reached over.
+- **The transport's names are the code's, not the CDJ's.** `Stopped` means *nothing
+  loaded*; `is_silent` is the position moving with output muted, which is what makes
+  v1's FF/REW a seek. Two of the three were got wrong here before they were named.
 
 ## Threading
 

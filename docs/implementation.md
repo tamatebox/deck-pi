@@ -536,31 +536,13 @@ statement about intent unless something checks it, and something can:
   reads forward and FF/REW are a silent seek — which is exactly the trap: it
   would work now and make v2's jog a rewrite instead of a substitution.
 
-  The ring is a fixed allocation of **`AtomicI32` slots accessed `Relaxed`**,
-  addressed by track frame index modulo capacity, and it is cheap on the
-  target: a relaxed 32-bit atomic load or store on AArch64 is a plain `ldr` /
-  `str`, no barrier and no lock instruction.
+  **The ring's own memory ordering is subtle and `src/ring.rs`'s module doc is
+  the authority**, not this file: relaxed `AtomicI32` slots, a seqlock on the
+  resident span, and two `fence` calls carrying the invalidate direction. Those
+  fences read as redundant with the orderings already there, which is exactly the
+  reasoning that left them out — **18 corrupt `Ok`s in 90.6M reads**. Do not remove
+  them without reading that module doc and running the race probes.
 
-  The resident span is published as `start`, `end` and a `generation` counter.
-  The callback loads `generation`, then `end`, then `start`; copies; then
-  re-loads `start` and `generation` — **not `end`**, which only grows and so
-  can never invalidate what was just read. Within one generation that order
-  understates what is resident rather than overstating it. **Across a
-  relocation it does not**, which is why `relocate` is a seqlock: the
-  generation is bumped twice and is odd while the relocation is in progress,
-  and the reader refuses an odd generation outright.
-
-  **Two `fence` calls carry the invalidate direction, and they are
-  load-bearing.** The `Release`/`Acquire` pair is oriented for *publishing* —
-  fill the slots, then store `end` — and invalidating runs the other way with
-  no pairing of its own. Do not remove them as redundant with the orderings
-  already there: that is precisely the reasoning that left them out, and it
-  cost **18 corrupt `Ok`s in 90.6M reads**. An earlier version of this
-  paragraph claimed the load order "can only understate what is resident" and
-  that atomic slots made the read "sound by construction" — both were unscoped,
-  and the code matched the prose while neither matched reality.
-  **`src/ring.rs`'s module doc is the authority here**, with the full argument
-  and the measurements; this paragraph follows it.
 - **`libc`** — the `SCHED_FIFO` plumbing, and the other two calls with it.
   `thread-priority` was the crate named here, and it is not used: two of the three
   calls (`mlockall`, `sched_setaffinity`) are not in it, and the verification needs
@@ -716,39 +698,26 @@ userspace — polling quantises jog velocity to the poll interval and drops step
 
 ## Dependencies
 
-Chosen against one question: **what happens if this goes unmaintained?** Download
-counts are cumulative and inflated by CI and transitive use, so they say "this is
-in the dependency graph of popular things", not "many people use it directly".
-Useful as a health signal, not as a popularity one.
+`Cargo.toml` lists them. What it does not say is why, and one pin is load-bearing:
 
-| | Role | Health |
-|---|---|---|
-| `alsa` | Output | 21M, current — but see the allocation trap above |
-| `alsa-sys` | Pulled in directly for the four open-mode flags `PCM::new` cannot pass | tracks `alsa`; same maintainers |
-| ~~`rtrb`~~ | **Not a dependency.** Named during design for the control slot, which was built from plain atomics instead — see above | n/a |
-| `libc` | `mlockall`, `sched_setscheduler`, `sched_setaffinity` and the read-backs | 400M+, current |
-| `embedded-graphics` | Drawing API | 2.6M, current |
-| `linux-embedded-hal` | Panel drivers onto `/dev/i2c`, `/dev/spidev` | 5.9M, current |
-| `assert_no_alloc` | Enforcement, not runtime | 4.3M but stale since 2021 |
-| panel driver | One, chosen after the panel choice ([#2](https://github.com/tamatebox/deck-pi/issues/2)) | thin, and it varies a lot: `ssd1309` 13k / 2023, `ssd1327` 1.7k / **2020** |
-| libsndfile | Reading, via hand-written FFI. **`build.rs` requires >= 1.0.28**, which is where RF64 read support arrives — relax that pin and the Track length ceiling argument in `architecture.md` goes with it, silently | C library healthy; no crate dependency |
-| `pkg-config` | Build-dependency. `build.rs` uses it to resolve libsndfile on both the development Mac and the Pi, so the link line is not hardcoded | 300M+, current |
-| libsoxr | v2 resampling, hand-written FFI | C library static since 2023 |
+- **`build.rs` requires libsndfile >= 1.0.28**, which is where RF64 *read* support
+  arrives. Relax that pin and `architecture.md`'s Track length ceiling argument goes
+  with it, **silently**. `pkg-config` resolves it on both the Mac and the Pi, so the
+  link line is never hardcoded.
+- **`alsa-sys` is a direct dependency** only for the four open-mode flags `PCM::new`
+  cannot pass.
+- **`evdev` is deliberately unused.** An input event is a small fixed-layout struct
+  and `src/input.rs` reads it directly — but **the layout is derived from
+  `size_of::<libc::timeval>()`, not hardcoded**: `input_event` is 24 bytes on a
+  64-bit build and 16 on a 32-bit one, so the figure is a property of the base
+  `decisions.md` chose rather than of the struct.
+- **`assert_no_alloc` is stale since 2021**, and panel drivers vary wildly (`ssd1327`
+  last touched 2020). Both are acceptable because their surfaces are small enough to
+  own: enforcement whose failure costs enforcement rather than function, and an init
+  sequence plus a `DrawTarget` impl.
 
-What matters is that risk sits in the right places. The crates that are **hard to
-replace are the healthy ones**; the ones that are stale or thin have surfaces small
-enough to own — a libsndfile FFI is forty lines, a panel driver is an init sequence
-and a `DrawTarget` impl, and `assert_no_alloc` is a build-time tool whose failure
-costs enforcement rather than function. `evdev` is convenient and is not used: an
-input event is a small fixed-layout struct, and `src/input.rs` reads it directly.
-
-**"A fixed 24-byte struct" was not quite right, and the code no longer says it.**
-Measured against `linux/input.h` on aarch64: `sizeof(struct input_event)` is 24 with
-`type` at 16, `code` at 18 and `value` at 20 — 24 **because `timeval` is 16 on a
-64-bit build**. A 32-bit userspace makes `timeval` 8 bytes and the struct 16. So the
-figure is a property of the base `decisions.md` chose rather than of the struct, and
-the layout is derived from `size_of::<libc::timeval>()` instead of hardcoded.
-
-The reversibility that keeps the panel choice open rests on `embedded-graphics`,
-which is healthy — not on any individual panel driver, which is what a naive read
-of the download counts would worry about.
+The crates that are **hard to replace are the healthy ones** — `libc`,
+`embedded-graphics`, the C libraries — which is where the risk belongs. The panel
+choice's reversibility rests on `embedded-graphics`, not on any individual driver.
+Download counts are cumulative and inflated by CI, so they say "this is in the
+dependency graph of popular things", not "many people use it directly".
