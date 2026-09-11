@@ -309,7 +309,7 @@ fn a_track_that_reaches_its_end_leaves_the_deck_stopped() {
     // **`Paused`, not `Stopped`** — the third confusable pair this suite has
     // had to pin down. `State::Stopped` means "nothing loaded"; a track that
     // reached its end is still loaded and sitting on its last frame, which is
-    // the CDJ's own idea of stopping — `hardware.md`: "returning to the cue
+    // the CDJ's own idea of stopping — `controls.md`: "returning to the cue
     // point and standing by *is* stopping", which is why there is no separate
     // STOP button. The first version of this assertion expected `Stopped` and
     // was wrong about the design rather than about the code.

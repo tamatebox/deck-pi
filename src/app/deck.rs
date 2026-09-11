@@ -24,7 +24,7 @@
 //! The browser's selection and the playing track move independently, and
 //! `src/loaded.rs` exists because of it. So: **ENTER acts on the selection,
 //! FF/REW act on the playing track.** That is not a preference — one
-//! button's two gestures must not address two objects, and `hardware.md`
+//! button's two gestures must not address two objects, and `controls.md`
 //! rejected the same shape when it refused to overload the browse encoder
 //! for seeking.
 

@@ -35,11 +35,13 @@
 //!
 //! FF/REW *hold* seeks inside the playing track. If *tap* moved the browser,
 //! one button's two gestures would act on two different objects — and
-//! `hardware.md` already rejected exactly that shape when it refused to
-//! overload the browse encoder for seeking: "puts a hidden mode on the most
-//! used control. Two dedicated buttons cost two spare pins and no mode."
-//! Browser-relative tap would put the mode back on the buttons bought to
-//! avoid it. **Settled by the user: a tap acts on the playing track's folder
+//! `controls.md` already rejected exactly that shape when it refused to
+//! overload the browse encoder for seeking: it "puts a hidden mode on the
+//! most-used control. Two dedicated buttons cost two pins and no mode." The
+//! pins were there to spend at the time and are not now — the tally has since
+//! closed at zero spare — so that is a cost already paid rather than slack
+//! still available. Browser-relative tap would put the mode back on the
+//! buttons bought to avoid it. **Settled by the user: a tap acts on the playing track's folder
 //! position.**
 //!
 //! # Neighbours are re-derived, never snapshotted

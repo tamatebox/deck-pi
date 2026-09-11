@@ -195,7 +195,7 @@ fn cue_while_paused_away_from_the_point_sets_it_and_makes_no_sound() {
 
 #[test]
 fn cue_during_a_held_seek_pauses_and_releasing_the_button_does_not_undo_it() {
-    // Back Cue while FF is held. `hardware.md` chooses this interpretation
+    // Back Cue while FF is held. `controls.md` chooses this interpretation
     // deliberately — "anything not paused counts as moving, and returning to
     // the point is the predictable answer" — and the CDJ-350 rule it inherits
     // is quoted in `decisions.md`: **"Back Cue pauses; it does not resume."**
@@ -242,7 +242,7 @@ fn play_pressed_during_a_held_seek_is_not_swallowed_by_the_release() {
     // The same staleness from the other side. PLAY during a held FF pauses
     // (the deck is not at rate zero, so the toggle pauses), and the release
     // used to restore `was_playing` and undo it — so the press did nothing at
-    // all. A control that sometimes does nothing is the thing `hardware.md`
+    // all. A control that sometimes does nothing is the thing `controls.md`
     // says is harder to trust than one that always does the same.
     let mut deck = deck();
     let mut d = Decoder::default();

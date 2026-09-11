@@ -17,9 +17,9 @@
 //! **PLAY held a little long would emit a hold and never a tap**, so the deck
 //! would not start. That is the failure shape a uniform rule buys.
 //!
-//! `hardware.md` fixes the two intervals and the gap between them: debounce is
-//! 30-50 ms and happens **in the kernel**, and the hold threshold is 300-500 ms
-//! and happens here. They must stay well clear of each other.
+//! `controls.md` fixes the two intervals and the gap between them: debounce is
+//! 30-50 ms and the hold threshold is 300-500 ms, and `implementation.md` is
+//! what says the debounce happens **in the kernel**; the threshold happens here. They must stay well clear of each other.
 //!
 //! # The clock is read here, not taken from the event
 //!
@@ -36,7 +36,7 @@
 
 use std::time::Duration;
 
-/// `hardware.md`: "the hold threshold (~300-500 ms) must sit well clear of the
+/// `controls.md`: "the hold threshold (~300-500 ms) must sit well clear of the
 /// 30-50 ms debounce interval". The middle of the range.
 pub const HOLD_AFTER: Duration = Duration::from_millis(400);
 
@@ -66,7 +66,7 @@ impl Button {
     /// The keycodes `config.txt` assigns, from `implementation.md`.
     ///
     /// **Verify these against `input-event-codes.h` on the actual image**
-    /// rather than trusting them here — `hardware.md` says so, and one wrong
+    /// rather than trusting them here — `implementation.md` says so, and one wrong
     /// number is a button that silently does nothing. `Cue` is `KEY_STOP`
     /// because Linux has no cue keycode; its three behaviours are all
     /// userspace interpretation of one code.
@@ -201,7 +201,7 @@ impl Decoder {
     ///
     /// **From the device, not from `config.txt`.** `EVIOCGABS` reports
     /// `minimum` and `maximum`, so nothing here depends on a line nobody has
-    /// run yet — which is the property `hardware.md` asks for and the reason
+    /// run yet — which is the property `implementation.md` asks for and the reason
     /// this is a setter rather than a constant.
     ///
     /// With the overlay's `rollover` parameter the driver wraps 23 to 0, and
@@ -264,7 +264,7 @@ impl Decoder {
             EV_KEY => self.key(now, ev, out),
             // The `rotary-encoder` overlay reports **either** a relative or an
             // absolute axis depending on its `relative` parameter, and
-            // `hardware.md` says to check the overlay's parameters on the
+            // `implementation.md` says to check the overlay's parameters on the
             // actual image rather than trusting a spelling written down here.
             // Both are handled, so the code does not depend on a line of
             // `config.txt` nobody has run yet.
@@ -807,7 +807,7 @@ mod tests {
 
     #[test]
     fn the_hold_threshold_sits_clear_of_the_kernel_debounce() {
-        // `hardware.md` fixes debounce at 30-50 ms and the hold threshold at
+        // `controls.md` fixes debounce at 30-50 ms and the hold threshold at
         // 300-500 ms, and says they must stay well clear of each other.
         assert!(HOLD_AFTER >= ms(300) && HOLD_AFTER <= ms(500));
         assert!(

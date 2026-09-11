@@ -494,7 +494,7 @@ impl Transport {
     ///
     /// `None` means "ask again next period", which is 2.9 ms at 44.1 kHz with
     /// 128-frame periods. A caller that cannot wait — `cue_down` must do
-    /// *something* with every press, because `hardware.md` refuses controls
+    /// *something* with every press, because `controls.md` refuses controls
     /// that sometimes do nothing — reads `position` directly and accepts a
     /// staleness bounded by one period against a 30-50 ms debounce.
     #[inline]

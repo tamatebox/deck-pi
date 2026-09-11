@@ -221,7 +221,7 @@ fn a_tap_steps_the_playing_folder_and_stops_at_its_end() {
 fn the_tap_follows_the_playing_track_not_the_selection() {
     // One button's two gestures must not address two objects — FF/REW's
     // *hold* seeks inside the playing track, so its *tap* has to act on the
-    // same track. `hardware.md` rejected the same shape when it refused to
+    // same track. `controls.md` rejected the same shape when it refused to
     // overload the browse encoder for seeking.
     let r = rig("deck-tap-object");
     r.track("a", "1-a-one", 2_000);
