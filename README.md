@@ -28,6 +28,11 @@ oscillator on every change, frame counts come back exact and no run underran. He
 a track proves the transport and nothing about the samples — `docs/implementation.md`
 says what does.
 
+A real stick works end to end the same day: plugged into any port it mounts read-only
+at the fixed path on its own, the browser lists it, and a track plays off it. Getting
+there needed one fix — the drafted udev rule matched nothing, for a reason worth
+reading before writing another one.
+
 Worth knowing before sizing anything: **192 kHz at a 1.33 ms period ran clean on the
 ordinary scheduler, with no realtime privileges** — and with nothing else on the
 machine. The realtime setup passes separately. Read that as a floor, not as a verdict
@@ -121,9 +126,13 @@ Rust, one process, one binary. libsndfile is a system library, found through
 
 ```sh
 brew install libsndfile pkg-config          # macOS
-sudo apt install libsndfile1-dev pkg-config # Debian / Raspberry Pi OS
+sudo apt install libsndfile1-dev libasound2-dev pkg-config build-essential # Debian / Raspberry Pi OS
 cargo test
 ```
+
+Setting up a Pi from a fresh image is more than this: the realtime limits and the
+stick's udev rule are separate steps, each with a re-login or a re-plug, and
+`docs/implementation.md` lists them in order under *First boot, in order*.
 
 **Linux/aarch64 is the gate, and a green macOS run proves nothing about the deck** —
 what compiles out on a Mac is precisely the hardware-facing half. Report the Linux

@@ -147,7 +147,7 @@ closed is the transferable part, it is in the prose below.
 | 4 | An unstated premise, true of the code and false of the hardware — or of its only caller and false of the deck | name the cardinality the code chose, where no document states one; for a catch-all, enumerate what it actually catches and ask of each whether it is a fault | `Device::wait` polled 1 of the 7 nodes `config.txt` creates — most buttons dead. And `app::audio::run`'s `other => Unexpected` arm, which caught `Outcome::Paused` and `Outcome::Seeking`: PAUSE would have killed the audio thread, invisible because the only caller was a CLI that plays one file and touches no control |
 | 5 | Correct only because something else chose to behave | ask what the code relies on the other side *choosing* to do | `wait` ignored `revents`; a hung-up fd spun 340,838 times in 200 ms, hidden because real evdev returns `ENODEV` |
 | 6 | Partial by physics | ask whether the job is as large as the problem | absolute-axis rollover folds correctly; the clamped case emits no event at all, so nothing is recoverable |
-| 7 | **Absence of a complaint read as evidence** | break the thing on purpose and confirm the check complains | a linter whose error went to stderr and whose silence was read as a pass; a symmetric null test; a race harness reaching `Overrun` 8.6M times and detecting nothing; a guard whose enforcement depended on **linkage** — an integration test that never touches the crate gets no `#[global_allocator]`, so every `assert_no_alloc` in it silently passes |
+| 7 | **Absence of a complaint read as evidence** | break the thing on purpose and confirm the check complains | a linter whose error went to stderr and whose silence was read as a pass; a symmetric null test; a race harness reaching `Overrun` 8.6M times and detecting nothing; a guard whose enforcement depended on **linkage** — an integration test that never touches the crate gets no `#[global_allocator]`, so every `assert_no_alloc` in it silently passes; and the stick's udev rule, which parsed, passed `udevadm verify`, was read by udev, and matched nothing — found only by instrumenting the guards with a marker property and watching how far it got |
 | 8 | True under a reading nobody would take | read your own sentence as a stranger, not as its author | "no code path stores this", written beside the constructor |
 | 9 | **A precondition the code states and nothing enforces** | grep doc comments for `must` and read the callers of each | `Transport::reached_end` says "it must be the control thread" and explains the hazard; the first thing that ever called it was the audio loop. Also `window::Command::Relocate`'s "whoever owns the app loop must send this", found unsent by the first app loop to hold the channel. And `Devices::read_pending`'s "a caller that gets a non-zero answer must reset its decoder", found with no caller at all — which is where the other two started |
 
@@ -325,10 +325,16 @@ header alone.
 ## Mounting the stick
 
 Nothing mounts removable media on a headless box: the kernel creates the block
-device and stops. `systemd-mount` is the documented answer, and its own man page
-gives a udev example, so the pattern is not improvised. It creates a transient
-`.mount` unit, which is what makes teardown on removal automatic — calling `mount`
-from `RUN=` instead would leave the mount unowned.
+device and stops. `systemd-mount` is the documented answer. It creates a
+transient `.mount` unit, which is what makes teardown on removal automatic — calling
+`mount` from `RUN=` instead would leave the mount unowned.
+
+Its own man page gives a udev example, and this file used to cite that as grounds for
+the pattern not being improvised. The example was followed; the **adaptation** was
+not checked, and that is where the defect below came from. Upstream's is a single
+line of positive matches; this one restructured it into negated guards with `GOTO`,
+and a positive parent-key match cannot be mechanically inverted into a negated one.
+Citing a source covers the part you copied, not the part you changed.
 
 Two udev properties exist precisely for what this build needs:
 
@@ -338,17 +344,22 @@ Two udev properties exist precisely for what this build needs:
 | `SYSTEMD_MOUNT_OPTIONS=` | the options, when `--options=` is not passed |
 
 So the fixed path and the per-filesystem options both come from udev, with nothing
-hand-rolled. Draft — **verify every spelling on the actual image**, the same caution
-`hardware.md` applies to overlay parameters. `/media/stick` and `uid=1000` are
-placeholders, chosen here and not decided anywhere —
+hand-rolled. This section carried **verify every spelling on the actual image** as a
+caution, the same one `hardware.md` applies to overlay parameters. It was run on
+2026-09-15 and it earned its keep: as drafted this rule parsed, passed
+`udevadm verify`, was read by udev, and mounted nothing at all. `/media/stick` and
+`uid=1000` remain placeholders, chosen here and not decided anywhere —
 [#11](https://github.com/tamatebox/deck-pi/issues/11):
 
 ```
 # /etc/udev/rules.d/99-deck-stick.rules
 ACTION!="add",                   GOTO="deck_end"
-SUBSYSTEMS!="usb",               GOTO="deck_end"
 SUBSYSTEM!="block",              GOTO="deck_end"
 ENV{ID_FS_USAGE}!="filesystem",  GOTO="deck_end"
+SUBSYSTEMS=="usb",               GOTO="deck_usb"
+GOTO="deck_end"
+
+LABEL="deck_usb"
 
 ENV{ID_FS_TYPE}=="exfat",   ENV{SYSTEMD_MOUNT_OPTIONS}="ro,nosuid,nodev,noexec,uid=1000,gid=1000,fmask=0133,dmask=0022,iocharset=utf8"
 ENV{ID_FS_TYPE}=="hfsplus", ENV{SYSTEMD_MOUNT_OPTIONS}="ro,nosuid,nodev,noexec,uid=1000,gid=1000,nls=utf8"
@@ -360,6 +371,31 @@ LABEL="deck_end"
 ```
 
 Why each piece:
+
+- **`SUBSYSTEMS=="usb"` positive, behind a double `GOTO`, and last of the four.**
+  `SUBSYSTEMS!="usb"` is what this rule had, and it silently matched nothing for the
+  reason in the next paragraph. The double `GOTO` is the only safe way to write "skip
+  unless" with a parent key — and it also makes the guard *structural*: a third
+  filesystem added below inherits it instead of needing it repeated, which repetition
+  would be forgotten and would fail silently. It sits last because it walks the whole
+  devpath, so let the three cheap non-walking guards reject first. `ENV{ID_BUS}!="usb"`
+  was considered and dropped: it is a property derived by a builtin that runs on the
+  whole disk and reaches the partition by parent import, from a file headed "do not
+  edit this file, it will be overwritten on update". It is not the fact meant here.
+  `SUBSYSTEMS` is the devpath itself, and is what upstream's example uses for exactly
+  this predicate.
+
+  **The semantics, read from `udev-rules.c` (v257.13) rather than inferred.** For the
+  parent-walking keys — `SUBSYSTEMS`, `ATTRS`, `DRIVERS`, `KERNELS` — the walk starts
+  at the event device itself (`event->dev_parent = ASSERT_PTR(event->dev)`) and
+  returns true at the first candidate whose token evaluates true, climbing only on
+  false. Negation is applied inside the token, per candidate:
+  `return token->op == (match ? OP_MATCH : OP_NOMATCH)`. So `!=` does **not** mean "no
+  ancestor matches" — it means "some device, counting the event device, does not
+  match", which is nearly always trivially true. `SUBSYSTEMS!="usb"` on a block device
+  is true at candidate one, because that device's own subsystem is `block`. The five
+  usb ancestors are never reached. `man 7 udev` documents the `!=` semantics for
+  `SYMLINK` and `TAG` and says nothing here.
 
 - **`ID_FS_TYPE` branching, not `-t auto`.** The two filesystems take different
   option names, so the type has to be known when the options are chosen. It also
@@ -375,8 +411,12 @@ Why each piece:
 
   **The presence test is still not existence**, though, and this bullet used to
   say it was. Whether the *directory* is there additionally depends on systemd
-  removing it on unmount, and a failed unit or a stray `mkdir` leaves it behind —
-  at which point an existence test reports a stick that is not there. `src/media.rs`
+  removing it on unmount — and it does not. **Measured 2026-09-15 on the first
+  physical removal**: the transient unit is gone, the failed-unit list is empty, the
+  block device is gone, and `/media/stick` is still there, empty and root-owned. This
+  bullet used to reach for a failed unit or a stray `mkdir` to explain the case; no
+  such exotic is needed, it is what ordinary removal does. At which point an existence
+  test reports a stick that is not there. `src/media.rs`
   compares the path's `st_dev` with its parent's instead: measured at 79 against 76
   mounted, 76 against 76 with the directory left behind. One extra `stat`, and the
   assumption goes away.
@@ -384,6 +424,14 @@ Why each piece:
   transient units do not accumulate and need `systemctl reset-failed`.
 - **Numeric uid.** Both drivers parse it with `fsparam_uid`; a username does not
   resolve in the kernel.
+- **Read an installed rules file back; do not trust the terminal's echo of the command
+  that wrote it.** Pasting this rule as a heredoc rendered the closing `EOF` merged
+  into the `LABEL=` line three times over, in a session where the file on disk was
+  correct every time. The risk is not a corrupted file, it is a corrupted *reading*:
+  a missing `LABEL=` makes every `GOTO` "has no matching label, ignoring", so the
+  guards vanish and a marker probe runs clean to the end — a pass indistinguishable
+  from a real one. `grep -c "^LABEL="` and `udevadm test | grep "no matching label"`
+  settle it in one line each.
 
 ### Mount options, from the drivers
 
@@ -619,6 +667,73 @@ costs, a saturation table and three usage regimes. All of it described a resampl
 created with a 1:1 ratio. The figures were internally consistent and arithmetically
 correct, which is exactly why checking them could not catch it — they were right
 about the wrong thing. `decisions.md` records the reversal.
+
+## First boot, in order
+
+Everything below exists somewhere in this file already. What did not exist, until a
+Pi was actually set up on 2026-09-15, is the *order* — and two of these steps need a
+re-login or a re-plug, which is expensive to discover late. Steps 2 to 5 are measured
+on a fresh Raspberry Pi OS Lite (64-bit) image; step 6 is not, because the isolator
+is not built yet.
+
+1. **The image.** Raspberry Pi OS Lite (64-bit) — `decisions.md` says why it is four
+   constraints rather than a preference. `/etc/rpi-issue` naming pi-gen `stage2` is
+   what makes "Lite" checkable.
+2. **Packages.** `alsa-sys` finds ALSA the same way `build.rs` finds libsndfile, and
+   a fresh image has neither, so verify both:
+
+   ```sh
+   sudo apt install -y build-essential pkg-config libsndfile1-dev libasound2-dev
+   pkg-config --modversion sndfile alsa
+   ```
+3. **Rust**, then build in the tree. Nothing here is cross-compiled; see
+   *Dependencies* for the libsndfile version pin that is load-bearing.
+
+   ```sh
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+   . "$HOME/.cargo/env"
+   cargo build --release
+   ```
+4. **Realtime limits.** Run the check first: it fails by *printing the two lines to
+   write*, so the tool is the source for them and this file does not carry a copy to
+   go stale. They apply **at login**, so log out and back in — not just re-run.
+
+   ```sh
+   ./target/release/deck-pi --rt-check            # fails, naming the two lines
+   sudo tee /etc/security/limits.d/99-deck-pi.conf >/dev/null   # paste them
+   exit                                            # then log back in
+   ./target/release/deck-pi --rt-check            # expect: rt-check: OK
+   ```
+
+   Skipping this step is the one failure here that is *silent*: all three calls fail
+   and an idle Pi plays fine anyway.
+5. **The stick's udev rule.** Paste the block from *Mounting the stick*. **Quote the
+   heredoc delimiter** — unquoted, the shell eats `$devnode` before udev ever sees it.
+   The rule matches `ACTION=="add"`, so reloading does not mount what is already
+   there; re-plug.
+
+   ```sh
+   sudo tee /etc/udev/rules.d/99-deck-stick.rules >/dev/null <<'EOF'
+   ...the rule from *Mounting the stick*...
+   EOF
+   grep -c '^LABEL=' /etc/udev/rules.d/99-deck-stick.rules   # expect 2, see below
+   udevadm verify /etc/udev/rules.d/99-deck-stick.rules
+   sudo udevadm control --reload
+   # re-plug the stick
+   findmnt /media/stick
+   ./target/release/deck-pi --media-check
+   ```
+
+   The `grep` is not ceremony. A terminal that mangles the closing `EOF` into the
+   `LABEL=` line leaves a file whose every `GOTO` is ignored — which reads as a pass.
+   `udevadm verify` does not catch it, because the file is still valid syntax.
+6. **`config.txt`.** With the Digi2 Pro mounted directly, the HAT EEPROM alone
+   enumerates the card and carries the oscillator-select GPIOs, so the overlay line
+   changes nothing. Fit the isolator and it becomes the only thing that works — see
+   *config.txt* below. Set it in step 1 and the question never arises.
+
+The kernel checklist above is the seventh item, and it is a checklist rather than a
+command because what it guards cannot be read back at runtime.
 
 ## The image's own configuration
 
