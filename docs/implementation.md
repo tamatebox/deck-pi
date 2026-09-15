@@ -72,17 +72,25 @@ Two more facts from the same source, both useful:
 Source: `sound/soc/codecs/wm8804.c`, `sound/soc/bcm/bcm2835-i2s.c` and
 `sound/soc/bcm/rpi-wm8804-soundcard.c` in <https://github.com/raspberrypi/linux>.
 Read from `rpi-6.18.y`. With **Raspberry Pi OS Lite (64-bit)** now the chosen base,
-whatever kernel that image ships will be older, so this stops being a general
+whatever kernel that image ships will usually be older, so this stops being a general
 caution and becomes a concrete first-boot task, alongside `alsacap` and
 `amixer -c N contents`:
 
 - confirm `WM8804_FORMATS` still excludes `S32_LE`
-- confirm the overlay still names `clock44-gpio` and `clock48-gpio`
+- confirm the overlay still names `clock44-gpio` and `clock48-gpio` — **answered
+  2026-09-15** on Raspberry Pi OS Lite (64-bit), kernel `6.18.50+rpt-rpi-v8`:
+  `/sys/kernel/debug/gpio` shows the driver holding GPIO 5 and 6 as `clock44` /
+  `clock48`, high on the 44.1 family and on the 48 family respectively, switched on
+  every rate change. That rests on the running kernel's own behaviour, not on the
+  image being close to what was read, and it reaches neither bullet beside it — both
+  are still unrun
 - confirm `snd_soc_dai_set_bclk_ratio(cpu_dai, 64)` still holds
 
 ## Testing it from both ends
 
-Two tests, and they check different halves. Neither is sufficient alone.
+Two tests, and they check different halves. Neither is sufficient alone — and
+listening is on neither list. A track that sounds right proves the transport reached
+a sink; no speaker reports a flipped bit.
 
 - **Null test — the software half.** Play a file, collect the buffers handed to
   ALSA, and check them against the source. This proves our read path, the ring
@@ -448,6 +456,11 @@ Measured in a Linux/aarch64 container, all four paths:
 | `--rt-check=2` | affinity reads back as `[2]` |
 | `--rt-check=999` | `sched_setaffinity` refused, `EINVAL` |
 
+On hardware — Pi 3B+, Raspberry Pi OS Lite (64-bit), the limits opened through
+`limits.d` rather than `--ulimit` — the third row reads back `SCHED_FIFO` 75 and
+`VmLck` **11,664 kB** (measured 2026-09-15). Both figures are real; the substrate is
+the difference, which is why the container one keeps its label.
+
 **Two corrections to what this section used to say.**
 
 **The heap does not need pre-faulting**, and saying it did invited code that
@@ -665,8 +678,14 @@ enable_uart=1
 gpu_mem=16
 ```
 
-Set the Digi2 Pro overlay explicitly rather than relying on HAT auto-detection —
-the ID EEPROM lines may not survive the isolator.
+Set the Digi2 Pro overlay explicitly rather than relying on HAT auto-detection. The
+ID EEPROM lines do not cross the isolator — J6 leaves physical pins 27 and 28
+unconnected, `hardware.md` on §E's J6 table — so at stage C the EEPROM is unreadable
+and the machine driver never binds. Mounted directly it is the other way round:
+measured 2026-09-15, the EEPROM alone enumerates the card *and* carries
+`clock44-gpio=5` / `clock48-gpio=6`, with the driver holding both and flipping them
+per rate. So the line is redundant until the isolator goes in and load-bearing after,
+which is also why `config.txt` does not change between stages B and C.
 
 `gpu_mem=16` reclaims ~50 MB on a headless box.
 

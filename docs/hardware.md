@@ -34,10 +34,16 @@ this file adds. §E's J6 table, transcribed:
 | 29, 31 | XO selection | "isolated GPIO5 and GPIO6" |
 | all others | **NC** | not connected |
 
-Two things fall out of the last row. **Physical pin 38 — GPIO 20, PCM_DIN — is NC**,
+Three things fall out of the last row. **Physical pin 38 — GPIO 20, PCM_DIN — is NC**,
 so it never reaches the audio card; it stays reserved because the Pi's own I2S
 interface claims it, which is a different connector's problem. And **J1 is wired
-directly to J6 pins 2 and 4**, so the clean supply can be fed at either.
+directly to J6 pins 2 and 4**, so the clean supply can be fed at either. And
+**physical pins 27 and 28 — GPIO 0 and 1, the HAT ID EEPROM — are NC**, so with the
+isolator fitted the Pi cannot read the Digi2 Pro's ID EEPROM at all: auto-detection
+works with the board mounted directly and stops at stage C, which is why `config.txt`
+names the overlay. This one was checked against the manual itself rather than against
+this table, because it rests on the catch-all row being *complete* — a transcription
+that had dropped a row would read identically.
 
 **J4 parallels the input connector pin-for-pin**, so the controls and display sit on
 the same forty conductors, on the near side of the gap. §J-3 is the rule that
@@ -348,7 +354,10 @@ low-speed velocity estimation breaks down. Plus a pitch fader, which needs an AD
 
 Counts and kinds, deliberately without part numbers: **a part you own is a fact; a
 part you might buy is a constraint.** `WM8804` and `CA-IS376x` are named throughout
-this file because they are on the bench; nothing below is.
+this file because the boards carrying them are already chosen, and this file's pin
+map and format scope are read out of *their* datasheets. Nothing below is chosen, and
+**what is on the bench on any given day is deliberately not recorded here** — a list
+of owned parts goes stale, which is the failure the rule above exists to prevent.
 
 | | n | GPIO | What the kind has to be |
 |---|---|---|---|

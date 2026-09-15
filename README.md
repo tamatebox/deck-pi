@@ -21,9 +21,19 @@ Ethernet cable can be out during a set.
 
 ## Status
 
-**Nothing has run on hardware.** The Pi and the boards are not assembled, so the
-ALSA sink has never opened a real device. Do not read "audio callback" or "ALSA sink"
-as "sound comes out".
+**The transport has run on hardware** — 2026-09-15, a Pi 3B+ with a Digi2 Pro
+mounted directly, no isolator. Real tracks play out of S/PDIF at every rate in scope:
+the device is opened at each track's own rate, the driver selects the right
+oscillator on every change, frame counts come back exact and no run underran. Hearing
+a track proves the transport and nothing about the samples — `docs/implementation.md`
+says what does.
+
+Worth knowing before sizing anything: **192 kHz at a 1.33 ms period ran clean on the
+ordinary scheduler, with no realtime privileges** — and with nothing else on the
+machine. The realtime setup passes separately. Read that as a floor, not as a verdict
+on either: the display, the browser, media watch and the input loop were not running,
+and `docs/implementation.md` is blunt that an idle desk plays fine with all three
+realtime calls failing.
 
 The v1 read path is built and tested — FFI, format vetting, the locked ring, the
 window thread, the transport, the callback, the ALSA sink, the realtime setup, the
