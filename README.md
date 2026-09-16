@@ -33,6 +33,12 @@ at the fixed path on its own, the browser lists it, and a track plays off it. Ge
 there needed one fix — the drafted udev rule matched nothing, for a reason worth
 reading before writing another one.
 
+The Pico's firmware **enumerates on the Pi and declares the right things**: the
+kernel registers keycodes 28, 128, 158, 164, 168 and 208 — exactly the six
+`src/input.rs` matches — and a relative `REL_X` for the detents. That is the
+declaration, read back from the kernel's own capability bitmaps. **No switch has
+been wired to it yet**, so nothing has been pressed and no detent has been turned.
+
 Worth knowing before sizing anything: **192 kHz at a 1.33 ms period ran clean on the
 ordinary scheduler, with no realtime privileges** — and with nothing else on the
 machine. The realtime setup passes separately. Read that as a floor, not as a verdict
@@ -125,18 +131,59 @@ work at high rates is a container choice, not a limit.
 
 ## Building and running it
 
-Rust, one process, one binary. libsndfile is a system library, found through
-`pkg-config`:
+**Two binaries, on two machines, built differently.** The deck is `src/`, a hosted
+Rust binary on the Pi. The control surface is `firmware/`, a `no_std` binary on a
+Pico 2 H. They share no code and need different toolchains, so they are separated
+below rather than left to be sorted out per command.
+
+### A development machine — macOS or Linux
+
+Everything except the hardware-facing half compiles and tests here.
 
 ```sh
-brew install libsndfile pkg-config          # macOS
-sudo apt install libsndfile1-dev libasound2-dev pkg-config build-essential # Debian / Raspberry Pi OS
+brew install libsndfile pkg-config      # macOS; on Debian see the Pi block below
 cargo test
 ```
 
-Setting up a Pi from a fresh image is more than this: the realtime limits and the
-stick's udev rule are separate steps, each with a re-login or a re-plug, and
-`docs/implementation.md` lists them in order under *First boot, in order*.
+### The Pi — the deck
+
+libsndfile and ALSA are both system libraries found through `pkg-config`, and a
+fresh Raspberry Pi OS Lite image has neither.
+
+```sh
+sudo apt install -y build-essential pkg-config libsndfile1-dev libasound2-dev
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+. "$HOME/.cargo/env"
+cargo build --release
+```
+
+**That is the build, not the setup.** A fresh image also needs the realtime limits
+and the stick's udev rule, which take effect only after a re-login and a re-plug
+respectively — `docs/implementation.md`, *First boot, in order*, has them in the
+order that avoids discovering that late.
+
+### The Pico — the control surface
+
+Cross-compiled; nothing about it is hosted, and it never runs on the Pi.
+
+```sh
+rustup target add thumbv8m.main-none-eabihf   # RP2350 is a Cortex-M33
+cd firmware && cargo build --release
+```
+
+Flashing needs `picotool` on **whichever machine the Pico is plugged into**, which
+during bring-up is the Pi rather than the development machine:
+
+```sh
+sudo apt install -y picotool                  # on the Pi
+brew install picotool                         # on macOS
+sudo picotool load -x target/thumbv8m.main-none-eabihf/release/deck-pico
+```
+
+Hold BOOTSEL while plugging the Pico in, or it is already running and will not
+accept a load. `picotool` takes the ELF directly, so there is no UF2 step —
+worth knowing because the common UF2 tooling still tags images with the RP2040
+family id, which an RP2350 will not accept.
 
 **Linux/aarch64 is the gate, and a green macOS run proves nothing about the deck** —
 what compiles out on a Mac is precisely the hardware-facing half. Report the Linux
@@ -196,6 +243,7 @@ plays bit-perfect without pitch rather than not playing.
 | [architecture.md](docs/architecture.md) | Format scope, playback model, program shape, v2 |
 | [implementation.md](docs/implementation.md) | ALSA specifics, FFI, realtime setup, `config.txt` |
 | [decisions.md](docs/decisions.md) | Why each choice went as it did, and which were **reversed** |
+| [firmware/src/main.rs](firmware/src/main.rs) | The Pico's side, documented where it is written: the pinout, and which HID usage each control sends |
 
 Open questions are [GitHub issues](https://github.com/tamatebox/deck-pi/issues).
 Read `decisions.md` before revisiting a design choice: several were reversed and the
