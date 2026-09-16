@@ -858,11 +858,27 @@ collision is resolved by udev rather than by anything this project controls, whi
 node wins need not be stable across reboots or re-plugs — which would make the same
 build work some mornings and not others.
 
-The way out is not a better path but a different question. `event2` carries
-`ID_INPUT_KEY=1` and `event3` does not, and each node's capability bitmaps say
-exactly what it emits — so select on **what a node can send**, reading
-`/sys/class/input/*/device/capabilities/`, rather than on where udev decided to put a
-name. That also survives the firmware growing a third collection.
+The way out is not a better path but a different question — **two questions, and
+getting that wrong is the second half of this entry.**
+
+The first cut at `discover()` asked only what a node can send, on the reasoning that
+capability is a fact about the device while a symlink is a fact about udev. It found
+the two Pico nodes correctly and **also found `vc4-hdmi`**, which is the HDMI CEC
+remote: it declares hundreds of keycodes including all six of the deck's, and `REL_X`
+alongside them. A deck built that way would take orders from the television. Measured
+2026-09-16, on the first run of `--input-check`, which is the entire reason that mode
+was written before anything depended on it.
+
+So: **identity first, capability second.** Which nodes are *ours* is answered by
+`EVIOCGNAME` against `input::PRODUCT`, the product string `firmware/src/main.rs`
+presents — the two ends name each other, and changing it in one place stops the deck
+finding its controls. Only then does capability sort the nodes that are already ours:
+`EVIOCGBIT` says which carries the buttons and which the detents, which survives the
+firmware growing a third collection and needs no sysfs path.
+
+The ioctls reuse `ioc_read`, already in `src/input.rs` for `EVIOCGABS`:
+`EVIOCGNAME(len)` is `_IOC(_IOC_READ, 'E', 0x06, len)` and `EVIOCGBIT(ev, len)` is
+`_IOC(_IOC_READ, 'E', 0x20 + ev, len)`.
 
 Standard Linux input codes, so `/dev/input` events read as what they mean.
 Decode encoders and debounce buttons **off the deck's CPU** — in the Pico's firmware

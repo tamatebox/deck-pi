@@ -159,6 +159,49 @@ pub const EV_REL: u16 = 0x02;
 pub const EV_ABS: u16 = 0x03;
 pub const REL_X: u16 = 0x00;
 pub const ABS_X: u16 = 0x00;
+/// The USB product string the deck's own firmware presents, and the thing that
+/// says a node is **ours**.
+///
+/// `firmware/src/main.rs` sets it; the kernel builds each input device's name
+/// from the manufacturer, this, and the collection — so the buttons arrive as
+/// `deck-pi deck-pi control surface Consumer Control`. **Change it in one
+/// place and the deck stops finding its controls**, which is why both ends
+/// name the other.
+pub const PRODUCT: &str = "deck-pi control surface";
+
+/// What a node can emit. Asked of the node itself, never inferred from its
+/// name or from where udev put a symlink.
+///
+/// **Both halves of the control surface are one USB interface**, so `by-id`
+/// and `by-path` name one of the two nodes and not the other — measured
+/// 2026-09-16, with all three symlinks resolving to the encoder. A build that
+/// opened the stable path would get detents and six silently dead buttons.
+/// `implementation.md` has the measurement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Carries {
+    /// At least one of the six keycodes `Button::from_keycode` matches.
+    pub buttons: bool,
+    /// A relative X axis — the browse detents.
+    pub detents: bool,
+}
+
+impl Carries {
+    pub fn anything(self) -> bool {
+        self.buttons || self.detents
+    }
+}
+
+/// Tests one bit of an `EVIOCGBIT` result, which is a flat bitmap indexed by
+/// event code. Out of range reads as unset rather than panicking: a short
+/// answer from the kernel means the node does not have that code, which is
+/// the same thing.
+pub fn has_code(bitmap: &[u8], code: u16) -> bool {
+    let code = code as usize;
+    bitmap
+        .get(code / 8)
+        .is_some_and(|byte| byte >> (code % 8) & 1 == 1)
+}
+
 /// `SYN_DROPPED` — the kernel telling us it threw events away.
 ///
 /// evdev buffers 64 events per client and **drops the whole queue** when a
@@ -491,6 +534,10 @@ mod device {
     /// One `/dev/input/eventN`.
     pub struct Device {
         file: File,
+        /// Kept so rediscovery can tell an already-open node from a new one.
+        /// Node numbers are reused, so this is an identity only while the
+        /// descriptor is open — which is exactly as long as it is used for.
+        path: std::path::PathBuf,
         /// Sized for a burst; a partial event at the end is carried over,
         /// because a `read` is not guaranteed to stop on a struct boundary.
         buf: Vec<u8>,
@@ -501,9 +548,61 @@ mod device {
         pub fn open(path: &Path) -> std::io::Result<Device> {
             Ok(Device {
                 file: File::open(path)?,
+                path: path.to_path_buf(),
                 buf: vec![0u8; EVENT_LEN * 64],
                 held: 0,
             })
+        }
+
+        pub fn path(&self) -> &Path {
+            &self.path
+        }
+
+        /// The device's name, as `EVIOCGNAME` reports it.
+        ///
+        /// `None` when the ioctl fails or the answer is not UTF-8, both of
+        /// which mean "not a node to take seriously" here rather than an
+        /// error worth propagating.
+        pub fn name(&self) -> Option<String> {
+            let mut buf = [0u8; 256];
+            let req = ioc_read(b'E', 0x06, buf.len());
+            // SAFETY: an open descriptor this struct owns, and a buffer whose
+            // size is the one encoded in the request.
+            let rc = unsafe { libc::ioctl(self.file.as_raw_fd(), req as _, buf.as_mut_ptr()) };
+            if rc <= 0 {
+                return None;
+            }
+            let bytes = &buf[..(rc as usize).min(buf.len())];
+            let bytes = bytes.split(|b| *b == 0).next().unwrap_or(bytes);
+            std::str::from_utf8(bytes).ok().map(str::to_owned)
+        }
+
+        /// Asks the node what it can emit, with `EVIOCGBIT`.
+        ///
+        /// The same `ioc_read` that `abs_range` uses: `EVIOCGBIT(ev, len)` is
+        /// `_IOC(_IOC_READ, 'E', 0x20 + ev, len)`. A failed ioctl is reported
+        /// as "carries nothing" rather than as an error, because the caller is
+        /// sorting a directory and a node that will not answer is a node to
+        /// skip.
+        pub fn carries(&self) -> Carries {
+            // `KEY_CNT` is 0x300 and `REL_CNT` 0x10, so 96 and 2 bytes.
+            let mut keys = [0u8; 96];
+            let mut rels = [0u8; 2];
+            let key_req = ioc_read(b'E', 0x20 + EV_KEY as u8, keys.len());
+            let rel_req = ioc_read(b'E', 0x20 + EV_REL as u8, rels.len());
+            let fd = self.file.as_raw_fd();
+            // SAFETY: an open descriptor this struct owns, and buffers whose
+            // sizes are the ones encoded in the requests.
+            let (key_rc, rel_rc) = unsafe {
+                (
+                    libc::ioctl(fd, key_req as _, keys.as_mut_ptr()),
+                    libc::ioctl(fd, rel_req as _, rels.as_mut_ptr()),
+                )
+            };
+            Carries {
+                buttons: key_rc >= 0 && Button::ALL.iter().any(|b| has_code(&keys, b.keycode())),
+                detents: rel_rc >= 0 && has_code(&rels, REL_X),
+            }
         }
 
         pub(super) fn raw_fd(&self) -> std::os::fd::RawFd {
@@ -560,21 +659,59 @@ mod device {
         }
     }
 
+    /// Every node that carries part of the control surface, found by asking
+    /// each one what it emits.
+    ///
+    /// A node that will not open is skipped rather than reported: `/dev/input`
+    /// holds nodes this process has no business with, and on this deck two of
+    /// them are the HDMI and headphone jacks.
+    ///
+    /// **Capability alone is not enough, and finding that out cost nothing
+    /// only because this mode existed.** `vc4-hdmi` — the HDMI CEC remote — 
+    /// declares hundreds of keycodes including all six of the deck's, and
+    /// `REL_X` with it. Selecting on what a node *can send* would hand the
+    /// deck to whatever television it is plugged into. So identity comes
+    /// first, by [`PRODUCT`], and capability only sorts the nodes that are
+    /// already ours: which of them carries the buttons and which the detents.
+    pub fn discover() -> std::io::Result<Vec<std::path::PathBuf>> {
+        let mut found = Vec::new();
+        for entry in std::fs::read_dir("/dev/input")? {
+            let path = entry?.path();
+            let is_event = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("event"));
+            if !is_event {
+                continue;
+            }
+            if let Ok(dev) = Device::open(&path) {
+                let ours = dev.name().is_some_and(|n| n.contains(PRODUCT));
+                if ours && dev.carries().anything() {
+                    found.push(path);
+                }
+            }
+        }
+        // `read_dir` order is the filesystem's. Sorted so two runs on an
+        // unchanged machine open the same nodes in the same order, which is
+        // the difference between a reproducible bug and a haunted one.
+        found.sort();
+        Ok(found)
+    }
+
     /// Every input node the deck listens to, polled together.
     ///
-    /// **There are seven of them, not one.** `implementation.md`'s `config.txt`
-    /// declares one `gpio-key` overlay instance per button and each instance
-    /// creates its **own** `gpio-keys` device node; the rotary encoder adds
-    /// another. A single-descriptor `poll` therefore hears one button and is
-    /// deaf to the rest — and waiting on them in turn is worse than it
-    /// sounds, because each wait would spend the full timeout before the next
-    /// got a look in, so the round trip would be seven times the poll
-    /// interval and `Decoder::tick` would run that much later.
+    /// **More than one, and how many is not fixed.** The control surface is a
+    /// single USB device presenting two application collections, so the kernel
+    /// makes two nodes: the buttons on one, the detents on the other. A
+    /// single-descriptor `poll` hears half the controls — and waiting on them
+    /// in turn would be worse than it sounds, because each wait would spend
+    /// the full timeout before the next got a look in, so the round trip would
+    /// be a multiple of the poll interval and `Decoder::tick` would run that
+    /// much later.
     ///
-    /// The count is a consequence of the overlay's shape rather than a
-    /// decision, which is why nothing in `architecture.md`'s Input row
-    /// mentions it: the row says the module reads `/dev/input` and emits
-    /// keycodes, and one node per keycode was never stated either way.
+    /// The count belongs to the firmware's descriptor rather than to any
+    /// decision here, which is why nothing in `architecture.md`'s Input row
+    /// mentions it, and why [`discover`] asks rather than counts.
     pub struct Devices {
         devices: Vec<Device>,
         /// Parallel to `devices`, rebuilt on every `wait`.
@@ -594,6 +731,58 @@ mod device {
                 polls: Vec::with_capacity(devices.len()),
                 devices,
             })
+        }
+
+        /// Opens whatever [`discover`] finds.
+        ///
+        /// Unlike [`Devices::open`] this is not an error when it finds
+        /// nothing: a deck whose control surface is unplugged should start and
+        /// say so, not refuse to start. Ask [`Devices::carries`] what turned up.
+        pub fn open_discovered() -> std::io::Result<Devices> {
+            Self::open(&discover()?)
+        }
+
+        /// Re-runs discovery and opens anything not already open, returning
+        /// how many were added.
+        ///
+        /// **This is the difference between a USB control surface and a
+        /// soldered one.** An overlay's node exists from boot and a vanishing
+        /// one really is a fault, so `read_pending` dropping a lost device was
+        /// the whole story. A USB device vanishing is ordinary — a replug, a
+        /// bus reset, a knocked cable — and without this the deck plays on
+        /// with every control dead and nothing logged.
+        pub fn rediscover(&mut self) -> std::io::Result<usize> {
+            let mut added = 0;
+            for path in discover()? {
+                if self.devices.iter().any(|d| d.path() == path) {
+                    continue;
+                }
+                // Lost between the scan and the open: it will be found next
+                // time round rather than failing the whole sweep.
+                if let Ok(dev) = Device::open(&path) {
+                    self.devices.push(dev);
+                    added += 1;
+                }
+            }
+            if added > 0 {
+                self.polls.clear();
+            }
+            Ok(added)
+        }
+
+        /// What the open nodes can emit between them, so a caller can say
+        /// *which* half of the control surface is missing rather than only
+        /// that something is.
+        pub fn carries(&self) -> Carries {
+            self.devices
+                .iter()
+                .fold(Carries::default(), |acc, d| {
+                    let c = d.carries();
+                    Carries {
+                        buttons: acc.buttons || c.buttons,
+                        detents: acc.detents || c.detents,
+                    }
+                })
         }
 
         pub fn len(&self) -> usize {
@@ -693,11 +882,46 @@ mod device {
 }
 
 #[cfg(target_os = "linux")]
-pub use device::{parse_event, Device, Devices, EVENT_LEN};
+pub use device::{discover, parse_event, Device, Devices, EVENT_LEN};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `EVIOCGBIT` answers with a flat bitmap indexed by event code, and a
+    /// short answer means the codes past the end are absent rather than that
+    /// something went wrong. Both halves are asserted because an out-of-range
+    /// read that panicked would take the deck down while it was looking at an
+    /// unrelated node in `/dev/input`.
+    #[test]
+    fn a_capability_bitmap_is_read_by_code_and_is_short_rather_than_wrong() {
+        // bit 0 and bit 9 of a two-byte map: codes 0 and 9.
+        let map = [0b0000_0001u8, 0b0000_0010u8];
+        assert!(has_code(&map, 0));
+        assert!(!has_code(&map, 1));
+        assert!(has_code(&map, 9));
+        assert!(!has_code(&map, 8));
+        // Past the end, and far past it.
+        assert!(!has_code(&map, 16));
+        assert!(!has_code(&map, u16::MAX));
+        assert!(!has_code(&[], 0));
+    }
+
+    /// The six the deck matches all sit inside a 96-byte `KEY_CNT` map, which
+    /// is the size `Device::carries` asks for. A seventh control added past
+    /// `KEY_MAX` would read as absent, silently, so the bound is asserted
+    /// rather than assumed.
+    #[test]
+    fn every_button_keycode_fits_the_map_carries_asks_for() {
+        for b in Button::ALL {
+            assert!(
+                (b.keycode() as usize) < 96 * 8,
+                "{:?} at {} is outside the bitmap",
+                b,
+                b.keycode()
+            );
+        }
+    }
 
     fn key(code: u16, value: i32) -> RawEvent {
         RawEvent {

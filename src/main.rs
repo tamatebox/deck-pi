@@ -30,6 +30,7 @@ enum Mode {
     Device(String),
     RtCheck(Option<usize>),
     MediaCheck(PathBuf),
+    InputCheck,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -52,6 +53,7 @@ fn parse<I: IntoIterator<Item = std::ffi::OsString>>(argv: I) -> Result<Args, St
     let mut device = None;
     let mut rt_check = None;
     let mut media_check = None;
+    let mut input_check = false;
     let mut only_paths = false;
 
     // **A flag given twice is an error, not the last one winning.** Refusing
@@ -94,6 +96,12 @@ fn parse<I: IntoIterator<Item = std::ffi::OsString>>(argv: I) -> Result<Args, St
                 drain = true;
             }
             "--rt-check" => once(&mut rt_check, "--rt-check", None)?,
+            "--input-check" => {
+                if input_check {
+                    return Err("--input-check given twice".into());
+                }
+                input_check = true;
+            }
             "--media-check" => once(
                 &mut media_check,
                 "--media-check",
@@ -129,17 +137,23 @@ fn parse<I: IntoIterator<Item = std::ffi::OsString>>(argv: I) -> Result<Args, St
     // The two check modes take over the whole run, so anything else on the
     // line was ignored — which used to happen in silence.
     let extras = drain || device.is_some() || !paths.is_empty();
-    match (rt_check, media_check) {
-        (Some(_), Some(_)) => Err("--rt-check and --media-check are separate runs".into()),
-        (Some(_), None) if extras => {
+    match (rt_check, media_check, input_check) {
+        (Some(_), Some(_), _) | (Some(_), None, true) | (None, Some(_), true) => {
+            Err("the check modes are separate runs; pick one".into())
+        }
+        (Some(_), None, false) if extras => {
             Err("--rt-check takes nothing else; it is a check, not a mode".into())
         }
-        (None, Some(_)) if extras => {
+        (None, Some(_), false) if extras => {
             Err("--media-check takes nothing else; it is a check, not a mode".into())
         }
-        (Some(cpu), None) => Ok(Args { mode: Mode::RtCheck(cpu), paths }),
-        (None, Some(at)) => Ok(Args { mode: Mode::MediaCheck(at), paths }),
-        (None, None) => playback(drain, device, paths),
+        (None, None, true) if extras => {
+            Err("--input-check takes nothing else; it is a check, not a mode".into())
+        }
+        (Some(cpu), None, false) => Ok(Args { mode: Mode::RtCheck(cpu), paths }),
+        (None, Some(at), false) => Ok(Args { mode: Mode::MediaCheck(at), paths }),
+        (None, None, true) => Ok(Args { mode: Mode::InputCheck, paths }),
+        (None, None, false) => playback(drain, device, paths),
     }
 }
 
@@ -174,6 +188,9 @@ fn usage() {
     eprintln!("                   (Linux only; hw: devices only, never plughw)");
     eprintln!("  --media-check[=P] reports the medium's state at P, and lists the root");
     eprintln!("                   folder through the browser if it is browsable");
+    eprintln!("  --input-check    finds the control surface by asking each node what");
+    eprintln!("                   it emits, then prints what the deck makes of every");
+    eprintln!("                   press and detent until interrupted (Linux only)");
     eprintln!("  --rt-check[=N]   applies the realtime setup and reads back what the");
     eprintln!("                   kernel actually granted; =N also pins to core N");
     eprintln!("                   (Linux only)");
@@ -196,6 +213,7 @@ fn main() {
     match args.mode {
         Mode::MediaCheck(at) => std::process::exit(media_check(&at)),
         Mode::RtCheck(cpu) => std::process::exit(rt_check(cpu)),
+        Mode::InputCheck => std::process::exit(input_check()),
         _ => {}
     }
 
@@ -437,6 +455,118 @@ fn play_to_device(_path: &std::path::Path, device: &str) -> bool {
 ///
 /// Prints the limits first even when the setup succeeds, because "it worked"
 /// and "it worked because this user is root" are different answers.
+/// Finds the control surface, says what it found, and then says what the deck
+/// makes of every press and turn.
+///
+/// The discovery half is the part worth having. Both halves of the surface are
+/// one USB interface, so `by-id` and `by-path` name one node and not the other
+/// — a build that trusted the stable path would get the detents and six
+/// silently dead buttons. This asks each node what it emits instead.
+#[cfg(target_os = "linux")]
+fn input_check() -> i32 {
+    use deck_pi::input::{Action, Decoder, Devices};
+    use std::time::{Duration, Instant};
+
+    let found = match deck_pi::input::discover() {
+        Ok(f) => f,
+        Err(e) => {
+            println!("discovery: {}", e);
+            return 1;
+        }
+    };
+    if found.is_empty() {
+        println!("no control surface: nothing under /dev/input emits what the deck reads");
+        return 1;
+    }
+    for path in &found {
+        let what = match deck_pi::input::Device::open(path) {
+            Ok(d) => {
+                let c = d.carries();
+                match (c.buttons, c.detents) {
+                    (true, true) => "buttons and detents".to_string(),
+                    (true, false) => "buttons".to_string(),
+                    (false, true) => "detents".to_string(),
+                    (false, false) => "nothing".to_string(),
+                }
+            }
+            Err(e) => format!("could not reopen — {}", e),
+        };
+        println!("  {}  {}", path.display(), what);
+    }
+
+    let mut devices = match Devices::open(&found) {
+        Ok(d) => d,
+        Err(e) => {
+            println!("open: {}", e);
+            return 1;
+        }
+    };
+    let carries = devices.carries();
+    println!(
+        "surface: {} node(s), buttons {}, detents {}",
+        devices.len(),
+        if carries.buttons { "yes" } else { "NO" },
+        if carries.detents { "yes" } else { "NO" }
+    );
+    // Half a control surface is the failure this whole mode exists to make
+    // loud, so it is said plainly rather than left to be read off the table.
+    if !carries.buttons || !carries.detents {
+        println!("  incomplete — half of the surface is missing, and the deck would not say so");
+    }
+
+    println!("press something; ^C to stop");
+    let start = Instant::now();
+    let mut decoder = Decoder::new(deck_pi::input::HOLD_AFTER);
+    let mut actions = Vec::new();
+    let mut events = Vec::new();
+    loop {
+        let now = start.elapsed();
+        match devices.wait(Duration::from_millis(20)) {
+            Ok(_) => {}
+            Err(e) => {
+                println!("wait: {}", e);
+                return 1;
+            }
+        }
+        events.clear();
+        match devices.read_pending(&mut events) {
+            Ok(0) => {}
+            Ok(lost) => {
+                // A node went away. On a soldered header that is a fault; on
+                // USB it is a replug, so say it and look again rather than
+                // carrying on deaf.
+                println!("  lost {} node(s) — rediscovering", lost);
+                decoder.reset(&mut actions);
+                match devices.rediscover() {
+                    Ok(0) => println!("  nothing back yet"),
+                    Ok(n) => println!("  reopened {} node(s)", n),
+                    Err(e) => println!("  rediscover: {}", e),
+                }
+            }
+            Err(e) => {
+                println!("read: {}", e);
+                return 1;
+            }
+        }
+        for ev in &events {
+            decoder.feed(now, *ev, &mut actions);
+        }
+        decoder.tick(now, &mut actions);
+        for a in actions.drain(..) {
+            match a {
+                Action::Browse(n) => println!("  {:>8.3}  browse {:+}", now.as_secs_f64(), n),
+                other => println!("  {:>8.3}  {:?}", now.as_secs_f64(), other),
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn input_check() -> i32 {
+    println!("--input-check reads /dev/input, which is Linux only");
+    1
+}
+
 fn rt_check(cpu: Option<usize>) -> i32 {
     match rt::limits() {
         Ok(lim) => {
