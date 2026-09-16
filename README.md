@@ -77,11 +77,13 @@ rather than on PLAY. Nothing surprises you mid-set.
 | HiFiBerry Digi2 Pro | WM8804, dual-domain clock, no volume control by design |
 | IsolatorPi III | 5 kV galvanic isolation, master-mode capable |
 | Clean 5 V supply | under 200 mA, feeds the isolated side via J1 |
+| Pico 2 H | carries the buttons, the browse encoder and the panel; reaches the Pi over USB |
 
 The Digi2 Pro carries separate oscillators for the 44.1 and 48 kHz families and runs
 as clock master, so both come out of an exact crystal rather than the Pi's fractional
-PLL. The isolator keeps the Pi's ground noise off the audio boards and gives the
-controls a non-isolated header of their own. The 3B+ soft-throttles to 1.2 GHz at
+PLL. The isolator keeps the Pi's ground noise off the audio boards. It also offers the
+controls a non-isolated header of their own, which this build no longer needs: they
+are on the Pico. The 3B+ soft-throttles to 1.2 GHz at
 60 °C by design, and a deck runs a continuous load inside a box, so the headline
 clock is a sprint clock.
 
@@ -96,11 +98,13 @@ REW — hold to seek, tap to change track. ENTER is the encoder's push. The disp
 shows the browser, the transport, and the rate and depth actually in use, which is
 how you confirm the chain is doing what it claims.
 
-**Seven switches, two encoders and a fader, and the header is then full**, the v2
-unity button being the seventh. The panel is an SPI colour TFT. Seeking is silent in
-v1: an audible scan needs the resampler, which would give v1 a second mode. Encoders
-and buttons are decoded in the kernel through device-tree overlays, never polled from
-userspace.
+Seven switches, two encoders and a fader, the v2 unity button being the seventh.
+**None of them is on the Pi.** They hang off a Pico 2 H which reaches the Pi as a USB
+device, so the deck reads the same `/dev/input` keycodes it always did and the Pi's
+header carries nothing but audio. The panel went the same way, with the deck still
+doing the drawing and shipping pixels over the link. Seeking is silent in v1: an
+audible scan needs the resampler, which would give v1 a second mode. Buttons are
+debounced and detents decoded on the Pico, never polled from userspace.
 
 ## Track length
 

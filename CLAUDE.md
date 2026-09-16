@@ -5,9 +5,11 @@ off removable USB media, read-only, no import step, no database, out over I2S to
 HiFiBerry Digi2 Pro through an IsolatorPi III, S/PDIF to an external DAC. One Pi is
 one deck. Network-independent; Ethernet is maintenance only.
 
-**Rust, one process** — engine, browser and display. **There is no Python in this
-project at all.** Preparing a stick is done elsewhere with `sox` or `ffmpeg`; the
-deck's only obligation is to say *why* a file will not play.
+**Rust, one process on the Pi** — engine, browser and display. The buttons, the
+browse encoder and the panel hang off a Pico 2 H that reaches the Pi over USB; its
+firmware is Rust too, so **there is no Python in this project at all.** Preparing a
+stick is done elsewhere with `sox` or `ffmpeg`; the deck's only obligation is to say
+*why* a file will not play.
 
 ## Invariants
 

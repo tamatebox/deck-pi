@@ -804,31 +804,50 @@ which is also why `config.txt` does not change between stages B and C.
 
 `gpu_mem=16` reclaims ~50 MB on a headless box.
 
-Button and encoder overlays are one instance per device; check parameter names
-with `dtoverlay -h gpio-key` and `dtoverlay -h rotary-encoder` on the actual
-image before trusting the spelling.
+**No `gpio-key` or `rotary-encoder` overlays.** `decisions.md` moved the buttons and
+the browse encoder onto a Pico 2 H that reaches the Pi over USB, so `config.txt` says
+nothing about controls at all. This file carried six `gpio-key` lines until
+2026-09-15 and **installing them now would be worse than stale**: each creates a live
+device node, `Devices::open` opens all of them, `wait` polls all of them, and not one
+ever fires — a deck that starts clean, reports nothing wrong, and has no working
+controls. The overlays are gone rather than commented out for that reason.
 
-```ini
-dtoverlay=gpio-key,gpio=23,keycode=158,label=BACK
-dtoverlay=gpio-key,gpio=24,keycode=164,label=PLAYPAUSE
-dtoverlay=gpio-key,gpio=25,keycode=128,label=CUE
-dtoverlay=gpio-key,gpio=22,keycode=28,label=ENTER
-dtoverlay=gpio-key,gpio=16,keycode=168,label=REW
-dtoverlay=gpio-key,gpio=26,keycode=208,label=FF
-```
+What survives is the **keycode contract**, because `src/input.rs` matches on these and
+on nothing else:
 
-168 and 208 are `KEY_REWIND` and `KEY_FASTFORWARD` — the *held* meaning, since one
-pin carries one keycode and the tap meaning is a userspace interpretation. 128 is
-`KEY_STOP`, standing in for CUE because Linux has no cue keycode; the button's
-three behaviours are all userspace interpretation of one keycode.
-`KEY_PREVIOUSSONG` (165) and `KEY_NEXTSONG` (163) exist if the two meanings are
-ever split onto separate buttons. **Read all of these off `input-event-codes.h` on
-the actual image** rather than trusting the numbers here — the same caution as the
-overlay parameter names above.
+| Control | Keycode | |
+|---|---|---|
+| BACK | 158 | `KEY_BACK` |
+| PLAY / PAUSE | 164 | `KEY_PLAYPAUSE` |
+| CUE | 128 | `KEY_STOP` |
+| ENTER — the encoder's push | 28 | `KEY_ENTER` |
+| REW | 168 | `KEY_REWIND` |
+| FF | 208 | `KEY_FASTFORWARD` |
+
+Browse detents arrive separately, as `EV_REL` on `REL_X`, one unit per detent.
+
+168 and 208 are the *held* meaning, since one control carries one keycode and the tap
+meaning is a userspace interpretation. 128 is `KEY_STOP`, standing in for CUE because
+Linux has no cue keycode; the button's three behaviours are all userspace
+interpretation of one keycode. `KEY_PREVIOUSSONG` (165) and `KEY_NEXTSONG` (163)
+exist if the two meanings are ever split onto separate buttons. **Read all of these
+off `input-event-codes.h` on the actual image** rather than trusting the numbers
+here.
 
 Standard Linux input codes, so `/dev/input` events read as what they mean.
-Decode encoders and debounce buttons **in the kernel**, never by polling from
-userspace — polling quantises jog velocity to the poll interval and drops steps.
+Decode encoders and debounce buttons **off the deck's CPU** — in the Pico's firmware
+now, in the kernel when they were on the header. The rule's target was always
+*polling from userspace*, which quantises jog velocity to the poll interval and drops
+steps; firmware on a dedicated MCU is the other direction from that, not a breach of
+it.
+
+**And the firmware cannot declare a keycode.** It declares a HID *usage*, and the
+kernel's `hid-input` tables decide which keycode arrives — so the six above are a
+premise about those tables, not about the firmware. A usage that maps elsewhere makes
+`Button::from_keycode` return `None` and that button is **silently dead**, with
+nothing logged. `KEY_STOP` (128) is the one to doubt first, having no obvious consumer
+usage behind it. `evtest` against the real Pico settles all six in minutes, and until
+it has been run this table is inferred rather than measured.
 
 ## Dependencies
 

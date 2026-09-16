@@ -45,10 +45,11 @@ names the overlay. This one was checked against the manual itself rather than ag
 this table, because it rests on the catch-all row being *complete* — a transcription
 that had dropped a row would read identically.
 
-**J4 parallels the input connector pin-for-pin**, so the controls and display sit on
-the same forty conductors, on the near side of the gap. §J-3 is the rule that
-matters: *do not make any link between the input side and the output side.* Doing so
-defeats the isolation and produces no other symptom.
+**J4 parallels the input connector pin-for-pin**, so anything hung there sits on the
+same forty conductors, on the near side of the gap. **This build hangs nothing there**
+— the controls and the panel are on the Pico. §J-3 is still the rule that matters for
+anything that ever does: *do not make any link between the input side and the output
+side.* Doing so defeats the isolation and produces no other symptom.
 
 The Digi2 Pro's bundled M2.5x12 mm spacers assume it mounts straight onto a Pi. The
 isolator sits between them, so longer standoffs are needed.
@@ -134,23 +135,26 @@ Fit the isolator **last**: §J-1 says to prove the hardware and software produce
 the control half are independent and neither waits for the other; the only constraint
 is that the Digi2 Pro is a terminating HAT, so swap it on and off.
 
-- **A — bare Pi, no audio hardware.** Controls straight to the header, a panel on
-  SPI0, a stick in a USB port. Everything except the audio engine, and it settles
-  [#2](https://github.com/tamatebox/deck-pi/issues/2) and
+- **A — bare Pi, no audio hardware.** A stick in a USB port, and the Pico on another
+  with the controls and panel on it. Everything except the audio engine, and it
+  settles [#2](https://github.com/tamatebox/deck-pi/issues/2) and
   [#4](https://github.com/tamatebox/deck-pi/issues/4). The null test needs no audio
-  hardware either.
+  hardware either. **A no longer touches the Pi's header at all**, which is what
+  makes it independent of B in fact and not just on paper.
 - **B — Pi plus Digi2 Pro, audio only.** Bundled spacers are right and the overlay is
   already explicit, so `config.txt` does not change later. Mostly one command:
   `deck-pi --device=hw:X,Y <file>` opens at the track's own rate, prints the period
   geometry ALSA granted, checks the mixer is empty, plays through the whole chain and
   reads `hw_params` back. `plughw:` is refused before ALSA is touched.
 - **C — Pi, isolator, Digi2 Pro.** Integration: longer standoffs, J12/J13, clean 5 V
-  on J1, the grounding question, and the controls moving to J4.
+  on J1, and the grounding question.
 
-Controls belong in C rather than earlier — reaching the header past the HAT needs a
-splitter and then rewiring onto J4 — and §J-1 is about *audio*, not controls. **The
-integration risk that used to sit here is gone**: it was the display sharing I2C with
-the WM8804, and the panel is on SPI now, so A's redraw timing carries to C. The
+**C used to carry the controls' migration onto J4** — reaching the header past the
+HAT needed a splitter and rewiring — and that is gone with them: they are on USB, and
+a USB port does not care what is stacked on the header. **The integration risk that
+used to sit here is gone** too, by an earlier move: it was the display sharing I2C
+with the WM8804, and the panel left the Pi entirely. A's redraw timing carries to C
+for a stronger reason than it used to. The
 libsoxr benchmark ([#3](https://github.com/tamatebox/deck-pi/issues/3)) needs none of
 the three.
 
@@ -190,29 +194,38 @@ what.
 | **I2C SCL** | **3** | 5 | 6 | GND | — |
 | held — source | 4 | 7 | 8 | **14** | **UART TXD** |
 | — | GND | 9 | 10 | **15** | **UART RXD** |
-| encoder A | 17 | 11 | 12 | **18** | **I2S** |
-| encoder B | 27 | 13 | 14 | GND | — |
-| ENTER | 22 | 15 | 16 | 23 | BACK |
-| — | 3V3 | 17 | 18 | 24 | PLAY / PAUSE |
-| SPI0 MOSI | 10 | 19 | 20 | GND | — |
-| panel DC *(MISO)* | 9 | 21 | 22 | 25 | CUE |
-| SPI0 SCLK | 11 | 23 | 24 | 8 | SPI0 CE0 |
-| — | GND | 25 | 26 | 7 | *unity (v2)* |
+| free | 17 | 11 | 12 | **18** | **I2S** |
+| free | 27 | 13 | 14 | GND | — |
+| free | 22 | 15 | 16 | 23 | free |
+| — | 3V3 | 17 | 18 | 24 | free |
+| free | 10 | 19 | 20 | GND | — |
+| free | 9 | 21 | 22 | 25 | free |
+| free | 11 | 23 | 24 | 8 | free |
+| — | GND | 25 | 26 | 7 | free |
 | **ID EEPROM** | **0** | 27 | 28 | **1** | **ID EEPROM** |
 | **clock44** | **5** | 29 | 30 | GND | — |
-| **clock48** | **6** | 31 | 32 | 12 | *jog A (v2)* |
-| *jog B (v2)* | 13 | 33 | 34 | GND | — |
-| **I2S** | **19** | 35 | 36 | 16 | REW |
-| FF | 26 | 37 | 38 | **20** | **I2S — PCM_DIN** |
+| **clock48** | **6** | 31 | 32 | 12 | free |
+| free | 13 | 33 | 34 | GND | — |
+| **I2S** | **19** | 35 | 36 | 16 | free |
+| free | 26 | 37 | 38 | **20** | **I2S — PCM_DIN** |
 | — | GND | 39 | 40 | **21** | **I2S** |
 
-**bold** — hard-reserved. *italic* — v2. Ground is 6, 9, 14, 20, 25, 30, 34, 39, all
+**bold** — hard-reserved. Ground is 6, 9, 14, 20, 25, 30, 34, 39, all
 interchangeable.
 
+**Sixteen GPIOs read `free` where controls used to be, and that is the whole of what
+changed here.** `decisions.md` moved every control — buttons, browse encoder, pitch
+fader, jog wheel — and the panel with them onto a Pico that reaches the Pi over USB.
+The header now carries audio and nothing else. Read what follows knowing that **the
+crowding this file was organised around is gone**: the arithmetic is kept because the
+reasoning that produced the reserved twelve is still load-bearing, not because
+anything is competing for the other sixteen.
+
 Two things this makes visible that a table sorted by GPIO cannot. **GPIO 20 sits at
-physical pin 38**, between FF and the I2S pin at 40 — surrounded by the interface that
-claims it, which is what the flat table failed to show when a button was assigned
-there. And **the I2S four are 12, 35, 38, 40**: one is nowhere near the others, so
+physical pin 38**, one place from the I2S pin at 40 and surrounded by the interface
+that claims it — which is what the flat table failed to show on the day a button was
+assigned there. The button is gone; the trap is not, and it waits for whatever is
+added next. And **the I2S four are 12, 35, 38, 40**: one is nowhere near the others, so
 "the I2S block" is not a region you can avoid by staying away from one end.
 
 Where this table and the two below disagree, one of them is wrong and it must be
@@ -223,7 +236,7 @@ resolved, not averaged.
 | GPIO | Use |
 |---|---|
 | 0, 1 | HAT ID EEPROM (physical pins 27/28 — *pins*, not GPIOs, a documented trap). Also **I2C0**, a second controller — see below |
-| 2, 3 | I2C — WM8804 control, and the v2 ADC |
+| 2, 3 | I2C — WM8804 control. **The v2 ADC is no longer here**: the fader is on the Pico, whose own ADC serves it |
 | 5 | 44.1 kHz crystal enable (`clock44-gpio`) |
 | 6 | 48 kHz crystal enable (`clock48-gpio`) |
 | 14, 15 | Serial console (PL011, freed by `disable-bt`) |
@@ -234,7 +247,12 @@ the Digi2 Pro and says they cannot be used for anything else. An earlier version
 this table left 20 free and a button was assigned to it. GPIO 16 *is* free: HiFiBerry
 reserves it on the plain Digi+, but the Digi2 Pro entry replaces that with 5 and 6.
 
-**SPI0 (7, 8, 9, 10, 11) carries the display panel.** Two things wanted this block —
+**Superseded, 2026-09-15: SPI0 carries nothing.** The panel is on the Pico, so all
+five of these pins are free and the trade below decided a question that no longer
+exists. Kept because the pin facts are still the pin facts, and whatever wants SPI0
+next needs them.
+
+**SPI0 (7, 8, 9, 10, 11) carried the display panel.** Two things wanted this block —
 the v2 fader's ADC and an SPI panel — and exactly one could be made to want I2C
 instead. The ADC went there. The panel takes four: SCLK, MOSI, CE0, and **GPIO 9 as
 DC**, a write-only panel having no use for MISO. Neither GPIO 9 nor unity's GPIO 7 is
@@ -284,26 +302,30 @@ eight and not twelve. `decisions.md` records the version of this arithmetic that
 the same saving twice, and
 [#1](https://github.com/tamatebox/deck-pi/issues/1) the branches not taken.
 
-**The tally balancing at zero is the finding, not the ceiling.** It promotes two
-properties of a panel nobody has bought to load-bearing, both in
-[#2](https://github.com/tamatebox/deck-pi/issues/2): that **RESET is tied high** and
-takes no GPIO, and that the **backlight needs no PWM pin**. Either one costs a
-control. Past that, the routes are the serial console's two pins, the v2 jog's two, an
-I2C port expander, or dropping something.
+**The tally balanced at zero, and that finding is now historical.** It promoted two
+properties of a panel nobody had bought to load-bearing — that **RESET is tied high**
+and takes no GPIO, and that the **backlight needs no PWM pin** — both held by
+[#2](https://github.com/tamatebox/deck-pi/issues/2). With the panel and every control
+on the Pico, **neither property costs the Pi anything**, and the escape routes that
+paragraph listed (the console's two pins, the jog's two, a port expander, dropping a
+control) are all moot. #2 owns what remains of that arithmetic; nothing here
+recomputes it.
 
 Three cautions from HiFiBerry's GPIO-usage page, all of which this build touches:
 
 - **"Do not use more than a few mA from the 3.3V line."** They ask for 5 V plus a
   regulator. A small OLED at 10-25 mA is already past "a few" and a backlit TFT far
-  past it, so the display gets 5 V and its own regulation.
+  past it, so the display gets 5 V and its own regulation. **The caution moved rather
+  than lapsed**: the panel hangs off the Pico now, so it is the Pico's rail that must
+  not be asked for the panel's current.
 - **They do not recommend adding I2C slaves** alongside the WM8804, their reason being
   uncertain pull-ups. The isolator largely answers it: a Control I2C Isolator sits
   between the two sides and J6 carries dedicated pull-up pins, so I2C is **two
   electrically separate segments** — read from the block diagram rather than stated,
   so worth a scope on the real stack. What does not go away is **bus time**, one
-  logical bus from one controller; the v2 ADC is cheap there, a two-byte read at
-  100 Hz being about 1% of a 400 kHz bus. That ceiling is the codec's: the WM8804
-  datasheet (v4.5, Table 5) caps SCLK at **400 kHz**. The BCM2837 does have a second
+  logical bus from one controller — though **the only slave left on it is the
+  WM8804**, the v2 ADC having gone to the Pico with the fader. The ceiling is the
+  codec's anyway: the WM8804 datasheet (v4.5, Table 5) caps SCLK at **400 kHz**. The BCM2837 does have a second
   controller, I2C0 on GPIO 0/1, but three things about using it are unknown and all
   silent when wrong — see [#2](https://github.com/tamatebox/deck-pi/issues/2).
 - **The whole stack is outside HiFiBerry's supported configuration.** No guarantee of
@@ -323,7 +345,7 @@ sequential by position. The board carries three 40-pin connectors:
    │  ┌──────────────────────────┐  │
    │  │ J6  ISOLATED GPIO        │  │  <- the Digi2 Pro plugs here
    │  ├──────────────────────────┤  │
-   │  │ J4  NON-ISOLATED         │  │  <- controls and display here
+   │  │ J4  NON-ISOLATED         │  │  <- nothing: see below
    │  └──────────────────────────┘  │
    └────────────────────────────────┘
         (J3, the socket onto the Pi, is on the underside)
@@ -333,9 +355,11 @@ J4 and J6 are upward-facing male headers **side by side**, not stacked, so whate
 connects to J4 needs a female socket. The isolator is **65.5 mm** deep against a
 standard HAT's 56 mm and J4 sits at the outer edge, so it should stay reachable with
 the stack assembled — deduced from the dimensions and the photo, so confirm on the
-boards. Anything hung there is on the near side of the gap, which is why the display
-needs no noise mitigation of its own; the manual names rotary encoders as an intended
-use.
+boards. Anything hung there is on the near side of the gap, which is why a display
+hung there would need no noise mitigation of its own; the manual names rotary
+encoders as an intended use. **This deck uses neither.** J4 is documented because the
+isolator has it and because a later change could want it, not because anything is
+plugged into it.
 
 ## Controls
 
@@ -347,8 +371,10 @@ kind, and wired how.
 **v2** — a non-detented *optical* encoder for the jog, detents being disqualifying
 because the notches are felt through the platter while scrubbing. 100-200 PPR
 (400-800 counts/rev after x4 decoding) is enough with no scratching; below ~400,
-low-speed velocity estimation breaks down. Plus a pitch fader, which needs an ADC —
-**on I2C**, which is what left SPI0 for the panel.
+low-speed velocity estimation breaks down. Plus a pitch fader, which needs an ADC. That
+ADC was going on the Pi's I2C, and choosing it is what left SPI0 for the panel;
+**both halves of that are now void** — fader and panel are on the Pico, and the
+RP2350's own converter serves the fader.
 
 ### How many of what
 
@@ -359,26 +385,29 @@ map and format scope are read out of *their* datasheets. Nothing below is chosen
 **what is on the bench on any given day is deliberately not recorded here** — a list
 of owned parts goes stale, which is the failure the rule above exists to prevent.
 
-| | n | GPIO | What the kind has to be |
-|---|---|---|---|
-| Browse encoder, with push switch | 1 | 17, 27, 22 | Detented. The clicks step the menu, and the push is ENTER |
-| PLAY / PAUSE | 1 | 24 | Real travel. Takes the most abuse of anything here |
-| CUE | 1 | 25 | Real travel |
-| BACK | 1 | 23 | A small tactile is fine |
-| FF | 1 | 26 | Comfortable **held** for seconds, not crisp |
-| REW | 1 | 16 | Same |
-| UNITY — v2 | 1 | 7 | Set apart from PLAY, and different to the finger. A mis-press changes the audio path and the handover is cross-faded, so **it makes no sound** |
-| Source toggle — USB or a peer deck | **0 or 1** | 4 | Held, not scheduled. The only control asked for beyond the set above, and asked for tentatively |
-| Jog encoder — v2 | 1 | 12, 13 | **Non**-detented, optical, 100-200 PPR |
-| Pitch fader — v2 | 1 | via the ADC | Linear taper, and a **centre detent**: it is what makes UNITY's "near centre" gate a physical fact rather than an inference. Detented slide pots run out around 60 mm of travel, which at ±10% is 3 mm per 1% and ample |
-| Display panel | 1 | 11, 10, 8, 9 | SPI (9 is DC). **RESET tied high and no PWM backlight** — both load-bearing, see *What the header has left* |
-| ADC | 1 | on I2C | 16-bit is available for nothing and costs no pins |
+There is no pin column any more. **Every row below lands on the Pico**, and which of
+its pins is a firmware question rather than a fact about the Pi.
+
+| | n | What the kind has to be |
+|---|---|---|
+| Browse encoder, with push switch | 1 | Detented. The clicks step the menu, and the push is ENTER |
+| PLAY / PAUSE | 1 | Real travel. Takes the most abuse of anything here |
+| CUE | 1 | Real travel |
+| BACK | 1 | A small tactile is fine |
+| FF | 1 | Comfortable **held** for seconds, not crisp |
+| REW | 1 | Same |
+| UNITY — v2 | 1 | Set apart from PLAY, and different to the finger. A mis-press changes the audio path and the handover is cross-faded, so **it makes no sound** |
+| Source toggle — USB or a peer deck | **0 or 1** | Held, not scheduled. The only control asked for beyond the set above, and asked for tentatively |
+| Jog encoder — v2 | 1 | **Non**-detented, optical, 100-200 PPR |
+| Pitch fader — v2 | 1 | Linear taper, and a **centre detent**: it is what makes UNITY's "near centre" gate a physical fact rather than an inference. Detented slide pots run out around 60 mm of travel, which at ±10% is 3 mm per 1% and ample |
+| Display panel | 1 | SPI. RESET tied high and no PWM backlight were load-bearing while the panel was on the Pi's header; they cost nothing either way now |
+| ADC | **0** | The RP2350 has one. The 16-bit external part is not needed — and note the swap is **12-bit**, which over a ±10% span is ~0.005% per count: ample by arithmetic, with ENOB unmeasured |
 
 **Seven switches counting the encoder's push. Two encoders. One fader.** That is the
-whole control surface, and the pin tally balances at zero spare.
+whole control surface, and it is wired to the Pico, not to the Pi.
 
-Also needed, none of it a control: a 5 V regulator for the panel, a 40-pin IDC ribbon
-and a screw-terminal breakout for J4, four standoffs longer than the bundled
+Also needed, none of it a control: a 5 V regulator for the panel, four standoffs
+longer than the bundled
 M2.5x12 mm, a clean linear 5 V supply for J1, an enclosure, and stranded 26-28 AWG
 wire wherever it flexes.
 
