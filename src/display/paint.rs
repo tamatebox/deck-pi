@@ -83,10 +83,13 @@
 //! # Which face, and why not the small one
 //!
 //! 12 px and 16 px only. The 10 px face is naga10 — "freely usable, but
-//! restricted", and unread — where these two are efont/shinonome and Public
-//! Domain in every Japanese source. The trace is
-//! [#10](https://github.com/tamatebox/deck-pi/issues/10); **one checkbox
-//! there is open**, and nothing ships until it closes.
+//! restricted", and unread — where these two are efont, and Public Domain in
+//! every source but two. The two are `japanese3`'s thirteen glyphs from
+//! baekmuk and Academia Sinica, traced glyph by glyph in
+//! [#10](https://github.com/tamatebox/deck-pi/issues/10): both licences
+//! permit redistribution and both require their notice to travel with the
+//! binary, which is what `NOTICES.md` is. `japanese1` and `japanese2` carry
+//! neither, and are not used because their coverage is smaller.
 //!
 //! There is no separate ASCII face for the status line. `panel-compare` uses
 //! one because its 10 px kanji font did not fit a 9 px row; the same trace

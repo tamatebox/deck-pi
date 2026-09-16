@@ -277,6 +277,7 @@ plays bit-perfect without pitch rather than not playing.
 | [implementation.md](docs/implementation.md) | ALSA specifics, FFI, realtime setup, `config.txt` |
 | [decisions.md](docs/decisions.md) | Why each choice went as it did, and which were **reversed** |
 | [firmware/src/main.rs](firmware/src/main.rs) | The Pico's side, documented where it is written: the pinout, and which HID usage each control sends |
+| [NOTICES.md](NOTICES.md) | The font notices the binary has to carry, and which source every glyph came from |
 
 Open questions are [GitHub issues](https://github.com/tamatebox/deck-pi/issues).
 Read `decisions.md` before revisiting a design choice: several were reversed and the
@@ -287,6 +288,10 @@ superseded reasoning is plausible enough to re-derive by accident.
 hardware fact says whether it was confirmed against the boards, the vendor's
 document, or kernel source. An unlabelled estimate is indistinguishable from a fact
 three turns later, which is how several wrong premises survived as long as they did.
-Two that matter for anyone quoting this: **nothing has been checked against the
-physical boards**, and **the A53 resampler budget is an estimate** that has not been
-run.
+Both of the examples this paragraph used to give have since been run, which is the
+hazard it was describing: it said **nothing had been checked against the physical
+boards** and **the A53 resampler budget was an estimate**. The hardware came up on
+2026-09-15 and the resampler was measured on 2026-09-16 — `tests/render_bench.rs`
+and `tools/soxr-bench` are the commands. What is still unmeasured, and is now the
+figure to be careful with, is **the panel's frame traffic over USB**: the deck's
+drawing is measured and stops at the `DrawTarget`.
