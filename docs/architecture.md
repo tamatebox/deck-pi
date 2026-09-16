@@ -183,7 +183,7 @@ audio callback, which reads the ring and nothing else.
 
 | | |
 |---|---|
-| Media watch | `src/media.rs` |
+| Media watch | `src/media.rs` — the states; `src/app/medium.rs` — what the deck does about them |
 | File layer | `src/sndfile/`, `src/file.rs` |
 | Browser | `src/browser.rs` |
 | Input | `src/input.rs` |

@@ -20,4 +20,5 @@
 pub mod audio;
 pub mod controls;
 pub mod deck;
+pub mod medium;
 pub mod track;

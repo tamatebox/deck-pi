@@ -118,6 +118,40 @@ impl<S: AudioSink + Send + 'static> Deck<S> {
         self.playing.as_ref()
     }
 
+    /// The cue store for the mounted volume, or `None` when there is nothing
+    /// to key cues on. A display that wants to say "cues cannot be saved"
+    /// reads this.
+    pub fn cues(&self) -> Option<&CueStore> {
+        self.cues.as_ref()
+    }
+
+    /// A medium arrived: here is its listing, and its cues if it has any.
+    ///
+    /// Called by [`crate::app::medium::Mount`] and not by the loop directly,
+    /// because what to build from a `Medium` is a policy with three ordinary
+    /// degradations in it and belongs in one place.
+    pub fn attach(&mut self, browser: Browser, cues: Option<CueStore>) {
+        self.browser = Some(browser);
+        self.cues = cues;
+    }
+
+    /// The medium has gone. **Unloads first**, and the order is the point.
+    ///
+    /// `decisions.md`: what ends a run is "unloading, the medium going, or a
+    /// fault". Dropping the listing without unloading would leave a `Playing`
+    /// holding an ALSA device and a window thread against a file that is not
+    /// there, and the deck would go on reporting a track it cannot play until
+    /// the window thread happened to fail — which is a fault arriving later,
+    /// looking like something else.
+    ///
+    /// Idempotent, and returns what the unload ended, once, for the display.
+    pub fn detach(&mut self) -> Option<Ended> {
+        let ended = self.unload();
+        self.browser = None;
+        self.cues = None;
+        ended
+    }
+
     /// One turn of the control loop, independent of any press.
     ///
     /// Two obligations, and both are the control thread's by rule rather than

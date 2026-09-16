@@ -39,6 +39,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::app::deck::{Deck, DeckError};
+use crate::app::medium::{Mount, MediumSource};
 use crate::app::track::Ended;
 use crate::input::{Action, Decoder, RawEvent, HOLD_AFTER};
 use crate::sink::AudioSink;
@@ -293,6 +294,8 @@ pub struct Report {
     pub lost: u64,
     pub errors: u64,
     pub ends: u64,
+    /// Media changes: a stick arriving, going, or being swapped for another.
+    pub media: u64,
 }
 
 /// Runs the control loop until `stop` is set.
@@ -309,15 +312,28 @@ pub struct Report {
 /// doing nothing but servicing the deck. Stopping instead would take the
 /// audio down over a fault in the buttons; `EventSource::is_empty` is how a
 /// caller that wants to say so on the display can see it.
-pub fn run<E, S>(
+///
+/// # The medium is turned over first, and it is not optional
+///
+/// [`Mount`] is a parameter rather than something a caller may or may not
+/// wire up, because "may or may not" is exactly how the media watch spent
+/// four stages written, tested and reaching nothing. A deck assembled without
+/// one does not compile.
+///
+/// First, for the same reason `Controls::turn` services before it applies: a
+/// turn can hold both a removal and the press that arrived with it, and the
+/// press has to be interpreted against the deck the removal leaves behind.
+pub fn run<E, S, M>(
     controls: &mut Controls,
     source: &mut E,
+    mount: &mut Mount<M>,
     deck: &mut Deck<S>,
     stop: &AtomicBool,
 ) -> std::io::Result<Report>
 where
     E: EventSource + ?Sized,
     S: AudioSink + Send + 'static,
+    M: MediumSource,
 {
     debug_assert!(
         !crate::rt::is_realtime(),
@@ -327,7 +343,12 @@ where
     let started = Instant::now();
     let mut report = Report::default();
     while !stop.load(Ordering::Relaxed) {
-        let turn = controls.turn(source, started.elapsed(), deck)?;
+        let now = started.elapsed();
+        if let Some(change) = mount.turn(now, deck) {
+            report.media += 1;
+            report.ends += u64::from(change.ended.is_some());
+        }
+        let turn = controls.turn(source, now, deck)?;
         report.turns += 1;
         report.actions += turn.actions as u64;
         report.lost += turn.lost as u64;

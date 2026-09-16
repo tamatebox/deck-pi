@@ -54,14 +54,16 @@ browser, media watch, the cue store and input — with bit-perfection verified e
 end at both depths and all six rates, across four of the five containers in scope
 (**Wave64 is accepted and untested**).
 
-The app loop is partly built: the period loop, the track lifecycle, the dispatch and
-the control loop that reads `/dev/input`. The display is built in both halves:
+The app loop is partly built: the period loop, the track lifecycle, the dispatch, the
+control loop that reads `/dev/input`, and the medium half — a stick appearing gives
+the deck its browser and its cues, and a stick going ends the run and takes the
+listing with it. The display is built in both halves:
 `src/display.rs` decides what text goes in which cell, and `src/display/paint.rs`
 draws it against the real 12 and 16 px Japanese faces — about 0.3 ms for a full
 128x64 frame on the Pi, which `cargo test --release --test render_bench -- --ignored
---nocapture` prints. Still missing are **media watch wired to the deck**, and
-the USB packer that carries those pixels to the Pico. `src/main.rs` is a bring-up
-CLI, not the deck.
+--nocapture` prints. Still missing are the USB packer that carries those pixels to
+the Pico, and **a binary that assembles the loop into a deck** — `src/main.rs` is a
+bring-up CLI and is not it.
 
 ## What plays
 
@@ -232,18 +234,22 @@ implementation of the thing under test:
 DECK_PI_DEMO_DIR=/tmp/deck-demo cargo test --test emit_demo -- --ignored
 ```
 
-Two measurements against real material are `--ignored`, because one needs the stick
-and the other needs the Pi:
+Three checks against real material are `--ignored`, because they need the stick or
+the Pi rather than a fixture:
 
 ```sh
 cargo test --release --test render_bench -- --ignored --nocapture
 DECK_PI_MUSIC_DIR=/media/stick/Music cargo test --release \
     --test font_covers_library -- --ignored --nocapture
+DECK_PI_MOUNT=/media/stick cargo test --release \
+    --test app_medium_test -- --ignored --nocapture
 ```
 
-The first prints what a frame costs to draw on the machine it runs on; the second
+The first prints what a frame costs to draw on the machine it runs on. The second
 asks whether the panel font contains every character in every name on the stick, and
-names the files it does not. On 2026-09-16 it found **87 of 2192 names** with a
+names the files it does not. The third mounts the real medium into a real deck and
+reports the volume it found and where that volume's cues would go — the one link the
+scripted tests cannot reach. On 2026-09-16 it found **87 of 2192 names** with a
 character neither face has; all but **5** fold to ASCII that reads as the original
 (`é` as `e`, `…` as `...`), and the five that do not are three kanji outside
 `japanese3`, plus a Cyrillic `С` sitting inside an otherwise Latin name.

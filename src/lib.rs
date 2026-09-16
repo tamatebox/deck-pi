@@ -8,11 +8,13 @@
 //! thread, the transport, the callback, the output sink, the realtime process
 //! setup that makes the callback's "cannot fault" true, the browser, media watch,
 //! the cue store and input, and the app loop that joins them — the period loop,
-//! the track lifecycle, the dispatch and the control loop that reads
-//! `/dev/input`. The display is built in both halves: `display.rs` decides
-//! what goes in which cell, and `display::paint` turns that into pixels
-//! against the real 12 and 16 px faces. Not started: media watch wired to the
-//! deck, and the USB packer the pixels are handed to.
+//! the track lifecycle, the dispatch, the control loop that reads
+//! `/dev/input`, and the medium half that gives the deck its browser and its
+//! cues when a stick appears and takes them away when it goes. The display is
+//! built in both halves: `display.rs` decides what goes in which cell, and
+//! `display::paint` turns that into pixels against the real 12 and 16 px
+//! faces. Not started: the USB packer the pixels are handed to, and a binary
+//! that assembles the loop into a deck.
 
 pub mod app;
 pub mod browser;
