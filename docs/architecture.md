@@ -194,7 +194,7 @@ audio callback, which reads the ring and nothing else.
 | Dispatch | `src/app/deck.rs` |
 | Track lifecycle | `src/app/track.rs` |
 | Control loop | `src/app/controls.rs` |
-| Display | not written |
+| Display | `src/display.rs` — the cell layout; nothing draws pixels yet |
 
 **What each module owns is in its own doc comment**, which says it first-hand and
 cannot drift from the code. This table is the map, not the description. Four rules

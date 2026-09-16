@@ -8,24 +8,44 @@
 //!
 //! **Which is the half that can be built and tested today.** The panel is not
 //! bought ([#2](https://github.com/tamatebox/deck-pi/issues/2)), and the glyphs
-//! are worse than unbought: `tools/panel-compare` judged 12x12 and 16x16
-//! Japanese faces from `u8g2-fonts`, whose own README says the crate is
-//! MIT/Apache but **the fonts are not** — fine for a harness that is never
-//! shipped, unsettled for a deck that would ship them. A library of
-//! `吉村弘` and `追憶のウォーデンクリフ` cannot fall back to ASCII, so that
-//! question gates the drawing and gates nothing here.
+//! have a licence question over them. A library of `吉村弘` and
+//! `追憶のウォーデンクリフ` cannot fall back to ASCII, so that question gates
+//! the drawing — and gates nothing here.
 //!
-//! # One character, one cell
+//! The licence over those glyphs is
+//! [#10](https://github.com/tamatebox/deck-pi/issues/10), and the trace lives
+//! there rather than here — a licence note in a source file is how this one
+//! got lost the first time.
 //!
-//! The faces `panel-compare` rendered are full-width, so a cell holds exactly
-//! one character whether it is `a` or `弘`, and a budget in cells is a budget
-//! in `char`s. **Not in bytes**: `追憶` is six bytes and two cells, and
-//! truncating by bytes would cut a character in half and draw a replacement
-//! glyph — or nothing, on a font that has none.
+//! # A column is half a cell, and that is a font fact
+//!
+//! **An earlier version of this module said "one character, one cell" and
+//! cited `panel-compare` for it.** The harness says the opposite, in
+//! `panels.rs`: *"Full-width Japanese characters per line. Halfwidth ASCII
+//! fits two per cell in these fonts, so a mixed name does better than this."*
+//! Measured on the real faces, `a` is 6 px in `b12` where `弘` is 12. The
+//! citation was shaped like a citation and was a recollection, which
+//! `CLAUDE.md` says has cost this project real errors — this one truncated
+//! every Latin name to half the panel.
+//!
+//! So the unit here is a **column**: one half-width glyph. A kanji is two, an
+//! ASCII character is one, and `unicode-width` decides which by East Asian
+//! Width rather than by a hand-kept table.
+//!
+//! **Neither is bytes**: `追憶` is six bytes, two characters and four columns,
+//! and cutting on a byte boundary draws a replacement glyph — or nothing, on a
+//! font without one.
+//!
+//! The model's arithmetic is a *plan*. Ambiguous-width characters exist, and
+//! the renderer is the only thing that knows the truth: it should measure each
+//! line against the font and clip, rather than trust a budget computed here.
 
 use std::time::Duration;
 
+use unicode_width::UnicodeWidthChar;
+
 use crate::browser::{Row, Verdict};
+pub use crate::transport::State;
 
 /// A truncation that fits, marked so it is visibly a truncation.
 ///
@@ -34,18 +54,19 @@ use crate::browser::{Row, Verdict};
 /// than an ugly one — the name simply looks like a different, shorter name.
 const TRUNCATED: char = '~';
 
-/// The panel's usable text grid.
-///
-/// `mark_cells` is what the renderer spends on saying *what kind of thing* a
-/// row is — a `/` after a folder, a `!` before a refusal — on a panel with no
-/// colour to say it with. It is here rather than in the renderer because it
-/// comes out of the name's budget, and a name truncated against the wrong
-/// budget is wrong in a way nobody notices until the panel is in a box.
+/// The panel's usable text grid, in **columns** of one half-width glyph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Geometry {
+    /// `panel_px_wide / (glyph_px / 2)`.
     pub cols: usize,
     pub rows: usize,
-    pub mark_cells: usize,
+    /// Whether the panel can say what a row *is* with colour.
+    ///
+    /// A mono panel spends a column on a `/` or a `!` instead, and that column
+    /// comes out of the name's budget — which is why this is here and not in
+    /// the renderer. A name truncated against the wrong budget is wrong in a
+    /// way nobody notices until the panel is in a box.
+    pub colour: bool,
 }
 
 impl Geometry {
@@ -55,10 +76,29 @@ impl Geometry {
         self.rows.saturating_sub(2)
     }
 
-    /// Cells a name may use.
-    pub fn name_budget(self) -> usize {
-        self.cols.saturating_sub(self.mark_cells)
+    /// Columns the kind-mark costs: none on colour, one on mono.
+    pub fn mark_cols(self) -> usize {
+        usize::from(!self.colour)
     }
+
+    /// Columns a name may use.
+    pub fn name_budget(self) -> usize {
+        self.cols.saturating_sub(self.mark_cols())
+    }
+}
+
+/// How many columns a character occupies.
+///
+/// East Asian Wide and Fullwidth are two; everything else is one. Control
+/// characters report `None` from the crate and are treated as zero, which is
+/// right for a budget — they draw nothing.
+pub fn cols_of(c: char) -> usize {
+    c.width().unwrap_or(0)
+}
+
+/// How many columns a string occupies.
+pub fn width(text: &str) -> usize {
+    text.chars().map(cols_of).sum()
 }
 
 /// What a row is, for the renderer to mark however the panel allows.
@@ -81,15 +121,6 @@ pub struct Line {
     pub selected: bool,
 }
 
-/// The transport, as the screen says it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum State {
-    Stopped,
-    Playing,
-    Paused,
-    Seeking,
-}
-
 /// Everything the screen shows, and nothing about how it is drawn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Screen {
@@ -100,9 +131,15 @@ pub struct Screen {
     /// truncated middle of it, which locates you nowhere.
     pub folder: String,
     pub lines: Vec<Line>,
-    /// Rate and depth **actually in use**, which is the whole point of putting
-    /// them on the screen: it is how the chain is confirmed to be doing what
-    /// it claims rather than what the file said.
+    /// The transport, the position, and the rate and depth.
+    ///
+    /// **The rate and depth are not a verification**, though this file used to
+    /// say they were. A panel showing `44k/16` reports what the deck believes;
+    /// a deck wrong about its own output would print the wrong number with the
+    /// same confidence. `--device=` is the check, because it reads `hw_params`
+    /// back from `/proc/asound` — a different source. They are kept because
+    /// they cost nothing on every candidate geometry, not because they confirm
+    /// anything.
     pub status: String,
 }
 
@@ -115,14 +152,23 @@ pub fn fit(name: &str, budget: usize) -> String {
     if budget == 0 {
         return String::new();
     }
-    let len = name.chars().count();
-    if len <= budget {
+    if width(name) <= budget {
         return name.to_owned();
     }
-    let mut cut: String = name.chars().take(budget).collect();
-    cut.pop();
-    cut.push(TRUNCATED);
-    cut
+    // Room for the marker, which costs one column.
+    let room = budget - 1;
+    let mut out = String::new();
+    let mut used = 0;
+    for c in name.chars() {
+        let w = cols_of(c);
+        if used + w > room {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
+    out.push(TRUNCATED);
+    out
 }
 
 fn kind_of(row: &Row) -> Kind {
@@ -153,13 +199,25 @@ pub fn status_line(
     at: Option<Duration>,
     g: Geometry,
 ) -> String {
+    // **No STOP.** `transport.rs` is explicit that a CDJ has no such
+    // gesture — returning to the cue and pausing is what stopping means, so
+    // both land on `Paused`. `Stopped` means *nothing loaded* and only that,
+    // and printing "STOP" for it would put a word on the panel that the
+    // design says does not exist, for the one state it does not describe.
+    // FF and REW are the button names README uses, and are shorter than SEEK.
     let word = match state {
-        State::Stopped => "STOP",
+        State::Stopped => "NO TRACK",
         State::Playing => "PLAY",
         State::Paused => "PAUSE",
-        State::Seeking => "SEEK",
+        State::SeekingForward => "FF",
+        State::SeekingBack => "REW",
     };
     let mut line = String::from(word);
+    // An empty deck has no position and no rate to report; the fields below
+    // would be a time into nothing.
+    if state == State::Stopped {
+        return fit(&line, g.cols);
+    }
     if let Some(at) = at {
         line.push(' ');
         line.push_str(&timecode(at));
@@ -169,7 +227,7 @@ pub fn status_line(
     // the rate and depth are what you read once, when confirming the chain.
     if let (Some(hz), Some(bits)) = (rate_hz, bits) {
         let tail = format!(" {}k/{}", hz / 1000, bits);
-        if line.chars().count() + tail.chars().count() <= g.cols {
+        if width(&line) + width(&tail) <= g.cols {
             line.push_str(&tail);
         }
     }
@@ -181,6 +239,16 @@ pub fn status_line(
 /// Takes the rows rather than the `Browser` so this is callable with a handful
 /// of literals in a test, which is most of why the split is here at all.
 pub fn compose(folder: &str, rows: &[Row], status: String, g: Geometry) -> Screen {
+    // The caller asks `Browser::view` for a height, and that height must be
+    // this one. Handed more rows than fit, the truncation below is silent and
+    // takes them off the **end** — which is where the selection is when the
+    // user has scrolled down.
+    debug_assert!(
+        rows.len() <= g.listing_rows(),
+        "compose was given {} rows for {} — call view(g.listing_rows())",
+        rows.len(),
+        g.listing_rows()
+    );
     Screen {
         folder: fit(folder, g.cols),
         lines: rows
@@ -258,6 +326,12 @@ impl Cadence {
             None => true,
             Some(last) => now.saturating_sub(last) >= COALESCE,
         };
+        // A `Position` frame here would be followed by the `Full` within the
+        // window, which is two frames on the bus for one change — the same
+        // waste the position-tick restart below exists to prevent.
+        if self.pending && !due {
+            return Redraw::Nothing;
+        }
         if self.pending && due {
             self.pending = false;
             self.last_full = Some(now);
@@ -286,7 +360,7 @@ mod tests {
     use super::*;
 
     fn geom() -> Geometry {
-        Geometry { cols: 16, rows: 6, mark_cells: 1 }
+        Geometry { cols: 16, rows: 6, colour: false }
     }
 
     #[test]
@@ -304,19 +378,40 @@ mod tests {
     }
 
     #[test]
-    fn a_budget_is_characters_and_not_bytes() {
-        // `追憶のウォーデンクリフ` is eleven characters and thirty-three
-        // bytes. Cutting at a byte budget would split a character and draw a
-        // replacement glyph, or nothing at all on a font without one — and
-        // the stick this deck was built for is full of names like it.
-        let name = "追憶のウォーデンクリフ";
-        assert_eq!(name.chars().count(), 11);
-        assert!(name.len() > 11, "the test is pointless if it is not multibyte");
+    fn a_budget_is_columns_and_not_characters_or_bytes() {
+        // All three counts differ, which is the point. Kanji are two columns
+        // and ASCII one, so a mixed name fits more characters than a cell
+        // count suggests — the error an earlier version of this module made,
+        // truncating every Latin name to half the panel.
+        let name = "雨音_192k24";
+        assert_eq!(name.chars().count(), 9);
+        assert_eq!(width(name), 11, "two kanji at two columns each, seven ASCII");
+        assert!(name.len() > 11, "pointless unless multibyte");
 
-        let cut = fit(name, 8);
-        assert_eq!(cut.chars().count(), 8, "eight cells, not eight bytes");
+        // Fits in eleven columns, so it is untouched.
+        assert_eq!(fit(name, 11), name);
+
+        // Ten columns: the kanji cost four, leaving five for ASCII plus the
+        // marker. Never more than the budget, and never a split character.
+        let cut = fit(name, 10);
+        assert!(width(&cut) <= 10, "{cut:?} is {} columns", width(&cut));
         assert!(cut.ends_with(TRUNCATED));
         assert!(!cut.contains('\u{fffd}'));
+
+        // A cut that lands where a kanji would straddle the edge drops it
+        // rather than half-drawing it.
+        let narrow = fit("追憶", 3);
+        assert!(width(&narrow) <= 3, "{narrow:?}");
+    }
+
+    #[test]
+    fn an_ascii_name_is_not_truncated_at_half_the_panel() {
+        // The bug this replaces: a 16-column line was treated as sixteen
+        // characters of any width, so `test_44k1_16.wav` — sixteen ASCII
+        // characters and sixteen columns — was cut for no reason.
+        let name = "test_44k1_16.wav";
+        assert_eq!(width(name), 16);
+        assert_eq!(fit(name, 16), name, "sixteen columns fit sixteen columns");
     }
 
     #[test]
@@ -324,9 +419,10 @@ mod tests {
         // A panel two cells wide spending two on a mark is absurd, and a
         // display module that panics on absurd input takes the audio with it.
         assert_eq!(fit("anything", 0), "");
-        let narrow = Geometry { cols: 1, rows: 1, mark_cells: 4 };
-        assert_eq!(narrow.name_budget(), 0);
+        let narrow = Geometry { cols: 1, rows: 1, colour: false };
+        assert_eq!(narrow.name_budget(), 0, "one column, and the mark takes it");
         assert_eq!(narrow.listing_rows(), 0);
+        assert_eq!(fit("anything", narrow.name_budget()), "");
     }
 
     #[test]
@@ -346,6 +442,25 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_deck_does_not_say_stop() {
+        // `transport.rs`: a CDJ has no STOP, and `Stopped` means nothing is
+        // loaded rather than that something was halted. Printing STOP would
+        // put a word on the panel that the design says does not exist, for
+        // the one state it does not describe.
+        let wide = Geometry { cols: 24, ..geom() };
+        let s = status_line(State::Stopped, Some(44_100), Some(16), Some(Duration::from_secs(95)), wide);
+        assert!(!s.contains("STOP"), "{s}");
+        assert!(!s.contains("1:35"), "an empty deck has no position: {s}");
+        assert!(!s.contains("44k"), "nor a rate in use: {s}");
+
+        // Seeking reads as the buttons are labelled.
+        let f = status_line(State::SeekingForward, None, None, Some(Duration::ZERO), wide);
+        assert!(f.starts_with("FF"), "{f}");
+        let b = status_line(State::SeekingBack, None, None, Some(Duration::ZERO), wide);
+        assert!(b.starts_with("REW"), "{b}");
+    }
+
+    #[test]
     fn a_position_is_minutes_seconds_and_tenths() {
         assert_eq!(timecode(Duration::ZERO), "0:00.0");
         assert_eq!(timecode(Duration::from_millis(1_500)), "0:01.5");
@@ -358,7 +473,7 @@ mod tests {
         let rows: Vec<Row> = (0..10)
             .map(|i| Row::Folder { name: format!("folder-{i}"), selected: i == 0 })
             .collect();
-        let screen = compose("録音", &rows, "STOP".into(), geom());
+        let screen = compose("録音", &rows[..geom().listing_rows()], "PAUSE".into(), geom());
         assert_eq!(screen.lines.len(), geom().listing_rows());
         assert_eq!(screen.lines.len(), 4, "six rows, less the path and the status");
     }

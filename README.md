@@ -105,8 +105,12 @@ feed — and both live in [docs/hardware.md](docs/hardware.md).
 
 A detented rotary encoder for browsing, plus BACK, PLAY/PAUSE, CUE/STOP, and FF and
 REW — hold to seek, tap to change track. ENTER is the encoder's push. The display
-shows the browser, the transport, and the rate and depth actually in use, which is
-how you confirm the chain is doing what it claims.
+shows the browser and the transport. It also shows the rate and depth in use, and
+**that is not how the chain is confirmed** — the panel reports what the deck believes,
+so a deck wrong about its own output would be wrong on the panel in the same way. The
+confirmation is `deck-pi --device=`, which reads `hw_params` back out of
+`/proc/asound` and asks whether the mixer is empty: a different source, which is what
+makes it a check.
 
 Seven switches, two encoders and a fader, the v2 unity button being the seventh.
 **None of them is on the Pi.** They hang off a Pico 2 H which reaches the Pi as a USB

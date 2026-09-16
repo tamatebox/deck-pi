@@ -11,7 +11,7 @@
 //! the track lifecycle, the dispatch and the control loop that reads
 //! `/dev/input`. The display has its half that needs no panel — `display.rs`
 //! decides what goes in which cell — and not the half that draws pixels, which
-//! waits on a font whose licence is unsettled. Not started: media watch wired
+//! waits on a font whose licence is issue #10. Not started: media watch wired
 //! to the deck.
 
 pub mod app;
