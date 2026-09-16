@@ -43,6 +43,11 @@ const RATE: u32 = 44_100;
 struct Script {
     turns: VecDeque<(Vec<RawEvent>, usize)>,
     range: Option<(i32, i32)>,
+    /// What each look finds, in order; an exhausted queue finds nothing.
+    finds: VecDeque<usize>,
+    /// How many times the deck has looked. The point of the backoff test.
+    looks: usize,
+    empty: bool,
 }
 
 impl Script {
@@ -68,6 +73,16 @@ impl Script {
     /// A turn on which `n` device nodes went away.
     fn lost(mut self, n: usize) -> Script {
         self.turns.push_back((Vec::new(), n));
+        self
+    }
+    /// A surface with nothing open, which is what a pulled cable leaves.
+    fn unplugged(mut self) -> Script {
+        self.empty = true;
+        self
+    }
+    /// What the next look finds.
+    fn finds(mut self, n: usize) -> Script {
+        self.finds.push_back(n);
         self
     }
 }
@@ -99,7 +114,15 @@ impl EventSource for Script {
         self.range
     }
     fn is_empty(&self) -> bool {
-        false
+        self.empty
+    }
+    fn rediscover(&mut self) -> std::io::Result<usize> {
+        self.looks += 1;
+        let found = self.finds.pop_front().unwrap_or(0);
+        if found > 0 {
+            self.empty = false;
+        }
+        Ok(found)
     }
 }
 
@@ -379,4 +402,72 @@ fn the_axis_range_is_read_at_construction_so_a_wrap_is_one_detent() {
         1,
         "the wrap was taken as a 23-detent jump"
     );
+}
+
+#[test]
+fn a_lost_node_is_looked_for_again_on_the_same_turn() {
+    // The hole this closes: `read_pending` drops a device that goes away and
+    // nothing ever put one back. With the controls soldered to the header
+    // that was sound, because an overlay's node exists from boot and a
+    // vanishing one really is a fault. On USB a vanishing node is a replug,
+    // and without this the deck plays on with every control dead.
+    let mut source = Script::new().lost(2).finds(2);
+    let mut controls = Controls::new(&source);
+    let mut deck = bare_deck();
+
+    let turn = controls.turn(&mut source, ms(0), &mut deck).expect("turn");
+
+    assert_eq!(turn.lost, 2, "the script said two went away");
+    assert_eq!(turn.reopened, 2, "both should have been found again");
+    assert_eq!(source.looks, 1, "one loss, one look");
+}
+
+#[test]
+fn an_unplugged_surface_is_looked_for_on_a_timer_rather_than_every_turn() {
+    // **A retry with no floor is a busy loop wearing the costume of a retry.**
+    // Looking means reading `/dev/input` and opening every node on it, and
+    // `POLL` is 10 ms, so an unplugged surface would mean a hundred directory
+    // scans a second for as long as the cable stayed out — on the machine
+    // that is also meeting an audio deadline.
+    let mut source = Script::new().unplugged();
+    let mut controls = Controls::new(&source);
+    let mut deck = bare_deck();
+
+    // Three seconds of turns at the real poll interval.
+    let turns = 300;
+    for i in 0..turns {
+        controls
+            .turn(&mut source, ms(i * 10), &mut deck)
+            .expect("turn");
+    }
+
+    assert!(
+        source.looks <= 4,
+        "looked {} times in 3 s; the floor is one a second",
+        source.looks
+    );
+    assert!(
+        source.looks >= 3,
+        "looked only {} times in 3 s; it should keep trying",
+        source.looks
+    );
+}
+
+#[test]
+fn a_surface_that_comes_back_stops_being_looked_for() {
+    // The other half of the timer: once something is open again the deck must
+    // stop scanning, or the floor above would become a permanent background
+    // cost rather than a thing that happens while unplugged.
+    let mut source = Script::new().unplugged().finds(2);
+    let mut controls = Controls::new(&source);
+    let mut deck = bare_deck();
+
+    for i in 0..300 {
+        controls
+            .turn(&mut source, ms(i * 10), &mut deck)
+            .expect("turn");
+    }
+
+    assert_eq!(source.looks, 1, "one look found it; there was no reason for a second");
+    assert!(!source.is_empty(), "the script should have come back");
 }

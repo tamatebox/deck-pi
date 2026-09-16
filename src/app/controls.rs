@@ -76,9 +76,22 @@ pub trait EventSource {
         None
     }
 
-    /// False once every node has gone. The deck has no controls at all.
+    /// True once every node has gone. The deck has no controls at all.
     fn is_empty(&self) -> bool {
         false
+    }
+
+    /// Looks for nodes that are not open yet, returning how many were added.
+    ///
+    /// **Defaulted to zero because most sources cannot lose a device.** A
+    /// scripted source in a test does not disappear, and neither did the
+    /// controls when they were soldered to the header: an overlay's node
+    /// exists from boot, so a vanishing one was a fault and there was nothing
+    /// to come back to. The control surface is on USB now, where vanishing is
+    /// a replug rather than a fault, and a deck that cannot look again is a
+    /// deck that plays on with every control dead and nothing logged.
+    fn rediscover(&mut self) -> std::io::Result<usize> {
+        Ok(0)
     }
 }
 
@@ -95,6 +108,9 @@ impl EventSource for crate::input::Devices {
     }
     fn is_empty(&self) -> bool {
         crate::input::Devices::is_empty(self)
+    }
+    fn rediscover(&mut self) -> std::io::Result<usize> {
+        crate::input::Devices::rediscover(self)
     }
 }
 
@@ -124,6 +140,8 @@ pub struct Turn {
     /// Devices that went away. Non-zero means the decoder was reset and
     /// whatever it was holding was closed out.
     pub lost: usize,
+    /// Devices opened this turn by looking again. Non-zero after a replug.
+    pub reopened: usize,
     /// The track ended, or its threads went. At most one per turn.
     pub ended: Option<Ended>,
     /// Presses that could not be carried out — an unreadable file, a cue
@@ -139,7 +157,20 @@ pub struct Controls {
     raw: Vec<RawEvent>,
     actions: Vec<Action>,
     resets: u64,
+    /// When looking for the control surface again is allowed next.
+    ///
+    /// Without a floor this would scan `/dev/input` and open every node on it
+    /// a hundred times a second for as long as the surface stayed unplugged,
+    /// which is a busy loop wearing the costume of a retry.
+    retry_after: Duration,
 }
+
+/// How long the deck waits before looking for its controls again.
+///
+/// A replug is a human action, so a second of dead controls after one is not
+/// perceptible against the act of pushing the plug in. The first attempt after
+/// a loss does not wait at all; this paces the ones after that.
+pub const REDISCOVER_EVERY: Duration = Duration::from_secs(1);
 
 impl Controls {
     /// Takes the source at construction **because that is when the axis range
@@ -162,6 +193,7 @@ impl Controls {
             raw: Vec::with_capacity(64),
             actions: Vec::with_capacity(16),
             resets: 0,
+            retry_after: Duration::ZERO,
         }
     }
 
@@ -220,10 +252,22 @@ impl Controls {
             if turn.lost > 0 {
                 self.resets += 1;
                 self.decoder.reset(&mut self.actions);
+                // Look again at once: a replug is the usual reason a node
+                // goes, and the one after that is paced by `retry_after`.
+                self.retry_after = Duration::ZERO;
             }
             for i in 0..self.raw.len() {
                 self.decoder.feed(now, self.raw[i], &mut self.actions);
             }
+        }
+
+        // **Outside the `wait` branch, because a surface that is entirely
+        // gone produces no events to wake it.** `Devices::wait` with nothing
+        // open sleeps the timeout and answers `Ok(false)`, so a deck that only
+        // looked after a read would never look again.
+        if (turn.lost > 0 || source.is_empty()) && now >= self.retry_after {
+            turn.reopened = source.rediscover()?;
+            self.retry_after = now + REDISCOVER_EVERY;
         }
 
         // **Unconditional, and outside the `wait` branch.** A hold is defined
