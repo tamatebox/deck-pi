@@ -11,7 +11,9 @@ libsndfile, in the window thread     <- byte swap, 24-bit unpack, no deadline
    |
 locked int32 ring                    <- the audio callback reads only this
    |  ALSA hw:, output rate matched to the file
-Pi 3B+  --I2S-->  IsolatorPi III  --isolated I2S-->  Digi2 Pro  --S/PDIF-->  DAC
+Pi 3B+  --I2S-->  Digi2 Pro  --S/PDIF-->  DAC
+   |  USB
+Pico 2 H  <- buttons, browse encoder, panel
 ```
 
 One Pi is one deck, which is what makes it safe to reopen the audio device for every
@@ -81,21 +83,22 @@ rather than on PLAY. Nothing surprises you mid-set.
 |---|---|
 | Raspberry Pi 3B+ | 1 GB, Cortex-A53 — sized against **1.2 GHz**, not the headline 1.4 |
 | HiFiBerry Digi2 Pro | WM8804, dual-domain clock, no volume control by design |
-| IsolatorPi III | 5 kV galvanic isolation, master-mode capable |
-| Clean 5 V supply | under 200 mA, feeds the isolated side via J1 |
+| IsolatorPi III | **optional, not fitted** — 5 kV galvanic isolation between the Pi and the audio boards |
 | Pico 2 H | carries the buttons, the browse encoder and the panel; reaches the Pi over USB |
 
 The Digi2 Pro carries separate oscillators for the 44.1 and 48 kHz families and runs
 as clock master, so both come out of an exact crystal rather than the Pi's fractional
-PLL. The isolator keeps the Pi's ground noise off the audio boards. It also offers the
-controls a non-isolated header of their own, which this build no longer needs: they
-are on the Pico. The 3B+ soft-throttles to 1.2 GHz at
+PLL — with or without an isolator, which is why fitting one is an improvement rather
+than a requirement. It would keep the Pi's ground noise off the audio boards; it would
+also offer the controls a header of their own, which this build has no use for now
+that they are on the Pico. The 3B+ soft-throttles to 1.2 GHz at
 60 °C by design, and a deck runs a continuous load inside a box, so the headline
 clock is a sprint clock.
 
-Three assembly steps are easy to get wrong and produce **no error when wrong**: the
-master/slave jumpers, the clean-side power feed, and leaving GPIO 5/6 free —
-[docs/hardware.md](docs/hardware.md).
+One assembly step is easy to get wrong and produces **no error when wrong**: leaving
+GPIO 5/6 free, which the machine driver uses to pick the oscillator. Two more join it
+if an isolator is ever fitted — the master/slave jumpers and the clean-side power
+feed — and both live in [docs/hardware.md](docs/hardware.md).
 
 ## Controls
 

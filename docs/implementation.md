@@ -698,8 +698,8 @@ about the wrong thing. `decisions.md` records the reversal.
 Everything below exists somewhere in this file already. What did not exist, until a
 Pi was actually set up on 2026-09-15, is the *order* — and two of these steps need a
 re-login or a re-plug, which is expensive to discover late. Steps 2 to 5 are measured
-on a fresh Raspberry Pi OS Lite (64-bit) image; step 6 is not, because the isolator
-is not built yet.
+on a fresh Raspberry Pi OS Lite (64-bit) image; step 6 is not, because no isolator is
+fitted and, as of 2026-09-16, one may never be.
 
 1. **The image.** Raspberry Pi OS Lite (64-bit) — `decisions.md` says why it is four
    constraints rather than a preference. `/etc/rpi-issue` naming pi-gen `stage2` is
@@ -754,7 +754,8 @@ is not built yet.
    `udevadm verify` does not catch it, because the file is still valid syntax.
 6. **`config.txt`.** With the Digi2 Pro mounted directly, the HAT EEPROM alone
    enumerates the card and carries the oscillator-select GPIOs, so the overlay line
-   changes nothing. Fit the isolator and it becomes the only thing that works — see
+   changes nothing. Fit an isolator — optional, and not planned — and it becomes the
+   only thing that works; see
    *config.txt* below. Set it in step 1 and the question never arises.
 
 The kernel checklist above is the seventh item, and it is a checklist rather than a

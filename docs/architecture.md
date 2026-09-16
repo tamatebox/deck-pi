@@ -253,12 +253,16 @@ compared with real filenames before anything is bought. That reversibility is wh
 the language choice went the way it did: `luma` gave Python the same property and C
 has no equivalent.
 
-**Update on state change, not on a timer** — not for noise, which the isolator
-settles, but for bus time. Frame bytes are `width x height x bpp / 8` and both
-factors bite. **The panel is on SPI** ([#2](https://github.com/tamatebox/deck-pi/issues/2)),
-where a 128x64 frame is 0.82 ms at 10 MHz, so the discipline below is good practice
-rather than load-bearing; it was sized against the same frame taking ~26 ms over a
-400 kHz I2C bus shared with the WM8804.
+**Update on state change, not on a timer** — for bus time, and **both halves of what
+that used to mean have changed.** Noise was settled by the isolator, which is now
+optional and not fitted; it is settled instead by the panel having left the Pi
+entirely. And the bus is no longer SPI: the panel hangs off the Pico, so a frame
+crosses the Pi's single USB 2.0, shared with Ethernet *and with the stick the window
+thread reads the audio from*. Frame bytes are still `width x height x bpp / 8` and
+both factors still bite. The old sizing is kept for scale — a 128x64 frame is 0.82 ms
+over 10 MHz SPI against ~26 ms over a 400 kHz I2C bus shared with the WM8804 — but
+**the figure that matters now is unmeasured**, and it is the one that shares a bus
+with the audio.
 
 One qualification, because the rule as written is too strong: a position readout has
 to advance while a track plays, and that *is* a timer. Take it as **full redraws on

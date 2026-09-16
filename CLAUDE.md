@@ -2,7 +2,8 @@
 
 Bit-perfect single-deck DJ transport on a Raspberry Pi 3B+. Plays WAV/AIFF straight
 off removable USB media, read-only, no import step, no database, out over I2S to a
-HiFiBerry Digi2 Pro through an IsolatorPi III, S/PDIF to an external DAC. One Pi is
+HiFiBerry Digi2 Pro, S/PDIF to an external DAC. An IsolatorPi III can go between the
+Pi and the HAT and **is not fitted** — optional, not part of the deck. One Pi is
 one deck. Network-independent; Ethernet is maintenance only.
 
 **Rust, one process on the Pi** — engine, browser and display. The buttons, the
@@ -24,8 +25,9 @@ than in a document you would have to think to open.
   enforces the first clause; nothing enforces the rest.
 - **Sources are int16 or int24 only, 44.1 to 192 kHz.** Exactly what the Digi2 Pro
   can send, which is what makes every conversion a pure shift.
-- **GPIO 5 and 6 are reserved** for oscillator select, routed *through* the
-  isolator. Removing the isolator does not free them.
+- **GPIO 5 and 6 are reserved** for oscillator select. They are Pi pins the machine
+  driver drives; an isolator, if one is ever fitted, only passes them through. So
+  neither fitting nor omitting one frees them.
 - **I2S is GPIO 18, 19, 20 *and* 21 — four pins**, physical 12, 35, 38, 40. GPIO 20
   is PCM_DIN, unused for playback and claimed anyway.
 - **The playback position accumulator is float64.** float32 loses the fraction past

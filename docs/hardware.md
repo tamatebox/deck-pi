@@ -8,12 +8,23 @@ what is still open.
 ```
 Raspberry Pi 3B+
    |  40-pin GPIO
-IsolatorPi III        <- galvanic isolation (5 kV), J1 clean-side power in
-   |  isolated I2S + I2C
 HiFiBerry Digi2 Pro   <- WM8804, dual-domain clock, master mode
    |  S/PDIF (RCA coax, 75 ohm)
 external DAC
 ```
+
+**An IsolatorPi III goes between the Pi and the Digi2 Pro, and this build does not
+fit one.** Decided 2026-09-16: it is an optional improvement rather than part of the
+deck. What it buys is galvanic isolation (5 kV) — ground and power separation between
+the Pi and the audio boards — and what it does *not* buy is clock purity, the Digi2
+Pro's own crystals being the master either way.
+
+**Everything in this file about J1, J4, J6, the jumpers and the standoffs applies
+only if one is fitted**, and is kept rather than cut because it is read out of the
+manual and off a photograph, and would have to be done again. Where a section is
+conditional it says so at the top. The one place the isolator reaches into the built
+deck is `config.txt`: the ID EEPROM lines do not cross it, so the overlay line that is
+redundant today becomes the only thing that works the day one goes in.
 
 **Read §C of the manual for the board's own block diagram** — the MUX, the optional
 DoP decoder, three separate isolators (I2S/DSD, Control I2C, GPIO) and the two power
@@ -91,7 +102,10 @@ enclosure is in tension with — [#6](https://github.com/tamatebox/deck-pi/issue
 
 ## Assembly checklist
 
-Three things are easy to get wrong and produce no error when wrong.
+Three things are easy to get wrong and produce no error when wrong. **Only the third
+applies to the deck as built** — the first two are the isolator's, and no isolator is
+fitted. They are checked here anyway because a mistake in either is silent, and the
+day one goes in is the day nobody re-reads this file.
 
 **1. Set J12 / J13 to master mode.** The default is *slave*, in which the Pi
 generates the I2S clock from its own PLL — the high-jitter path this build exists to
@@ -146,8 +160,9 @@ is that the Digi2 Pro is a terminating HAT, so swap it on and off.
   `deck-pi --device=hw:X,Y <file>` opens at the track's own rate, prints the period
   geometry ALSA granted, checks the mixer is empty, plays through the whole chain and
   reads `hw_params` back. `plughw:` is refused before ALSA is touched.
-- **C — Pi, isolator, Digi2 Pro.** Integration: longer standoffs, J12/J13, clean 5 V
-  on J1, and the grounding question.
+- **C — Pi, isolator, Digi2 Pro. Optional, and not being done.** If one is ever
+  fitted: longer standoffs, J12/J13, clean 5 V on J1, and the grounding question.
+  Nothing else in this file waits on it, and A and B together are the whole deck.
 
 **C used to carry the controls' migration onto J4** — reaching the header past the
 HAT needed a splitter and rewiring — and that is gone with them: they are on USB, and
@@ -164,7 +179,7 @@ Digi2 Pro's crystals are the clock master either way** — what the isolator add
 ground and power separation, not clock purity, which §J-2 is blunt about. So A and B
 together are the whole v1 software stack, but B is **not** an audio-quality baseline.
 
-## Power budget (clean side)
+## Power budget (clean side) — only if an isolator is fitted
 
 | | Draw | Provenance |
 |---|---|---|
@@ -333,7 +348,7 @@ Three cautions from HiFiBerry's GPIO-usage page, all of which this build touches
   manual supports the Digi Pro in master mode explicitly, so the combination is sound
   — but neither vendor supports it.
 
-## Where J4 is
+## Where J4 is — only if an isolator is fitted
 
 `J4` is a reference designator silkscreened on the IsolatorPi III; the numbers are not
 sequential by position. The board carries three 40-pin connectors:
