@@ -39,7 +39,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::app::deck::{Deck, DeckError};
-use crate::app::medium::{Mount, MediumSource};
+use crate::app::medium::{Change, MediumSource, Mount};
 use crate::app::track::Ended;
 use crate::input::{Action, Decoder, RawEvent, HOLD_AFTER};
 use crate::sink::AudioSink;
@@ -323,17 +323,32 @@ pub struct Report {
 /// First, for the same reason `Controls::turn` services before it applies: a
 /// turn can hold both a removal and the press that arrived with it, and the
 /// press has to be interpreted against the deck the removal leaves behind.
-pub fn run<E, S, M>(
+///
+/// # `on_turn` is how anything outside hears about a turn
+///
+/// [`Report`] is a tally, and a tally cannot say *which* press was refused or
+/// *what* the medium became. Those are the things a panel draws and a
+/// bring-up run prints, and without a hook here the loop would have to be
+/// re-implemented by anyone who wanted to show them — which is how the app
+/// loop came to exist in the first place (`src/app/mod.rs`). Called once per
+/// turn, on the control thread, with whatever that turn produced; `|_, _| {}`
+/// for a caller that only wants the tally.
+///
+/// It must not block. This is the thread that has to come back round within
+/// [`POLL`] for a hold to fire on time.
+pub fn run<E, S, M, W>(
     controls: &mut Controls,
     source: &mut E,
     mount: &mut Mount<M>,
     deck: &mut Deck<S>,
     stop: &AtomicBool,
+    mut on_turn: W,
 ) -> std::io::Result<Report>
 where
     E: EventSource + ?Sized,
     S: AudioSink + Send + 'static,
     M: MediumSource,
+    W: FnMut(&Turn, Option<&Change>),
 {
     debug_assert!(
         !crate::rt::is_realtime(),
@@ -344,9 +359,10 @@ where
     let mut report = Report::default();
     while !stop.load(Ordering::Relaxed) {
         let now = started.elapsed();
-        if let Some(change) = mount.turn(now, deck) {
+        let change = mount.turn(now, deck);
+        if let Some(c) = &change {
             report.media += 1;
-            report.ends += u64::from(change.ended.is_some());
+            report.ends += u64::from(c.ended.is_some());
         }
         let turn = controls.turn(source, now, deck)?;
         report.turns += 1;
@@ -354,6 +370,7 @@ where
         report.lost += turn.lost as u64;
         report.errors += turn.errors.len() as u64;
         report.ends += u64::from(turn.ended.is_some());
+        on_turn(&turn, change.as_ref());
     }
     Ok(report)
 }

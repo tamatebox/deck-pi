@@ -471,3 +471,113 @@ fn a_surface_that_comes_back_stops_being_looked_for() {
     assert_eq!(source.looks, 1, "one look found it; there was no reason for a second");
     assert!(!source.is_empty(), "the script should have come back");
 }
+
+// ---------------------------------------------------------------------------
+
+/// A medium whose states are a list. Same shape as the one in
+/// `tests/app_medium_test.rs`, kept local because what is under test here is
+/// the loop that drives it rather than the policy it drives.
+struct MediumScript {
+    mount_point: PathBuf,
+    states: VecDeque<deck_pi::media::Medium>,
+}
+
+impl deck_pi::app::medium::MediumSource for MediumScript {
+    fn poll(&mut self) -> Option<deck_pi::media::Medium> {
+        self.states.pop_front()
+    }
+    fn mount_point(&self) -> &std::path::Path {
+        &self.mount_point
+    }
+}
+
+#[test]
+fn the_whole_loop_runs_a_session_from_an_empty_deck_to_a_playing_one() {
+    // **What `src/bin/deck.rs` does, with the two sources scripted.** The
+    // binary is deliberately thin — it assembles these five pieces and prints
+    // — so the thing worth testing is this: `controls::run` itself, driving a
+    // deck that starts with no medium and no listing, through a stick
+    // arriving and a press, to a track playing.
+    //
+    // Until this existed, `run` had no caller anywhere. It was the last piece
+    // of `src/app/` in the state the media watch had been in for four stages.
+    use deck_pi::app::medium::Mount;
+    use deck_pi::media::Medium;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let r = rig("controls-session");
+    r.track("opener", 40_000);
+
+    // No browser and no cues: both arrive with the medium or not at all,
+    // which is how the binary constructs it.
+    let mut deck: Deck<CaptureSink> = Deck::new(
+        Box::new(|info| Ok(CaptureSink::new(info.rate, PERIOD, 200_000))),
+        None,
+        None,
+        Config { window_bytes: WINDOW_BYTES, rt: None },
+    );
+    let mut mount = Mount::new(
+        MediumScript {
+            mount_point: r.medium.clone(),
+            states: VecDeque::from(vec![Medium::Browsable { uuid: None }]),
+        },
+        None,
+    )
+    .with_interval(Duration::ZERO);
+
+    // Idle first, so the medium is mounted before the press — the ordering the
+    // loop promises. Then ENTER on the only row, then PLAY.
+    let mut source = Script::new()
+        .idle(2)
+        .events(&[key(Button::Enter, 1), key(Button::Enter, 0)])
+        .idle(2)
+        .events(&[key(Button::PlayPause, 1), key(Button::PlayPause, 0)])
+        .idle(2);
+    let mut controls = Controls::new(&source);
+
+    let stop = AtomicBool::new(false);
+    let mut seen_medium = 0;
+    let mut turns = 0;
+    let report = deck_pi::app::controls::run(
+        &mut controls,
+        &mut source,
+        &mut mount,
+        &mut deck,
+        &stop,
+        |_turn, change| {
+            if change.is_some() {
+                seen_medium += 1;
+            }
+            turns += 1;
+            // The loop runs until something stops it, and in the binary that
+            // is a signal. Here it is the tenth turn.
+            if turns >= 10 {
+                stop.store(true, Ordering::Relaxed);
+            }
+        },
+    )
+    .expect("the loop");
+
+    assert_eq!(seen_medium, 1, "the callback never heard about the stick");
+    assert_eq!(report.media, 1);
+    assert!(report.turns >= 10, "{report:?}");
+    assert_eq!(report.errors, 0, "{report:?}");
+
+    assert!(deck.browser().is_some(), "the medium never reached the deck");
+    assert!(
+        deck.loaded().path().is_some(),
+        "ENTER did not load: the press never reached the deck"
+    );
+    assert_eq!(
+        deck.transport().rate(),
+        RATE_UNITY,
+        "PLAY did not start it"
+    );
+
+    // And it really is making samples, not just claiming a rate.
+    wait_for("the deck to get somewhere", || {
+        deck.transport().position() > 500.0
+    });
+
+    deck.detach();
+}

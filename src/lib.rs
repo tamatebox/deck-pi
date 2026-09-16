@@ -13,8 +13,8 @@
 //! cues when a stick appears and takes them away when it goes. The display is
 //! built in both halves: `display.rs` decides what goes in which cell, and
 //! `display::paint` turns that into pixels against the real 12 and 16 px
-//! faces. Not started: the USB packer the pixels are handed to, and a binary
-//! that assembles the loop into a deck.
+//! faces. `src/bin/deck.rs` is the binary that assembles the loop into a deck.
+//! Not started: the USB packer the pixels are handed to.
 
 pub mod app;
 pub mod browser;

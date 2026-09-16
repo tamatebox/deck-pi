@@ -61,9 +61,10 @@ listing with it. The display is built in both halves:
 `src/display.rs` decides what text goes in which cell, and `src/display/paint.rs`
 draws it against the real 12 and 16 px Japanese faces — about 0.3 ms for a full
 128x64 frame on the Pi, which `cargo test --release --test render_bench -- --ignored
---nocapture` prints. Still missing are the USB packer that carries those pixels to
-the Pico, and **a binary that assembles the loop into a deck** — `src/main.rs` is a
-bring-up CLI and is not it.
+--nocapture` prints. `src/bin/deck.rs` assembles all of it into
+the deck, which runs on the Pi: it finds the stick, opens the Digi2 Pro by name and
+turns the loop over at 100 Hz. **The one thing still missing is the USB packer** that
+carries the display's pixels to the Pico.
 
 ## What plays
 
@@ -214,6 +215,20 @@ cargo test --release --test ring_race_test -- --ignored --nocapture
 in `src/ring.rs` — the most serious defect found in this codebase — at a measured
 detection rate of 10-20% per run, and removing the fences leaves the default suite
 green on both platforms. `tests/ring_race_test.rs` says what would fix it.
+
+**The deck is `src/bin/deck.rs`**, and it is thin — it assembles the library's
+pieces, installs a signal handler and prints what the loop reports:
+
+```sh
+cargo run --release --bin deck                  # the deck
+cargo run --release --bin deck -- --no-rt       # on a desk, where SCHED_FIFO is refused
+cargo run --release --bin deck -- --help        # the four flags
+```
+
+It starts with no stick and no controls if that is what it finds, and picks both up
+when they appear. **The default output device is `hw:CARD=sndrpihifiberry,DEV=0`, by
+name and not by number**: card 0 on this Pi is the analogue headphone jack, and
+`hw:0,0` would open it and play.
 
 `src/main.rs` is **not the deck**; it is a bring-up CLI:
 
