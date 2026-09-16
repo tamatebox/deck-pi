@@ -295,6 +295,32 @@ pub const COALESCE: Duration = Duration::from_millis(40);
 /// timer even though the rule is "on state change".
 pub const POSITION_EVERY: Duration = Duration::from_secs(1);
 
+/// How long a deck sits untouched before the panel is dimmed.
+///
+/// `architecture.md`: "Dim after ~30 s idle and blank after a few minutes; the
+/// blank command also stops the charge pump, so burn-in and power are one
+/// timer."
+pub const DIM_AFTER: Duration = Duration::from_secs(30);
+
+/// And before it is blanked. The document says "a few minutes"; this is the
+/// number that phrase became, and it is one place rather than three.
+pub const BLANK_AFTER: Duration = Duration::from_secs(180);
+
+/// What the panel should be lit like.
+///
+/// **An intent, not a setting.** The Pi does not know whether the panel dims
+/// by an OLED contrast register, a TFT backlight, or not at all — the same
+/// reason the wire protocol carries no rotation. It says what it means and the
+/// far end decides what that is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lighting {
+    Full,
+    Dim,
+    /// Off. On an OLED this also stops the charge pump, which is why burn-in
+    /// and power are one timer rather than two.
+    Blank,
+}
+
 /// Decides when to draw, and nothing else.
 #[derive(Debug, Clone)]
 pub struct Cadence {

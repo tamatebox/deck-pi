@@ -37,7 +37,10 @@
 use std::path::PathBuf;
 
 use crate::app::deck::Deck;
-use crate::display::{compose, status_line, Cadence, Geometry, Redraw, Screen, State};
+use crate::display::{
+    compose, status_line, Cadence, Geometry, Lighting, Redraw, Screen, State, BLANK_AFTER,
+    DIM_AFTER,
+};
 use crate::sink::AudioSink;
 
 /// Where a [`Screen`] goes.
@@ -59,6 +62,16 @@ pub trait Show {
     /// getting this wrong silently leaves a stale position on the glass.
     fn show_status(&mut self, screen: &Screen) -> std::io::Result<()> {
         self.show(screen)
+    }
+
+    /// Dim, blank, or bring it back.
+    ///
+    /// Defaulted to doing nothing: a console has no brightness, and a panel
+    /// that declares no levels has none either. **Not an error in that case** —
+    /// a deck whose display cannot dim is a deck that does not dim, not a deck
+    /// that fails.
+    fn lighting(&mut self, _: Lighting) -> std::io::Result<()> {
+        Ok(())
     }
 
     /// Something that is not the screen: a stick arriving, a refused press.
@@ -172,6 +185,10 @@ pub struct Panel<D: Show> {
     show: D,
     cadence: Cadence,
     last: Option<Fingerprint>,
+    /// When the deck was last doing something. Reset by any change and by the
+    /// transport running; the idle timers are measured from it.
+    active_at: Option<std::time::Duration>,
+    lighting: Lighting,
 }
 
 impl<D: Show> Panel<D> {
@@ -180,6 +197,8 @@ impl<D: Show> Panel<D> {
             show,
             cadence: Cadence::new(),
             last: None,
+            active_at: None,
+            lighting: Lighting::Full,
         }
     }
 
@@ -203,6 +222,16 @@ impl<D: Show> Panel<D> {
     pub fn forget(&mut self) {
         self.cadence = Cadence::new();
         self.last = None;
+        // A replaced panel is lit however its firmware left it, which is not
+        // what this one remembers. Forgetting the state is not enough — the
+        // next turn has to *say* it, so the remembered value is set to
+        // something the policy will disagree with.
+        self.lighting = Lighting::Blank;
+    }
+
+    /// How the panel is lit right now.
+    pub fn lighting(&self) -> Lighting {
+        self.lighting
     }
 
     /// One turn. Returns what was drawn, if anything.
@@ -221,6 +250,13 @@ impl<D: Show> Panel<D> {
             State::Playing | State::SeekingForward | State::SeekingBack
         );
 
+        // **Before the draw, so a frame never lands on a blanked panel.**
+        // Waking and drawing in the other order would put the new listing on
+        // glass that is still off, and the unblank a moment later would show
+        // it — which works, and would stop working the moment a panel needs
+        // its charge pump settled before it takes pixels.
+        self.light(now, changed, moving)?;
+
         match self.cadence.poll(now, changed, moving) {
             Redraw::Nothing => Ok(Redraw::Nothing),
             Redraw::Position => {
@@ -235,5 +271,36 @@ impl<D: Show> Panel<D> {
                 Ok(Redraw::Full)
             }
         }
+    }
+
+    /// The idle policy, which is one sentence of `architecture.md` and one
+    /// trap.
+    ///
+    /// **The trap is the gate.** Dimming on "no input for a while" is the
+    /// obvious reading and it is wrong here: with a long track playing, no
+    /// input for a few minutes is *normal*, and blanking then hides the
+    /// position readout exactly when someone is watching it — in a dark room,
+    /// mid-set. So the clock only runs when **nothing is playing**, which is
+    /// what the document means by "idle means nothing playing".
+    ///
+    /// Seeking counts as playing. The position is moving and is being read,
+    /// which is the whole reason FF and REW are silent rather than absent.
+    fn light(&mut self, now: std::time::Duration, changed: bool, moving: bool) -> std::io::Result<()> {
+        if changed || moving || self.active_at.is_none() {
+            self.active_at = Some(now);
+        }
+        let idle = now.saturating_sub(self.active_at.unwrap_or(now));
+        let want = if moving || idle < DIM_AFTER {
+            Lighting::Full
+        } else if idle < BLANK_AFTER {
+            Lighting::Dim
+        } else {
+            Lighting::Blank
+        };
+        if want != self.lighting {
+            self.show.lighting(want)?;
+            self.lighting = want;
+        }
+        Ok(())
     }
 }

@@ -23,7 +23,7 @@ use deck_pi::app::deck::Deck;
 use deck_pi::app::panel::{screen_of, Panel, Show, NO_MEDIUM};
 use deck_pi::app::track::Config;
 use deck_pi::browser::Browser;
-use deck_pi::display::{Geometry, Redraw, Screen};
+use deck_pi::display::{Geometry, Lighting, Redraw, Screen, BLANK_AFTER, DIM_AFTER};
 use deck_pi::input::{Action, Button};
 use deck_pi::sink::CaptureSink;
 use deck_pi::transport::State;
@@ -38,6 +38,7 @@ const PERIOD: usize = 128;
 struct Capture {
     screens: Vec<Screen>,
     geometry: Option<Geometry>,
+    lighting: Vec<Lighting>,
 }
 
 impl Capture {
@@ -56,6 +57,10 @@ impl Show for Capture {
     }
     fn show(&mut self, screen: &Screen) -> std::io::Result<()> {
         self.screens.push(screen.clone());
+        Ok(())
+    }
+    fn lighting(&mut self, want: Lighting) -> std::io::Result<()> {
+        self.lighting.push(want);
         Ok(())
     }
 }
@@ -335,6 +340,132 @@ fn the_selection_stays_visible_when_the_panel_gets_shorter() {
         s.lines.iter().any(|l| l.selected && l.text.starts_with("t11")),
         "the selection fell off the shorter panel: {s:?}"
     );
+
+    drop(r.scratch);
+}
+
+#[test]
+fn an_idle_deck_dims_and_then_blanks() {
+    // `architecture.md`: dim after ~30 s, blank after a few minutes, and the
+    // blank stops the charge pump so burn-in and power are one timer.
+    let r = rig("panel-idle");
+    r.track("a", "one", 44_100, Bits::S16, 2_000);
+    let mut deck = r.deck(true);
+    let mut panel = Panel::new(Capture::default());
+
+    panel.turn(Duration::ZERO, &mut deck).expect("turn");
+    assert_eq!(panel.lighting(), Lighting::Full);
+
+    panel.turn(DIM_AFTER - Duration::from_millis(1), &mut deck).expect("turn");
+    assert_eq!(panel.lighting(), Lighting::Full, "dimmed early");
+
+    panel.turn(DIM_AFTER, &mut deck).expect("turn");
+    assert_eq!(panel.lighting(), Lighting::Dim);
+
+    panel.turn(BLANK_AFTER - Duration::from_millis(1), &mut deck).expect("turn");
+    assert_eq!(panel.lighting(), Lighting::Dim, "blanked early");
+
+    panel.turn(BLANK_AFTER, &mut deck).expect("turn");
+    assert_eq!(panel.lighting(), Lighting::Blank);
+
+    // Said once each, not on every turn: this crosses a link.
+    assert_eq!(
+        panel.show().lighting,
+        vec![Lighting::Dim, Lighting::Blank],
+        "the panel was told the same thing twice"
+    );
+
+    drop(r.scratch);
+}
+
+#[test]
+fn a_deck_that_is_playing_never_dims_however_long_nobody_touches_it() {
+    // **The trap the document spends a paragraph on.** "No input for a few
+    // minutes" is a *normal* state with a long track playing, and blanking
+    // then hides the position readout exactly when it is being watched — in a
+    // dark room, mid-set. A timer on input alone would pass every test above
+    // and fail this one.
+    let r = rig("panel-playing");
+    r.track("a", "long", 44_100, Bits::S16, 400_000);
+    let mut deck = r.deck(true);
+    let mut panel = Panel::new(Capture::default());
+
+    load(&mut deck, "a", "long.wav");
+    deck.apply(Action::Press(Button::PlayPause)).expect("play");
+    assert_eq!(deck.transport().state(), State::Playing);
+
+    for minutes in 0..10 {
+        let at = Duration::from_secs(minutes * 60) + BLANK_AFTER;
+        panel.turn(at, &mut deck).expect("turn");
+        assert_eq!(
+            panel.lighting(),
+            Lighting::Full,
+            "dimmed while playing, {minutes} minutes in"
+        );
+    }
+    assert!(panel.show().lighting.is_empty(), "the panel was told anything at all");
+
+    deck.unload();
+    drop(r.scratch);
+}
+
+#[test]
+fn a_blanked_panel_is_woken_before_the_frame_that_woke_it() {
+    // Waking and drawing in the other order puts the new listing on glass that
+    // is still off. It would work today and stop working on a panel that needs
+    // its charge pump settled before it takes pixels.
+    let r = rig("panel-wake");
+    for i in 0..3 {
+        r.track("a", &format!("t{i}"), 44_100, Bits::S16, 2_000);
+    }
+    let mut deck = r.deck(true);
+    let mut panel = Panel::new(Capture::default());
+
+    select(&mut deck, "a");
+    deck.apply(Action::Press(Button::Enter)).expect("descend");
+    panel.turn(Duration::ZERO, &mut deck).expect("turn");
+    panel.turn(BLANK_AFTER, &mut deck).expect("turn");
+    assert_eq!(panel.lighting(), Lighting::Blank);
+    let drawn_while_dark = panel.show().screens.len();
+
+    // A detent, an hour later.
+    deck.apply(Action::Browse(1)).expect("browse");
+    let woke = BLANK_AFTER + Duration::from_secs(3600);
+    assert_eq!(panel.turn(woke, &mut deck).expect("turn"), Redraw::Full);
+    assert_eq!(panel.lighting(), Lighting::Full, "drew onto a dark panel");
+    assert_eq!(
+        panel.show().lighting.last(),
+        Some(&Lighting::Full),
+        "{:?}",
+        panel.show().lighting
+    );
+    assert!(panel.show().screens.len() > drawn_while_dark);
+
+    drop(r.scratch);
+}
+
+#[test]
+fn a_display_with_no_brightness_is_not_a_failure() {
+    // The console has none, and a panel can declare none. `Show::lighting`
+    // defaults to doing nothing for exactly that reason — a deck whose display
+    // cannot dim is a deck that does not dim.
+    struct Plain;
+    impl Show for Plain {
+        fn geometry(&self) -> Geometry {
+            Geometry { cols: 21, rows: 5, colour: false }
+        }
+        fn show(&mut self, _: &Screen) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let r = rig("panel-nodim");
+    let mut deck = r.deck(false);
+    let mut panel = Panel::new(Plain);
+    for at in [Duration::ZERO, DIM_AFTER, BLANK_AFTER] {
+        panel.turn(at, &mut deck).expect("a display without dimming must still turn");
+    }
+    assert_eq!(panel.lighting(), Lighting::Blank, "the policy still ran");
 
     drop(r.scratch);
 }

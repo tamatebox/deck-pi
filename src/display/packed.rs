@@ -30,7 +30,7 @@ use embedded_graphics::prelude::*;
 
 use super::paint::{Face, Layout, Painter, Palette};
 use super::wire::{Declared, Message, Pen, Reader, Span};
-use super::{Geometry, Kind, Screen};
+use super::{Geometry, Kind, Lighting, Screen};
 use crate::app::panel::Show;
 
 /// A 1 bpp framebuffer: rows padded to whole bytes, most significant bit
@@ -269,6 +269,38 @@ impl<W: Write> Show for Packed<W> {
 
     fn show(&mut self, screen: &Screen) -> std::io::Result<()> {
         self.send(screen)
+    }
+
+    /// **Where the Pi's intent becomes the panel's setting.** `Panel` decides
+    /// *that* the deck has been idle; what "dim" is belongs to whatever is
+    /// plugged in, and `Declared::brightness_levels` is how the Pico said
+    /// whether it has any say at all.
+    ///
+    /// A panel with no levels still blanks — an OLED with no contrast register
+    /// can still stop its charge pump, and blanking is the half that matters
+    /// for burn-in. It simply does not get a `Brightness` it cannot use.
+    fn lighting(&mut self, want: Lighting) -> std::io::Result<()> {
+        let levels = self.declared.brightness_levels;
+        let mut send = |m: Message| -> std::io::Result<()> {
+            self.out.write_all(&m.to_bytes())?;
+            self.out.flush()
+        };
+        match want {
+            Lighting::Blank => send(Message::Blank(true))?,
+            Lighting::Full | Lighting::Dim => {
+                // Unblank first: a brightness set on a panel whose pump is off
+                // changes a register nobody can see.
+                send(Message::Blank(false))?;
+                if levels > 0 {
+                    let step = match want {
+                        Lighting::Dim => levels / 4,
+                        _ => levels - 1,
+                    };
+                    send(Message::Brightness(step))?;
+                }
+            }
+        }
+        Ok(())
     }
 
     // **No `show_status` override yet, and that is not an oversight.** The

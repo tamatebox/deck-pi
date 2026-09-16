@@ -334,3 +334,10 @@ dark room, during a set. Idle means nothing playing.
 charge pump, but a backlight that wants its own timer instead. Nothing outside this
 subsection should assume which it is; several documents used to say "OLED" outright,
 which was deciding an open question by wording.
+
+**Built, and the split keeps that last sentence true.** `app::panel` owns the policy
+and says only `Full`, `Dim` or `Blank` — an intent. What that *is* belongs to the far
+end: `display::packed` turns it into the wire's `Brightness` and `Blank`, using the
+`brightness_levels` the Pico declared, and a panel that declares none still blanks
+because stopping a charge pump needs no contrast register. So the Pi never learns
+which kind of panel it has, here or anywhere else.
