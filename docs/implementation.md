@@ -940,6 +940,17 @@ it has been run this table is inferred rather than measured.
   last touched 2020). Both are acceptable because their surfaces are small enough to
   own: enforcement whose failure costs enforcement rather than function, and an init
   sequence plus a `DrawTarget` impl.
+- **`u8g2-fonts` carries the glyphs, and its failure mode is silence.** The crate is
+  MIT/Apache; **the font data is licensed per group**, which is
+  [#10](https://github.com/tamatebox/deck-pi/issues/10) — the 12 and 16 px Japanese
+  faces are efont/shinonome and Public Domain, the 10 px one is naga10 and is not
+  used. Measured, and the reason `src/display/paint.rs` looks every character up
+  before drawing it: `render` on a string containing **one** character the face
+  lacks draws **nothing at all** and returns `GlyphNotFound`, so a discarded error
+  blanks the whole line. `with_ignore_unknown_chars(true)` is not the fix — it skips
+  the character with *zero* advance, so the name silently comes out shorter than the
+  layout planned. `tools/panel-compare` hit the first of these and its `MISSING`
+  report exists because of it.
 
 The crates that are **hard to replace are the healthy ones** — `libc`,
 `embedded-graphics`, the C libraries — which is where the risk belongs. The panel

@@ -194,7 +194,7 @@ audio callback, which reads the ring and nothing else.
 | Dispatch | `src/app/deck.rs` |
 | Track lifecycle | `src/app/track.rs` |
 | Control loop | `src/app/controls.rs` |
-| Display | `src/display.rs` — the cell layout; nothing draws pixels yet |
+| Display | `src/display.rs` — the cell layout; `src/display/paint.rs` — the pixels |
 
 **What each module owns is in its own doc comment**, which says it first-hand and
 cannot drift from the code. This table is the map, not the description. Four rules
@@ -263,6 +263,16 @@ both factors still bite. The old sizing is kept for scale — a 128x64 frame is 
 over 10 MHz SPI against ~26 ms over a 400 kHz I2C bus shared with the WM8804 — but
 **the figure that matters now is unmeasured**, and it is the one that shares a bus
 with the audio.
+
+**Drawing the frame is not what costs.** Measured on the 3B+ in release, into
+memory, 2026-09-16, by `tests/render_bench.rs`: a full 128x64 frame at 12 px is
+**0.26-0.30 ms**, a 320x240 one at 16 px is **1.4-1.7 ms**, and the
+status-line-only redraw is 0.04-0.10 ms. The ranges are two runs of the same
+bench on the same machine, quoted rather than averaged because a 3B+ clocks
+where it likes. Against a 40 ms coalescing window that is nothing, and
+it says the budget question is entirely about the link rather than about the
+rendering. **The link is still unmeasured** — these figures stop at the
+`DrawTarget`, and re-running them is a command rather than a memory.
 
 One qualification, because the rule as written is too strong: a position readout has
 to advance while a track plays, and that *is* a timer. Take it as **full redraws on

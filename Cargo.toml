@@ -19,6 +19,32 @@ assert_no_alloc = { version = "1.1", default-features = false, features = [
 # is a Unicode property rather than a `chars().count()`. Hand-rolling the
 # ranges would be a table that goes stale against the standard.
 unicode-width = "0.2.2"
+# Compatibility decomposition, for the display's ASCII fallback. `é` is `e`
+# plus a combining acute, and `…` is three full stops — so "what would this
+# character be without the part the panel font lacks" is a Unicode property
+# too, and the same argument as `unicode-width` above applies: the table is
+# large, it grows, and a hand-kept copy of a slice of it goes stale silently.
+# Measured need, not a precaution: 87 of the 2192 names on the stick contain a
+# character neither panel face has, and 23 of the 32 distinct ones are
+# accented Latin. See `src/display/paint.rs`.
+unicode-normalization = "0.1"
+# The drawing half of the display. `embedded-graphics` is the one drawing API
+# behind a `DrawTarget`, and `decisions.md` (2026-09-15, the panel moving to
+# the Pico) is what puts it in the deck rather than in firmware: "the deck
+# still draws", so fonts and layout stay here and the `DrawTarget` impl will
+# target a USB packer instead of an SPI driver.
+#
+# `tools/panel-compare/Cargo.toml` says it was kept a separate crate so these
+# never became deck dependencies. That held while nothing in the deck drew;
+# the reversal overrides it. `image` is **not** followed in here — the tests
+# render into a `Vec` of pixels, which is all a pixel assertion needs.
+embedded-graphics = "0.8"
+# The 12 and 16 px Japanese faces, which are efont/shinonome and Public
+# Domain in their Japanese sources — traced in
+# [#10](https://github.com/tamatebox/deck-pi/issues/10), which is also why
+# `b10_t_japanese*` is not used: naga10, "freely usable but restricted", and
+# unread. One checkbox in #10 is open and must close before anything ships.
+u8g2-fonts = "0.8"
 
 # Linux only: the deck's real output. On macOS the sink is `CaptureSink`, so
 # the file layer, ring, transport and callback all stay buildable and testable

@@ -55,9 +55,12 @@ end at both depths and all six rates, across four of the five containers in scop
 (**Wave64 is accepted and untested**).
 
 The app loop is partly built: the period loop, the track lifecycle, the dispatch and
-the control loop that reads `/dev/input`. Still missing are **media watch wired to
-the deck**, and the display's drawing half — `src/display.rs` decides what text
-goes in which cell, and nothing yet turns that into pixels. `src/main.rs` is a bring-up
+the control loop that reads `/dev/input`. The display is built in both halves:
+`src/display.rs` decides what text goes in which cell, and `src/display/paint.rs`
+draws it against the real 12 and 16 px Japanese faces — about 0.3 ms for a full
+128x64 frame on the Pi, which `cargo test --release --test render_bench -- --ignored
+--nocapture` prints. Still missing are **media watch wired to the deck**, and
+the USB packer that carries those pixels to the Pico. `src/main.rs` is a bring-up
 CLI, not the deck.
 
 ## What plays
@@ -228,6 +231,22 @@ implementation of the thing under test:
 ```sh
 DECK_PI_DEMO_DIR=/tmp/deck-demo cargo test --test emit_demo -- --ignored
 ```
+
+Two measurements against real material are `--ignored`, because one needs the stick
+and the other needs the Pi:
+
+```sh
+cargo test --release --test render_bench -- --ignored --nocapture
+DECK_PI_MUSIC_DIR=/media/stick/Music cargo test --release \
+    --test font_covers_library -- --ignored --nocapture
+```
+
+The first prints what a frame costs to draw on the machine it runs on; the second
+asks whether the panel font contains every character in every name on the stick, and
+names the files it does not. On 2026-09-16 it found **87 of 2192 names** with a
+character neither face has; all but **5** fold to ASCII that reads as the original
+(`é` as `e`, `…` as `...`), and the five that do not are three kanji outside
+`japanese3`, plus a Cyrillic `С` sitting inside an otherwise Latin name.
 
 `tools/panel-compare` is a standalone crate that renders a folder listing at all six
 candidate panel geometries, at true physical size at 300 dpi with a 10 mm rule. Print

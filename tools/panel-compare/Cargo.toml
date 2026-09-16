@@ -6,8 +6,13 @@ publish = false
 
 # A throwaway comparison harness, NOT deck code. It exists to settle open
 # question 1 — which panel — before hardware is bought, and it is deliberately
-# outside the deck's crate so `image`, `u8g2-fonts` and their trees never
-# become dependencies of the thing that has to run under a deadline.
+# outside the deck's crate so `image` and its tree never become a dependency of
+# the thing that has to run under a deadline.
+#
+# **That used to say `u8g2-fonts` too, and it no longer holds.** The panel moved
+# to the Pico on 2026-09-15 with the deck still drawing, so `embedded-graphics`
+# and `u8g2-fonts` are deck dependencies now and `src/display/paint.rs` is what
+# uses them. `image` is still only here.
 #
 # The fonts are the reason this is worth building rather than guessing:
 # `u8g2-fonts` bundles `u8g2_font_b12_t_japanese*` at a measured 12x12 and
@@ -17,8 +22,12 @@ publish = false
 # needed.
 #
 # NOTE ON LICENSING: u8g2-fonts is MIT/Apache but its README says outright
-# that "the fonts themselves *are not*". Fine for a harness that is never
-# shipped; a real question if the deck ends up using them.
+# that "the fonts themselves *are not*". That reading was too strong and was
+# corrected in issue #10: the terms are per font group, and the 12 and 16 px
+# Japanese faces this harness uses are efont/shinonome, Public Domain in every
+# Japanese source. The 10 px face is naga10 and is restricted, which is why the
+# deck does not use it and this harness still does — for the 128x64 row only,
+# and it ships nothing. One checkbox in #10 is open.
 
 [dependencies]
 embedded-graphics = "0.8"

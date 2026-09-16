@@ -6,16 +6,17 @@
 //! sits above even that — it decides *what text goes where* given a grid of
 //! cells, and it does so without a font, a driver or a panel.
 //!
-//! **Which is the half that can be built and tested today.** The panel is not
-//! bought ([#2](https://github.com/tamatebox/deck-pi/issues/2)), and the glyphs
-//! have a licence question over them. A library of `吉村弘` and
-//! `追憶のウォーデンクリフ` cannot fall back to ASCII, so that question gates
-//! the drawing — and gates nothing here.
+//! **Which is the half that needs no panel.** Which panel is still open
+//! ([#2](https://github.com/tamatebox/deck-pi/issues/2)), and nothing here
+//! depends on the answer. The other half — cells into pixels, against the
+//! real faces — is [`paint`], and it takes the grid below from the font
+//! rather than the other way round.
 //!
 //! The licence over those glyphs is
 //! [#10](https://github.com/tamatebox/deck-pi/issues/10), and the trace lives
 //! there rather than here — a licence note in a source file is how this one
-//! got lost the first time.
+//! got lost the first time. **One checkbox in it is open**, which is what
+//! gates shipping rather than what gates writing the drawing.
 //!
 //! # A column is half a cell, and that is a font fact
 //!
@@ -40,6 +41,8 @@
 //! the renderer is the only thing that knows the truth: it should measure each
 //! line against the font and clip, rather than trust a budget computed here.
 
+pub mod paint;
+
 use std::time::Duration;
 
 use unicode_width::UnicodeWidthChar;
@@ -52,7 +55,7 @@ pub use crate::transport::State;
 /// **ASCII deliberately.** `panel-compare` settled this: `U+2026` is not in
 /// these fonts, and a truncation marker that silently fails to draw is worse
 /// than an ugly one — the name simply looks like a different, shorter name.
-const TRUNCATED: char = '~';
+pub const TRUNCATED: char = '~';
 
 /// The panel's usable text grid, in **columns** of one half-width glyph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

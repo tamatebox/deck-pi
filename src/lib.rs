@@ -9,10 +9,10 @@
 //! setup that makes the callback's "cannot fault" true, the browser, media watch,
 //! the cue store and input, and the app loop that joins them — the period loop,
 //! the track lifecycle, the dispatch and the control loop that reads
-//! `/dev/input`. The display has its half that needs no panel — `display.rs`
-//! decides what goes in which cell — and not the half that draws pixels, which
-//! waits on a font whose licence is issue #10. Not started: media watch wired
-//! to the deck.
+//! `/dev/input`. The display is built in both halves: `display.rs` decides
+//! what goes in which cell, and `display::paint` turns that into pixels
+//! against the real 12 and 16 px faces. Not started: media watch wired to the
+//! deck, and the USB packer the pixels are handed to.
 
 pub mod app;
 pub mod browser;
