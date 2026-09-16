@@ -257,12 +257,35 @@ has no equivalent.
 that used to mean have changed.** Noise was settled by the isolator, which is now
 optional and not fitted; it is settled instead by the panel having left the Pi
 entirely. And the bus is no longer SPI: the panel hangs off the Pico, so a frame
-crosses the Pi's single USB 2.0, shared with Ethernet *and with the stick the window
-thread reads the audio from*. Frame bytes are still `width x height x bpp / 8` and
-both factors still bite. The old sizing is kept for scale — a 128x64 frame is 0.82 ms
-over 10 MHz SPI against ~26 ms over a 400 kHz I2C bus shared with the WM8804 — but
-**the figure that matters now is unmeasured**, and it is the one that shares a bus
-with the audio.
+crosses USB. Frame bytes are still `width x height x bpp / 8` and both factors still
+bite. The old sizing is kept for scale — a 128x64 frame is 0.82 ms over 10 MHz SPI
+against ~26 ms over a 400 kHz I2C bus shared with the WM8804.
+
+**The ceiling is the Pico's own controller, not the Pi's bus, and that is a
+correction.** This paragraph used to say a frame "crosses the Pi's single USB 2.0,
+shared with Ethernet *and with the stick the window thread reads the audio from*",
+and called the figure unmeasured. The RP2350 has **"A USB 1.1 controller and PHY"**
+(raspberrypi.com, *RP2040 and RP2350 silicon*), and the deck's own Pico confirms it:
+`lsusb -t` on 2026-09-16 shows it at **12M** where the Ethernet and the stick are both
+at 480M. So the display cannot contend for the stick's bandwidth in any serious way —
+it is roughly 40x below it — and the number to size against is the Pico's link:
+
+| | bytes | at ~1 MB/s bulk | at 64 KB/s HID |
+|---|---|---|---|
+| 128x64 1bpp | 1,024 | ~1 ms | ~16 ms |
+| 320x240 1bpp | 9,600 | ~10 ms | ~150 ms |
+| 256x64 or 128x128 4bpp | 8,192 | ~8 ms | ~128 ms |
+| 320x240 16bpp | 153,600 | **~150 ms** | ~2.4 s |
+
+12 Mbit/s is the USB full-speed rate, from the specification; **~1 MB/s for bulk and
+64 KB/s for a 64-byte HID interrupt endpoint are estimates** of what is reachable on
+it, and the byte counts are arithmetic. Nothing here is measured end to end yet.
+
+Read the last row rather than the others: **a 320x240 16bpp full frame cannot meet a
+40 ms cadence over this link**, by a factor of three to four, and no measurement is
+needed to know it. That does not rule the panel out — it rules out shipping it
+*pixels in its own format*. Shipping 1 bpp and letting the Pico expand is the same
+panel at 9,600 bytes.
 
 **Drawing the frame is not what costs.** Measured on the 3B+ in release, into
 memory, 2026-09-16, by `tests/render_bench.rs`: a full 128x64 frame at 12 px is

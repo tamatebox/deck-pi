@@ -59,9 +59,12 @@ mod linux {
     use deck_pi::app::controls::{self, Controls, Turn};
     use deck_pi::app::deck::Deck;
     use deck_pi::app::medium::{Change, Mount};
+    use deck_pi::app::panel::{Panel, Show};
     use deck_pi::app::track::Config;
     use deck_pi::cue;
     use deck_pi::input::Devices;
+    use deck_pi::display::text::{Text, CONSOLE};
+    use deck_pi::display::Geometry;
     use deck_pi::media::{self, MediaWatch};
     use deck_pi::ring;
     use deck_pi::sink::alsa::AlsaSink;
@@ -104,6 +107,7 @@ mod linux {
         mount: std::path::PathBuf,
         window_bytes: usize,
         rt: bool,
+        grid: Geometry,
     }
 
     fn parse(argv: impl Iterator<Item = String>) -> Result<Option<Args>, String> {
@@ -112,6 +116,7 @@ mod linux {
             mount: std::path::PathBuf::from(media::MOUNT_POINT),
             window_bytes: ring::WINDOW_BYTES_PLACEHOLDER,
             rt: true,
+            grid: CONSOLE,
         };
         for arg in argv {
             match arg.as_str() {
@@ -130,6 +135,18 @@ mod linux {
                         .map_err(|_| format!("--window-mib= wants a number, got {n:?}"))?;
                     a.window_bytes = mib * 1024 * 1024;
                 }
+                _ if arg.starts_with("--grid=") => {
+                    let spec = &arg["--grid=".len()..];
+                    let (c, r) = spec
+                        .split_once('x')
+                        .ok_or_else(|| format!("--grid= wants COLSxROWS, got {spec:?}"))?;
+                    let cols = c.parse().map_err(|_| format!("bad columns in {spec:?}"))?;
+                    let rows = r.parse().map_err(|_| format!("bad rows in {spec:?}"))?;
+                    // Mono, because the console's stand-in for the panel is
+                    // the mono one: the marks are what a colour panel would
+                    // say with a pen, and seeing them is the point.
+                    a.grid = Geometry { cols, rows, colour: false };
+                }
                 _ => return Err(format!("unknown argument {arg:?}")),
             }
         }
@@ -146,34 +163,52 @@ mod linux {
             ring::WINDOW_BYTES_PLACEHOLDER / (1024 * 1024)
         );
         eprintln!("  --no-rt       do not ask for SCHED_FIFO. For a desk, not for the deck");
+        eprintln!(
+            "  --grid=CxR    the console display's grid. Default {}x{}, and a panel's own \n\
+             \t\tnumbers preview it — 21x5 is the 128x64 at 12 px",
+            CONSOLE.cols, CONSOLE.rows
+        );
     }
 
     /// Everything the loop did that is worth a line. Called once a turn, so it
     /// says nothing on the overwhelming majority of them.
-    fn report_turn(turn: &Turn, change: Option<&Change>) {
+    ///
+    /// **Through the display rather than `println!`.** The console draws the
+    /// listing by walking the cursor back over the block it last wrote, and a
+    /// `println!` landing in the middle of that leaves the arithmetic wrong
+    /// for the rest of the run — `Show::note` is the door that exists so this
+    /// cannot happen.
+    fn report_turn<D: Show>(turn: &Turn, change: Option<&Change>, show: &mut D) {
+        let mut say = |line: String| {
+            let _ = show.note(&line);
+        };
         if let Some(c) = change {
-            println!("medium: {}", c.medium);
+            say(format!("medium: {}", c.medium));
             if let Some(e) = &c.unbrowsable {
-                println!("  cannot browse it: {e}");
+                say(format!("  cannot browse it: {e}"));
             }
             if let Some(e) = &c.cueless {
-                println!("  cues cannot be loaded: {e} — the deck plays, cues do not persist");
+                say(format!("  cues will not load: {e} — the deck plays, cues do not persist"));
             }
             if c.ended.is_some() {
-                println!("  the track it was playing has been unloaded");
+                say("  the track it was playing has been unloaded".to_string());
             }
         }
         if let Some(ended) = &turn.ended {
-            println!("track ended: {ended:?}");
+            say(format!("track ended: {ended:?}"));
         }
         if turn.lost > 0 {
-            println!("control surface: {} node(s) went away", turn.lost);
+            say(format!("control surface: {} node(s) went away", turn.lost));
         }
         if turn.reopened > 0 {
-            println!("control surface: {} node(s) came back", turn.reopened);
+            say(format!("control surface: {} node(s) came back", turn.reopened));
         }
         for e in &turn.errors {
-            println!("refused: {e}");
+            say(format!("refused: {e}"));
+        }
+        if let Some(e) = &turn.draw_error {
+            // Not through `note`: the display is the thing that just refused.
+            eprintln!("display: {e}");
         }
     }
 
@@ -239,12 +274,24 @@ mod linux {
             args.window_bytes / (1024 * 1024),
             if args.rt { "SCHED_FIFO requested per track" } else { "no realtime" }
         );
-        println!("watching {}", args.mount.display());
+        println!(
+            "watching {}, showing {}x{} on the console",
+            args.mount.display(),
+            args.grid.cols,
+            args.grid.rows
+        );
+
+        // ANSI only when stdout is a terminal: piped to a file or a log, the
+        // escape codes would be the output rather than decorate it.
+        // SAFETY: `isatty` reads a descriptor and returns a flag.
+        let tty = unsafe { libc::isatty(1) } == 1;
+        let mut panel = Panel::new(Text::new(std::io::stdout(), args.grid).with_ansi(tty));
 
         let outcome = controls::run(
             &mut controls,
             &mut devices,
             &mut mount,
+            &mut panel,
             &mut deck,
             &STOP,
             report_turn,

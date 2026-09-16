@@ -502,8 +502,31 @@ fn the_whole_loop_runs_a_session_from_an_empty_deck_to_a_playing_one() {
     // Until this existed, `run` had no caller anywhere. It was the last piece
     // of `src/app/` in the state the media watch had been in for four stages.
     use deck_pi::app::medium::Mount;
+    use deck_pi::app::panel::{Panel, Show};
+    use deck_pi::display::{Geometry, Screen};
     use deck_pi::media::Medium;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// A display that keeps what it was shown, so the loop's last half can be
+    /// asserted on rather than assumed.
+    #[derive(Default)]
+    struct Capture {
+        screens: Vec<Screen>,
+        notes: Vec<String>,
+    }
+    impl Show for Capture {
+        fn geometry(&self) -> Geometry {
+            Geometry { cols: 40, rows: 8, colour: false }
+        }
+        fn show(&mut self, screen: &Screen) -> std::io::Result<()> {
+            self.screens.push(screen.clone());
+            Ok(())
+        }
+        fn note(&mut self, line: &str) -> std::io::Result<()> {
+            self.notes.push(line.to_owned());
+            Ok(())
+        }
+    }
 
     let r = rig("controls-session");
     r.track("opener", 40_000);
@@ -535,6 +558,7 @@ fn the_whole_loop_runs_a_session_from_an_empty_deck_to_a_playing_one() {
         .idle(2);
     let mut controls = Controls::new(&source);
 
+    let mut panel = Panel::new(Capture::default());
     let stop = AtomicBool::new(false);
     let mut seen_medium = 0;
     let mut turns = 0;
@@ -542,16 +566,23 @@ fn the_whole_loop_runs_a_session_from_an_empty_deck_to_a_playing_one() {
         &mut controls,
         &mut source,
         &mut mount,
+        &mut panel,
         &mut deck,
         &stop,
-        |_turn, change| {
-            if change.is_some() {
+        |_turn, change, show: &mut Capture| {
+            if let Some(c) = change {
                 seen_medium += 1;
+                let _ = show.note(&format!("medium: {}", c.medium));
             }
             turns += 1;
             // The loop runs until something stops it, and in the binary that
-            // is a signal. Here it is the tenth turn.
-            if turns >= 10 {
+            // is a signal. Here it is **the second full draw**, not a turn
+            // count: these turns take microseconds, so ten of them fit inside
+            // one coalescing window and `Cadence` — correctly — draws once.
+            // Stopping there would assert against the screen as it was before
+            // the press, which is the display lagging rather than the loop
+            // being wrong.
+            if turns >= 10 && show.screens.len() >= 2 {
                 stop.store(true, Ordering::Relaxed);
             }
         },
@@ -578,6 +609,20 @@ fn the_whole_loop_runs_a_session_from_an_empty_deck_to_a_playing_one() {
     wait_for("the deck to get somewhere", || {
         deck.transport().position() > 500.0
     });
+
+    // **The display half ran too, and it showed the deck it ended up with.**
+    // The last screen is the one after the press, not the one before it —
+    // which is why the panel is turned over last.
+    let shown = &panel.show().screens;
+    assert!(!shown.is_empty(), "the display was never drawn");
+    let last = shown.last().expect("a screen");
+    assert_eq!(last.folder, "medium", "the listing is of the mounted folder");
+    assert!(
+        last.lines.iter().any(|l| l.selected && l.text.starts_with("opener")),
+        "{last:?}"
+    );
+    assert!(last.status.starts_with("PLAY"), "{:?}", last.status);
+    assert_eq!(panel.show().notes, vec!["medium: browsable, no volume UUID — cues cannot be saved"]);
 
     deck.detach();
 }

@@ -40,6 +40,8 @@ use std::time::{Duration, Instant};
 
 use crate::app::deck::{Deck, DeckError};
 use crate::app::medium::{Change, MediumSource, Mount};
+use crate::app::panel::{Panel, Show};
+use crate::display::Redraw;
 use crate::app::track::Ended;
 use crate::input::{Action, Decoder, RawEvent, HOLD_AFTER};
 use crate::sink::AudioSink;
@@ -150,6 +152,16 @@ pub struct Turn {
     /// press is a thing the display says, which is `decisions.md`'s "say
     /// *why*, not just *that*". Empty `Vec`s do not allocate.
     pub errors: Vec<DeckError>,
+    /// What the display drew, if it drew.
+    pub drawn: Option<Redraw>,
+    /// The display would not take it.
+    ///
+    /// **Reported and not fatal.** A panel is a thing the deck talks to over a
+    /// link that can go away — an unplugged Pico, a closed terminal — and a
+    /// deck that stopped playing because its screen went is a worse deck than
+    /// one that plays on blind. The same reasoning `controls::run` applies to
+    /// a control surface that vanishes.
+    pub draw_error: Option<std::io::Error>,
 }
 
 /// The decoder, its scratch buffers, and the reset obligation.
@@ -296,6 +308,10 @@ pub struct Report {
     pub ends: u64,
     /// Media changes: a stick arriving, going, or being swapped for another.
     pub media: u64,
+    /// Frames the display took.
+    pub draws: u64,
+    /// Frames it refused. Non-zero means the deck has been playing blind.
+    pub draw_errors: u64,
 }
 
 /// Runs the control loop until `stop` is set.
@@ -324,6 +340,14 @@ pub struct Report {
 /// turn can hold both a removal and the press that arrived with it, and the
 /// press has to be interpreted against the deck the removal leaves behind.
 ///
+/// # The display is turned over last, and it is not optional either
+///
+/// Same argument as [`Mount`]: a half of the deck that a caller may or may not
+/// wire up is a half that spends four stages wired to nothing. [`Panel`] takes
+/// a [`Show`], and the console implementation in `display::text` means there
+/// is always one to pass — a deck with no panel shows text rather than showing
+/// nothing.
+///
 /// # `on_turn` is how anything outside hears about a turn
 ///
 /// [`Report`] is a tally, and a tally cannot say *which* press was refused or
@@ -331,15 +355,17 @@ pub struct Report {
 /// bring-up run prints, and without a hook here the loop would have to be
 /// re-implemented by anyone who wanted to show them — which is how the app
 /// loop came to exist in the first place (`src/app/mod.rs`). Called once per
-/// turn, on the control thread, with whatever that turn produced; `|_, _| {}`
+/// turn, on the control thread, with whatever that turn produced and with the
+/// display itself, so that a caller can [`Show::note`] on it; `|_, _, _| {}`
 /// for a caller that only wants the tally.
 ///
 /// It must not block. This is the thread that has to come back round within
 /// [`POLL`] for a hold to fire on time.
-pub fn run<E, S, M, W>(
+pub fn run<E, S, M, D, W>(
     controls: &mut Controls,
     source: &mut E,
     mount: &mut Mount<M>,
+    panel: &mut Panel<D>,
     deck: &mut Deck<S>,
     stop: &AtomicBool,
     mut on_turn: W,
@@ -348,7 +374,8 @@ where
     E: EventSource + ?Sized,
     S: AudioSink + Send + 'static,
     M: MediumSource,
-    W: FnMut(&Turn, Option<&Change>),
+    D: Show,
+    W: FnMut(&Turn, Option<&Change>, &mut D),
 {
     debug_assert!(
         !crate::rt::is_realtime(),
@@ -364,13 +391,28 @@ where
             report.media += 1;
             report.ends += u64::from(c.ended.is_some());
         }
-        let turn = controls.turn(source, now, deck)?;
+        let mut turn = controls.turn(source, now, deck)?;
+        // **Last, and that is the order the display wants.** The screen has to
+        // show the deck this turn leaves behind, not the one it started with:
+        // drawing before the presses would put the previous selection on the
+        // glass and correct it 10 ms later, which on a fast spin is a listing
+        // that lags the knob by one frame for the whole spin.
+        match panel.turn(now, deck) {
+            Ok(drawn) => {
+                report.draws += u64::from(drawn != Redraw::Nothing);
+                turn.drawn = Some(drawn);
+            }
+            Err(e) => {
+                report.draw_errors += 1;
+                turn.draw_error = Some(e);
+            }
+        }
         report.turns += 1;
         report.actions += turn.actions as u64;
         report.lost += turn.lost as u64;
         report.errors += turn.errors.len() as u64;
         report.ends += u64::from(turn.ended.is_some());
-        on_turn(&turn, change.as_ref());
+        on_turn(&turn, change.as_ref(), panel.show_mut());
     }
     Ok(report)
 }

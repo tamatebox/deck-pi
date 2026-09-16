@@ -13,8 +13,10 @@
 //! cues when a stick appears and takes them away when it goes. The display is
 //! built in both halves: `display.rs` decides what goes in which cell, and
 //! `display::paint` turns that into pixels against the real 12 and 16 px
-//! faces. `src/bin/deck.rs` is the binary that assembles the loop into a deck.
-//! Not started: the USB packer the pixels are handed to.
+//! faces — and `app::panel` is the half that decides when to redraw and hands
+//! the screen to whatever shows one, which today is `display::text` on a
+//! console. `src/bin/deck.rs` assembles the loop into a deck. Not started: the
+//! USB packer that would carry the pixels to the Pico.
 
 pub mod app;
 pub mod browser;

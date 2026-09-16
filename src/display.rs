@@ -42,6 +42,7 @@
 //! line against the font and clip, rather than trust a budget computed here.
 
 pub mod paint;
+pub mod text;
 
 use std::time::Duration;
 

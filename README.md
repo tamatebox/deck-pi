@@ -61,10 +61,12 @@ listing with it. The display is built in both halves:
 `src/display.rs` decides what text goes in which cell, and `src/display/paint.rs`
 draws it against the real 12 and 16 px Japanese faces — about 0.3 ms for a full
 128x64 frame on the Pi, which `cargo test --release --test render_bench -- --ignored
---nocapture` prints. `src/bin/deck.rs` assembles all of it into
-the deck, which runs on the Pi: it finds the stick, opens the Digi2 Pro by name and
-turns the loop over at 100 Hz. **The one thing still missing is the USB packer** that
-carries the display's pixels to the Pico.
+--nocapture` prints. `src/app/panel.rs` is the half that decides
+when to redraw and hands the screen to whatever shows one, and `display::text` is one
+such thing: the same grid, the same marks, on a console. `src/bin/deck.rs` assembles
+all of it into the deck, which runs on the Pi — it finds the stick, opens the Digi2
+Pro by name, turns the loop over at 100 Hz and draws the listing over ssh. **The one
+thing still missing is the USB packer** that would carry pixels to the Pico.
 
 ## What plays
 
@@ -226,7 +228,10 @@ cargo run --release --bin deck -- --help        # the four flags
 ```
 
 It starts with no stick and no controls if that is what it finds, and picks both up
-when they appear. **The default output device is `hw:CARD=sndrpihifiberry,DEV=0`, by
+when they appear. **With no panel bought it draws to the console** — the same
+`Screen` the panel will get, with the same marks and the same truncation, redrawn in
+place when stdout is a terminal. `--grid=21x5` previews a candidate panel's geometry;
+the default is a roomier 40x12. **The default output device is `hw:CARD=sndrpihifiberry,DEV=0`, by
 name and not by number**: card 0 on this Pi is the analogue headphone jack, and
 `hw:0,0` would open it and play.
 
