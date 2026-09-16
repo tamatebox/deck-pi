@@ -56,7 +56,8 @@ end at both depths and all six rates, across four of the five containers in scop
 
 The app loop is partly built: the period loop, the track lifecycle, the dispatch and
 the control loop that reads `/dev/input`. Still missing are **media watch wired to
-the deck** and **the display, which has no file at all**. `src/main.rs` is a bring-up
+the deck**, and the display's drawing half — `src/display.rs` decides what text
+goes in which cell, and nothing yet turns that into pixels. `src/main.rs` is a bring-up
 CLI, not the deck.
 
 ## What plays

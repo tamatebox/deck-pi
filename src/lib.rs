@@ -9,11 +9,15 @@
 //! setup that makes the callback's "cannot fault" true, the browser, media watch,
 //! the cue store and input, and the app loop that joins them — the period loop,
 //! the track lifecycle, the dispatch and the control loop that reads
-//! `/dev/input`. Not started: the display, and media watch wired to the deck.
+//! `/dev/input`. The display has its half that needs no panel — `display.rs`
+//! decides what goes in which cell — and not the half that draws pixels, which
+//! waits on a font whose licence is unsettled. Not started: media watch wired
+//! to the deck.
 
 pub mod app;
 pub mod browser;
 pub mod cue;
+pub mod display;
 pub mod engine;
 pub mod file;
 pub mod input;
