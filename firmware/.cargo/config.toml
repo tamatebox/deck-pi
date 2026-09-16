@@ -1,0 +1,11 @@
+[build]
+target = "thumbv8m.main-none-eabihf"
+
+[target.thumbv8m.main-none-eabihf]
+# `picotool load -u -v -x -t elf` also works and needs no UF2 step, but it
+# wants the Pico in BOOTSEL and picotool installed. Dragging a UF2 across is
+# the path with no host-side dependency, so neither is set as the runner.
+rustflags = [
+  "-C", "link-arg=--nmagic",
+  "-C", "link-arg=-Tlink.x",
+]

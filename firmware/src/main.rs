@@ -1,0 +1,323 @@
+//! deck-pico — the deck's control surface, on a Pico 2 H, over USB.
+//!
+//! The Pi runs the deck. This runs the buttons and the browse encoder, and
+//! presents them as an ordinary USB HID device so that `src/input.rs` on the
+//! other side reads exactly what it read when the controls were wired to the
+//! Pi's header: `EV_KEY` with standard keycodes, and `EV_REL` on `REL_X`, one
+//! unit per detent. **Nothing on the Pi changed to accept this**, which is the
+//! whole reason the split is cheap — see `docs/decisions.md`.
+//!
+//! # The firmware cannot choose a keycode
+//!
+//! It declares a HID *usage*. The kernel's `drivers/hid/hid-input.c` decides
+//! which keycode that becomes, and a usage that maps somewhere unexpected
+//! leaves `Button::from_keycode` returning `None` — a button that is silently
+//! dead, with nothing logged anywhere. So the six below are not guesses:
+//! each was read out of the mapping table in `hid-input.c` on the `rpi-6.18.y`
+//! branch, which is the kernel the deck actually runs.
+//!
+//! | Control | Consumer usage | becomes |
+//! |---|---|---|
+//! | ENTER | `0x084` | `KEY_ENTER` (28) |
+//! | FF | `0x0b3` | `KEY_FASTFORWARD` (208) |
+//! | REW | `0x0b4` | `KEY_REWIND` (168) |
+//! | PLAY / PAUSE | `0x0cd` | `KEY_PLAYPAUSE` (164) |
+//! | BACK | `0x224` | `KEY_BACK` (158) |
+//! | CUE | `0x226` | `KEY_STOP` (128) |
+//!
+//! **The obvious usage for CUE is the wrong one.** Consumer `0x0b7` is named
+//! "Stop" and maps to `KEY_STOPCD` (166), which the deck does not match. CUE
+//! needs `0x226`, AC Stop. That one line is the difference between a working
+//! cue button and one that does nothing and says nothing.
+//!
+//! The encoder is a Generic Desktop `X` declared **relative**: `hid-input.c`
+//! sends those through `map_rel(usage->hid & 0xf)`, and `HID_GD_X & 0xf` is 0,
+//! which is `REL_X`.
+//!
+//! # What moved here from the kernel
+//!
+//! Debounce and quadrature decoding. `docs/implementation.md` used to require
+//! both "in the kernel, never by polling from userspace" — the target of that
+//! rule was userspace polling, which quantises velocity and drops steps.
+//! Firmware on a dedicated core is the other direction from that: this loop
+//! does nothing else, so its sampling interval is a constant rather than a
+//! thing competing with an audio deadline.
+
+#![no_std]
+#![no_main]
+
+use embassy_executor::Spawner;
+use embassy_rp::bind_interrupts;
+use embassy_rp::gpio::{Input, Pull};
+use embassy_rp::peripherals::USB;
+use embassy_rp::usb::{Driver, InterruptHandler};
+use embassy_time::{Duration, Ticker};
+use embassy_usb::class::hid::{HidBootProtocol, HidSubclass, HidWriter, State};
+use embassy_usb::{Builder, Config};
+use panic_halt as _;
+use static_cell::StaticCell;
+
+/// The RP2350 boot ROM looks for this near the start of flash and will not
+/// run an image without one — it stays in BOOTSEL instead, saying nothing.
+/// `memory.x` is what puts it where the ROM looks.
+#[unsafe(link_section = ".start_block")]
+#[used]
+static IMAGE_DEF: embassy_rp::block::ImageDef = embassy_rp::block::ImageDef::secure_exe();
+
+bind_interrupts!(struct Irqs {
+    USBCTRL_IRQ => InterruptHandler<USB>;
+});
+
+/// How often every input is sampled. The debounce interval below is counted
+/// in these, so the two numbers are not independent.
+const TICK: Duration = Duration::from_millis(1);
+
+/// `docs/controls.md` fixes debounce at 30-50 ms and the hold threshold at
+/// 300-500 ms, and says they must stay well clear of each other. The hold
+/// threshold is the Pi's business — `src/input.rs` decides tap versus hold —
+/// so all this end has to do is not blur the gap.
+const DEBOUNCE_TICKS: u8 = 40;
+
+/// Quadrature steps per detent. Four is the common case for a detented
+/// encoder: one click walks the full A/B cycle. **Verify against the encoder
+/// in hand** — a part that rests between phases gives two, and the browse
+/// menu then jumps two entries per click, which looks like a software bug.
+const STEPS_PER_DETENT: i8 = 4;
+
+/// Hand-written rather than generated, so the bytes can be read against the
+/// usage tables they were taken from. Two reports: the buttons as a bitmap on
+/// the Consumer page, and the encoder as one signed relative axis.
+#[rustfmt::skip]
+const REPORT_DESCRIPTOR: &[u8] = &[
+    // --- Report 1: the six buttons, one bit each ------------------------
+    0x05, 0x0C,       // Usage Page (Consumer)
+    0x09, 0x01,       // Usage (Consumer Control)
+    0xA1, 0x01,       // Collection (Application)
+    0x85, 0x01,       //   Report ID (1)
+    0x15, 0x00,       //   Logical Minimum (0)
+    0x25, 0x01,       //   Logical Maximum (1)
+    0x75, 0x01,       //   Report Size (1)
+    0x95, 0x06,       //   Report Count (6)
+    0x09, 0x84,       //   Usage (Media Select Home)     -> KEY_ENTER
+    0x09, 0xB3,       //   Usage (Fast Forward)          -> KEY_FASTFORWARD
+    0x09, 0xB4,       //   Usage (Rewind)                -> KEY_REWIND
+    0x09, 0xCD,       //   Usage (Play/Pause)            -> KEY_PLAYPAUSE
+    0x0A, 0x24, 0x02, //   Usage (AC Back)               -> KEY_BACK
+    0x0A, 0x26, 0x02, //   Usage (AC Stop)               -> KEY_STOP
+    0x81, 0x02,       //   Input (Data, Variable, Absolute)
+    0x95, 0x02,       //   Report Count (2)
+    0x81, 0x03,       //   Input (Constant) — pad to a byte
+    0xC0,             // End Collection
+
+    // --- Report 2: the browse encoder, as relative X --------------------
+    0x05, 0x01,       // Usage Page (Generic Desktop)
+    0x09, 0x02,       // Usage (Mouse)
+    0xA1, 0x01,       // Collection (Application)
+    0x85, 0x02,       //   Report ID (2)
+    0x09, 0x01,       //   Usage (Pointer)
+    0xA1, 0x00,       //   Collection (Physical)
+    0x09, 0x30,       //     Usage (X)
+    0x15, 0x81,       //     Logical Minimum (-127)
+    0x25, 0x7F,       //     Logical Maximum (127)
+    0x75, 0x08,       //     Report Size (8)
+    0x95, 0x01,       //     Report Count (1)
+    0x81, 0x06,       //     Input (Data, Variable, Relative)
+    0xC0,             //   End Collection
+    0xC0,             // End Collection
+];
+
+/// Bit positions in report 1, in the order the descriptor declares them.
+const BIT_ENTER: u8 = 0;
+const BIT_FF: u8 = 1;
+const BIT_REW: u8 = 2;
+const BIT_PLAY: u8 = 3;
+const BIT_BACK: u8 = 4;
+const BIT_CUE: u8 = 5;
+
+/// A switch to ground behind a pull-up: pressed reads low. One counter each,
+/// so a bouncing contact on one button cannot delay another.
+struct Debounced<'d> {
+    pin: Input<'d>,
+    stable: bool,
+    ticks: u8,
+}
+
+impl<'d> Debounced<'d> {
+    fn new(pin: Input<'d>) -> Self {
+        let stable = pin.is_low();
+        Self { pin, stable, ticks: 0 }
+    }
+
+    /// Call once per `TICK`. Returns the debounced level.
+    fn poll(&mut self) -> bool {
+        if self.pin.is_low() == self.stable {
+            self.ticks = 0;
+        } else {
+            self.ticks = self.ticks.saturating_add(1);
+            if self.ticks >= DEBOUNCE_TICKS {
+                self.stable = !self.stable;
+                self.ticks = 0;
+            }
+        }
+        self.stable
+    }
+}
+
+/// Full-cycle quadrature. The table is indexed by the four-bit
+/// `(previous << 2) | current` state and yields -1, 0 or +1; the impossible
+/// transitions yield 0 rather than a guess, because a guess under contact
+/// bounce is a step in the wrong direction and the menu visibly jumps.
+#[rustfmt::skip]
+const QUADRATURE: [i8; 16] = [
+     0, -1,  1,  0,
+     1,  0,  0, -1,
+    -1,  0,  0,  1,
+     0,  1, -1,  0,
+];
+
+struct Encoder<'d> {
+    a: Input<'d>,
+    b: Input<'d>,
+    last: u8,
+    steps: i8,
+}
+
+impl<'d> Encoder<'d> {
+    fn new(a: Input<'d>, b: Input<'d>) -> Self {
+        let last = Self::state(&a, &b);
+        Self { a, b, last, steps: 0 }
+    }
+
+    fn state(a: &Input<'d>, b: &Input<'d>) -> u8 {
+        ((a.is_high() as u8) << 1) | (b.is_high() as u8)
+    }
+
+    /// Call once per `TICK`. Returns detents since the last call, usually 0.
+    fn poll(&mut self) -> i8 {
+        let now = Self::state(&self.a, &self.b);
+        let delta = QUADRATURE[((self.last << 2) | now) as usize];
+        self.last = now;
+        self.steps += delta;
+
+        let mut detents = 0;
+        while self.steps >= STEPS_PER_DETENT {
+            self.steps -= STEPS_PER_DETENT;
+            detents += 1;
+        }
+        while self.steps <= -STEPS_PER_DETENT {
+            self.steps += STEPS_PER_DETENT;
+            detents -= 1;
+        }
+        detents
+    }
+}
+
+static STATE: StaticCell<State> = StaticCell::new();
+static CONFIG_DESC: StaticCell<[u8; 256]> = StaticCell::new();
+static BOS_DESC: StaticCell<[u8; 256]> = StaticCell::new();
+static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
+
+#[embassy_executor::main]
+async fn main(spawner: Spawner) {
+    let p = embassy_rp::init(Default::default());
+    let driver = Driver::new(p.USB, Irqs);
+
+    // 0x2e8a is Raspberry Pi's vendor id; 0x000a is the product id reserved
+    // for "a Pico running someone's own code", which is what this is. It is
+    // not a claim to be any particular Raspberry Pi product.
+    let mut config = Config::new(0x2e8a, 0x000a);
+    config.manufacturer = Some("deck-pi");
+    config.product = Some("deck-pi control surface");
+    config.serial_number = Some("deck-pico-1");
+    config.max_power = 100;
+    config.max_packet_size_0 = 64;
+
+    let mut builder = Builder::new(
+        driver,
+        config,
+        CONFIG_DESC.init([0; 256]),
+        BOS_DESC.init([0; 256]),
+        &mut [],
+        CONTROL_BUF.init([0; 64]),
+    );
+
+    let hid_config = embassy_usb::class::hid::Config {
+        report_descriptor: REPORT_DESCRIPTOR,
+        request_handler: None,
+        // 1 ms: the same interval the loop samples at, so a press waits for
+        // the host no longer than it waits for the debounce.
+        poll_ms: 1,
+        max_packet_size: 8,
+        // Not a boot device. The deck reads `/dev/input`, so nothing here is
+        // ever asked to work before a driver is loaded.
+        hid_subclass: HidSubclass::No,
+        hid_boot_protocol: HidBootProtocol::None,
+    };
+    let writer = HidWriter::<_, 8>::new(&mut builder, STATE.init(State::new()), hid_config);
+
+    let usb = builder.build();
+    spawner.spawn(run_usb(usb).unwrap());
+    let controls = run_controls(
+        writer,
+        // The pinout. Switches go to ground; the pull-ups are internal, so
+        // nothing external is needed for any of these.
+        Debounced::new(Input::new(p.PIN_4, Pull::Up)),  // ENTER — encoder push
+        Debounced::new(Input::new(p.PIN_6, Pull::Up)),  // BACK
+        Debounced::new(Input::new(p.PIN_7, Pull::Up)),  // PLAY / PAUSE
+        Debounced::new(Input::new(p.PIN_8, Pull::Up)),  // CUE
+        Debounced::new(Input::new(p.PIN_9, Pull::Up)),  // REW
+        Debounced::new(Input::new(p.PIN_10, Pull::Up)), // FF
+        Encoder::new(
+            Input::new(p.PIN_2, Pull::Up), // encoder A
+            Input::new(p.PIN_3, Pull::Up), // encoder B
+        ),
+    );
+    spawner.spawn(controls.unwrap());
+}
+
+type UsbDevice = embassy_usb::UsbDevice<'static, Driver<'static, USB>>;
+
+#[embassy_executor::task]
+async fn run_usb(mut usb: UsbDevice) -> ! {
+    usb.run().await
+}
+
+#[embassy_executor::task]
+#[allow(clippy::too_many_arguments)]
+async fn run_controls(
+    mut writer: HidWriter<'static, Driver<'static, USB>, 8>,
+    mut enter: Debounced<'static>,
+    mut back: Debounced<'static>,
+    mut play: Debounced<'static>,
+    mut cue: Debounced<'static>,
+    mut rew: Debounced<'static>,
+    mut ff: Debounced<'static>,
+    mut encoder: Encoder<'static>,
+) -> ! {
+    let mut ticker = Ticker::every(TICK);
+    let mut last_buttons = 0u8;
+
+    loop {
+        ticker.next().await;
+
+        let mut buttons = 0u8;
+        buttons |= (enter.poll() as u8) << BIT_ENTER;
+        buttons |= (ff.poll() as u8) << BIT_FF;
+        buttons |= (rew.poll() as u8) << BIT_REW;
+        buttons |= (play.poll() as u8) << BIT_PLAY;
+        buttons |= (back.poll() as u8) << BIT_BACK;
+        buttons |= (cue.poll() as u8) << BIT_CUE;
+
+        // Only on change. A HID device that repeats an unchanged report
+        // wastes bus time the stick's reads are sharing.
+        if buttons != last_buttons {
+            last_buttons = buttons;
+            let _ = writer.write(&[1, buttons]).await;
+        }
+
+        let detents = encoder.poll();
+        if detents != 0 {
+            let _ = writer.write(&[2, detents as u8]).await;
+        }
+    }
+}
