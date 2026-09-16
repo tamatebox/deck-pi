@@ -1,0 +1,20 @@
+[package]
+name = "soxr-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# A measurement harness for issue #3, NOT deck code. v1 has no resampler, so
+# libsoxr must not become a dependency of the thing that has to meet a
+# deadline; keeping this outside the deck's crate is what guarantees that.
+#
+# What it answers: precision x source rate, for realtime ratio *and* worst-case
+# block time, on the A53 the deck actually runs on. The issue is explicit that
+# a run started from cold measures a clock the 3B+ will not hold — it soft
+# throttles 1.4 -> 1.2 GHz at 60 C — so this reports die temperature and ARM
+# clock beside every row and the reader takes the soaked ones.
+
+[dependencies]
+
+[build-dependencies]
+pkg-config = "0.3"

@@ -657,6 +657,31 @@ the example not to hand, the create call was **guessed** — 1:1, which looks li
 neutral choice and is the worst one. If the example is still unavailable, verify with
 an interposer rather than inferring from the header.
 
+**`SOXR_VR` replaces the engine, and the precision recipe stops mattering.**
+Measured 2026-09-16 with `tools/soxr-bench`, mean microseconds for one 128-frame
+stereo block at 44.1 kHz, ratio fixed:
+
+| recipe | with `SOXR_VR` | without |
+|---|---|---|
+| QQ | 189 | 23 |
+| LQ | 186 | 63 |
+| MQ | 186 | 53 |
+| HQ / 20 bit | 186 | 62 |
+| VHQ / 28 bit | 186 | 74 |
+
+The recipes do reach `soxr_quality_spec` — the specs it returns differ in precision,
+passband and flags — and the variable-rate engine then ignores them, charging a flat
+cost that is 2.5x the dearest fixed-rate recipe and 8x the cheapest. **So "precision"
+is not a dimension of anything v2 measures or chooses**, which is one of the two axes
+[#3](https://github.com/tamatebox/deck-pi/issues/3) was written around.
+
+**And read the clock from the firmware, not from the governor.** A soaked run had
+`/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq` reporting 1400 MHz while
+`vcgencmd measure_clock arm` reported 1200: the governor's request is in sysfs and
+the firmware's thermal throttle happens underneath it. Every figure in that run was
+taken at 1.2 GHz and labelled 1.4. `vcgencmd get_throttled` is the corroboration —
+non-zero means it really is being held down.
+
 `mallopt(M_MMAP_MAX, 0)` and `M_TRIM_THRESHOLD, -1` were once proposed here to keep
 glibc's arena out of `mmap` under `MCL_FUTURE`. **Withdrawn** — correctly configured
 there is no allocation to keep anywhere.

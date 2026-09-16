@@ -1,4 +1,5 @@
 /target
 .DS_Store
 /tools/panel-compare/target
+/tools/soxr-bench/target
 /tools/panel-compare/out
