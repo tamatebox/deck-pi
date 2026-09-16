@@ -65,8 +65,11 @@ draws it against the real 12 and 16 px Japanese faces — about 0.3 ms for a ful
 when to redraw and hands the screen to whatever shows one, and `display::text` is one
 such thing: the same grid, the same marks, on a console. `src/bin/deck.rs` assembles
 all of it into the deck, which runs on the Pi — it finds the stick, opens the Digi2
-Pro by name, turns the loop over at 100 Hz and draws the listing over ssh. **The one
-thing still missing is the USB packer** that would carry pixels to the Pico.
+Pro by name, turns the loop over at 100 Hz and draws the listing over ssh. The packer that would carry pixels to
+the Pico is written and tested against a `Vec<u8>` — `display::wire` is the protocol
+and `display::packed` the encoder — but **nothing has spoken it yet**: the Pico's
+firmware is HID-only, so the deck has no serial port to open and no panel to declare
+one. That is the last gap, and its far half is firmware.
 
 ## What plays
 

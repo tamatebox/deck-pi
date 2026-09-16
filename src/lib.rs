@@ -15,8 +15,10 @@
 //! `display::paint` turns that into pixels against the real 12 and 16 px
 //! faces — and `app::panel` is the half that decides when to redraw and hands
 //! the screen to whatever shows one, which today is `display::text` on a
-//! console. `src/bin/deck.rs` assembles the loop into a deck. Not started: the
-//! USB packer that would carry the pixels to the Pico.
+//! console — or, once a Pico declares a panel, `display::packed` over the
+//! protocol in `display::wire`. `src/bin/deck.rs` assembles the loop into a
+//! deck. Not connected: nothing speaks that protocol yet, the Pico's firmware
+//! being HID-only.
 
 pub mod app;
 pub mod browser;

@@ -287,6 +287,20 @@ needed to know it. That does not rule the panel out — it rules out shipping it
 *pixels in its own format*. Shipping 1 bpp and letting the Pico expand is the same
 panel at 9,600 bytes.
 
+**So the Pi ships one bit per pixel, permanently, and colour rides beside it.** Not
+"1 bpp for now": the faces are 1-bit bitmaps, so a deeper frame carries no more
+picture, and what a colour panel does for this deck is say *which kind of row this
+is* — one choice per region rather than per pixel. `src/display/wire.rs` is that
+protocol and `src/display/packed.rs` the encoder: a frame is the bitmap plus a short
+list of pen rectangles, and an ordinary listing needs one of them. The picture is
+the one `tools/panel-compare` already draws, which is how it was judged.
+
+**And the link finally measures itself.** Every frame carries a sequence number and
+the Pico acknowledges it, so the round trip from write to ack is the figure this
+section has been missing — taken on every frame the deck draws rather than in a
+benchmark that would have to imitate drawing. It reads zero until there is a Pico
+that speaks the protocol.
+
 **Drawing the frame is not what costs.** Measured on the 3B+ in release, into
 memory, 2026-09-16, by `tests/render_bench.rs`: a full 128x64 frame at 12 px is
 **0.26-0.30 ms**, a 320x240 one at 16 px is **1.4-1.7 ms**, and the

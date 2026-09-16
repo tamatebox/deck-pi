@@ -217,6 +217,26 @@ impl Face {
         self.glyph_px() + LEADING
     }
 
+    /// The face to use on a panel of this size.
+    ///
+    /// **The Pico declares pixels, not a font** — the font is the Pi's and the
+    /// Pico has no business naming it. So the rule is here: take the larger
+    /// face when it still leaves enough listing to browse with, and the
+    /// smaller when it does not. Three entries is the floor, which is what
+    /// `decisions.md` is arguing about when it says folders-first matters most
+    /// on the smallest panel.
+    ///
+    /// On the candidates that means 16 px for a 320x240 and 12 px for every
+    /// 64-pixel-tall panel, where 16 px would leave a single row.
+    pub fn for_panel(px_w: u32, px_h: u32) -> Face {
+        let big = Painter::new(Face::Px16, Layout { px_w, px_h, colour: false });
+        if big.listing_capacity() >= 3 {
+            Face::Px16
+        } else {
+            Face::Px12
+        }
+    }
+
     /// How far below `VerticalPosition::Top` a cell actually begins.
     ///
     /// **Not zero, which is the trap.** `Top` is the font's *ascent*, and in
@@ -427,12 +447,27 @@ impl Painter {
         self.layout.px_w.saturating_sub(MARGIN_PX as u32)
     }
 
+    pub fn face(&self) -> Face {
+        self.face
+    }
+
+    pub fn layout(&self) -> Layout {
+        self.layout
+    }
+
+    /// The top of the `i`-th listing row, in pixels. Public because the wire
+    /// encoder has to say *where* a pen applies, and deriving the row grid a
+    /// second time is how two copies of an arithmetic drift apart.
+    pub fn row_y(&self, i: usize) -> i32 {
+        (self.face.row_h() * (i as u32 + 1)) as i32
+    }
+
     /// Where the status line sits: flush with the bottom edge.
     ///
     /// Bottom-aligned rather than on the grid, so a panel whose height is not
     /// a multiple of the row leaves its slack in the middle where nothing is
     /// drawn, instead of as a band under the status line.
-    fn status_y(&self) -> i32 {
+    pub fn status_y(&self) -> i32 {
         self.layout.px_h.saturating_sub(self.face.glyph_px()) as i32
     }
 
@@ -451,7 +486,7 @@ impl Painter {
     /// the 256x64 both. `decisions.md` has an argument that turns on the
     /// smallest panel having two, so the disagreement is an input to #2 rather
     /// than a detail of this module.
-    fn listing_capacity(&self) -> usize {
+    pub fn listing_capacity(&self) -> usize {
         let row_h = self.face.row_h();
         let top = row_h;
         let bottom = (self.status_y() as u32).saturating_sub(1);
