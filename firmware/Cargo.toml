@@ -3,6 +3,13 @@ name = "deck-pico"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Emits the six buttons and both encoder directions on a timer, touching no
+# GPIO at all, so the report descriptor can be checked against `evtest`
+# before a single switch is wired. Off by default: this is a device that
+# presses its own buttons, which is not a thing to ship by accident.
+selftest = []
+
 [dependencies]
 cortex-m-rt = "0.7.6"
 embassy-executor = { version = "0.10.0", features = ["executor-thread", "platform-cortex-m"] }

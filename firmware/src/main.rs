@@ -45,6 +45,11 @@
 
 #![no_std]
 #![no_main]
+// Under `selftest` the whole control path — debounce, quadrature, the pins and
+// the constants that size them — is deliberately not built, because the point
+// of that build is to exercise the descriptor with no GPIO involved. Scoped to
+// the feature so the default build still reports its own dead code.
+#![cfg_attr(feature = "selftest", allow(unused_imports, dead_code))]
 
 use embassy_executor::Spawner;
 use embassy_rp::bind_interrupts;
@@ -52,6 +57,8 @@ use embassy_rp::gpio::{Input, Pull};
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Driver, InterruptHandler};
 use embassy_time::{Duration, Ticker};
+#[cfg(feature = "selftest")]
+use embassy_time::Timer;
 use embassy_usb::class::hid::{HidBootProtocol, HidSubclass, HidWriter, State};
 use embassy_usb::{Builder, Config};
 use panic_halt as _;
@@ -257,6 +264,15 @@ async fn main(spawner: Spawner) {
 
     let usb = builder.build();
     spawner.spawn(run_usb(usb).unwrap());
+
+    #[cfg(feature = "selftest")]
+    {
+        let _ = (p.PIN_2, p.PIN_3, p.PIN_4, p.PIN_6, p.PIN_7, p.PIN_8, p.PIN_9, p.PIN_10);
+        spawner.spawn(run_selftest(writer).unwrap());
+        return;
+    }
+
+    #[cfg(not(feature = "selftest"))]
     let controls = run_controls(
         writer,
         // The pinout. Switches go to ground; the pull-ups are internal, so
@@ -272,6 +288,7 @@ async fn main(spawner: Spawner) {
             Input::new(p.PIN_3, Pull::Up), // encoder B
         ),
     );
+    #[cfg(not(feature = "selftest"))]
     spawner.spawn(controls.unwrap());
 }
 
@@ -282,6 +299,47 @@ async fn run_usb(mut usb: UsbDevice) -> ! {
     usb.run().await
 }
 
+/// Presses every button in turn, then turns the encoder each way, for ever.
+///
+/// The point is not that something happens — `evtest` already showed the six
+/// keycodes are *declared*. The point is the **order**. Nothing so far has
+/// checked that bit 3 of report 1 is the bit the descriptor's fourth `Usage`
+/// line claims, and a descriptor whose usages and bit constants disagree
+/// declares exactly the same six keycodes while sending the wrong one for
+/// every press. That is the CUE trap again, one layer down.
+///
+/// So watch the order rather than the count. It must be:
+///
+/// `KEY_ENTER` 28, `KEY_FASTFORWARD` 208, `KEY_REWIND` 168,
+/// `KEY_PLAYPAUSE` 164, `KEY_BACK` 158, `KEY_STOP` 128,
+/// then four `REL_X` of +1 and four of -1.
+#[cfg(feature = "selftest")]
+#[embassy_executor::task]
+async fn run_selftest(mut writer: HidWriter<'static, Driver<'static, USB>, 8>) -> ! {
+    // The host has to finish enumerating and open the device before anything
+    // written here is seen. Reports sent before that are simply lost, which
+    // would read as a dead button.
+    Timer::after_secs(3).await;
+    loop {
+        for bit in 0..6u8 {
+            let _ = writer.write(&[1, 1 << bit]).await;
+            Timer::after_millis(120).await;
+            let _ = writer.write(&[1, 0]).await;
+            Timer::after_millis(380).await;
+        }
+        for _ in 0..4 {
+            let _ = writer.write(&[2, 1]).await;
+            Timer::after_millis(150).await;
+        }
+        for _ in 0..4 {
+            let _ = writer.write(&[2, (-1i8) as u8]).await;
+            Timer::after_millis(150).await;
+        }
+        Timer::after_secs(3).await;
+    }
+}
+
+#[cfg(not(feature = "selftest"))]
 #[embassy_executor::task]
 #[allow(clippy::too_many_arguments)]
 async fn run_controls(
