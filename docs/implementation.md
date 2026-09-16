@@ -834,6 +834,36 @@ exist if the two meanings are ever split onto separate buttons. **Read all of th
 off `input-event-codes.h` on the actual image** rather than trusting the numbers
 here.
 
+### Two nodes, and the stable paths do not tell them apart
+
+Measured 2026-09-16, with the firmware running on a Pico 2 H. The descriptor's two
+application collections become **two input devices**, not one:
+
+| | name | carries |
+|---|---|---|
+| `event2` | `... Consumer Control` | `EV_KEY` — the six keycodes above, plus `EV_MSC`/`MSC_SCAN` |
+| `event3` | `... Mouse` | `EV_REL` on `REL_X`, and nothing else |
+
+So `Devices::open` needs **both** paths. Opening one is half a control surface.
+
+**And the obvious way to name them is a trap.** Both nodes are on the same USB
+interface with the same `ID_PATH`, so `udevadm info` shows them claiming the *same*
+`DEVLINKS` — one `by-id/...-event-if00` and two `by-path/...-event`, all three listed
+against each node. There is one symlink per name and two candidates for it, and on
+this boot every one of them resolves to `event3`, the encoder. A build that opens the
+`by-id` path gets the detents and **six buttons that are silently dead**.
+
+That much is measured. What follows is **inferred and worth confirming**: since the
+collision is resolved by udev rather than by anything this project controls, which
+node wins need not be stable across reboots or re-plugs — which would make the same
+build work some mornings and not others.
+
+The way out is not a better path but a different question. `event2` carries
+`ID_INPUT_KEY=1` and `event3` does not, and each node's capability bitmaps say
+exactly what it emits — so select on **what a node can send**, reading
+`/sys/class/input/*/device/capabilities/`, rather than on where udev decided to put a
+name. That also survives the firmware growing a third collection.
+
 Standard Linux input codes, so `/dev/input` events read as what they mean.
 Decode encoders and debounce buttons **off the deck's CPU** — in the Pico's firmware
 now, in the kernel when they were on the header. The rule's target was always
