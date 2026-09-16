@@ -15,7 +15,8 @@
 //! not a barrier — which is the conclusion `docs/implementation.md` reaches
 //! under *What reads as handled and is not*.
 //!
-//! So the loop is library code, and the two binaries under `src/bin` are thin.
+//! So the loop is library code and the binaries are thin: `src/bin/deck.rs` is
+//! the deck, and `src/main.rs` is the bring-up CLI that is explicitly not one.
 
 pub mod audio;
 pub mod controls;
