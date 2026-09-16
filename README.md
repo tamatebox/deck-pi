@@ -43,10 +43,28 @@ been wired to it yet**, so nothing has been pressed and no detent has been turne
 
 Worth knowing before sizing anything: **192 kHz at a 1.33 ms period ran clean on the
 ordinary scheduler, with no realtime privileges** — and with nothing else on the
-machine. The realtime setup passes separately. Read that as a floor, not as a verdict
-on either: the display, the browser, media watch and the input loop were not running,
-and `docs/implementation.md` is blunt that an idle desk plays fine with all three
-realtime calls failing.
+machine. Read that as a floor rather than a verdict, and `docs/implementation.md` is
+blunt that an idle desk plays fine with all three realtime calls failing.
+
+**Half of that caveat is now answered.** `tests/deck_soak.rs` runs the assembled deck
+— the real device, the real mount, the real `/dev/input`, a real 1 bpp render per
+redraw — and plays a track off the stick with the whole loop turning:
+
+```sh
+DECK_PI_TRACK="/media/stick/Music/.../01 Chuoda.aiff" \
+    cargo test --release --test deck_soak -- --ignored --nocapture
+```
+
+60 s at 44.1/16 on 2026-09-16: **0 misses, 0 underruns**, 60.0 s of audio in 60.0 s
+of wall clock, the loop turning at 99/s. And the realtime setup is checked where it
+counts rather than where it is easy to look — the test walks `/proc/self/task` and
+finds **exactly one thread at `SCHED_FIFO` 75**, which says both that the audio
+thread was promoted and that the promotion did not leak to the window thread or the
+control loop.
+
+**The other half is not answered: this was 44.1 kHz.** The stick carries no 192 kHz
+material, so the hardest rate has still only been run with nothing else on the
+machine.
 
 The v1 read path is built and tested — FFI, format vetting, the locked ring, the
 window thread, the transport, the callback, the ALSA sink, the realtime setup, the
