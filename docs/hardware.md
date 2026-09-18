@@ -414,9 +414,9 @@ its pins is a firmware question rather than a fact about the Pi.
 | UNITY — v2 | 1 | Set apart from PLAY, and different to the finger. A mis-press changes the audio path and the handover is cross-faded, so **it makes no sound** |
 | Source toggle — USB or a peer deck | **0 or 1** | Held, not scheduled. The only control asked for beyond the set above, and asked for tentatively |
 | Jog encoder — v2 | 1 | **Non**-detented, optical, 100-200 PPR |
-| Pitch fader — v2 | 1 | Linear taper, and a **centre detent**: it is what makes UNITY's "near centre" gate a physical fact rather than an inference. Detented slide pots run out around 60 mm of travel, which at ±10% is 3 mm per 1% and ample |
+| Pitch fader — v2 | 1 | Linear taper, and a **centre detent**: it is what makes UNITY's "near centre" gate a physical fact rather than an inference. Detented slide pots run out around 60 mm of travel, which at ±10% is 3 mm per 1% and ample. **A CDJ-200 fader is on the bench and measured** — `cdj-200.md`, which is also where the gate's floor comes from |
 | Display panel | 1 | SPI. RESET tied high and no PWM backlight were load-bearing while the panel was on the Pi's header; they cost nothing either way now |
-| ADC | **0** | The RP2350 has one. The 16-bit external part is not needed — and note the swap is **12-bit**, which over a ±10% span is ~0.005% per count: ample by arithmetic, with ENOB unmeasured |
+| ADC | **0** | The RP2350 has one. The 16-bit external part is not needed — and note the swap is **12-bit**, which over a ±10% span is ~0.005% per count: ample by arithmetic. **No longer the operative number.** Measured on a real fader, the system is noise-limited around 7.3 effective bits, so the count size never binds — `cdj-200.md` |
 
 **Seven switches counting the encoder's push. Two encoders. One fader.** That is the
 whole control surface, and it is wired to the Pico, not to the Pi.
