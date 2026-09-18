@@ -200,7 +200,7 @@ fn a_tap_steps_the_playing_folder_and_stops_at_its_end() {
     deck.apply(Action::Press(Button::Enter)).expect("load");
     deck.apply(Action::Press(Button::PlayPause)).expect("play");
 
-    deck.apply(Action::Tap(Button::Ff)).expect("next");
+    deck.apply(Action::Press(Button::TrackNext)).expect("next");
     assert_eq!(deck.loaded().path(), Some(second.as_path()));
     assert_eq!(
         deck.transport().state(),
@@ -210,7 +210,7 @@ fn a_tap_steps_the_playing_folder_and_stops_at_its_end() {
     assert_eq!(deck.transport().rate(), RATE_PAUSED);
 
     // The end of the folder: nothing happens, and that is the answer.
-    deck.apply(Action::Tap(Button::Ff)).expect("no next");
+    deck.apply(Action::Press(Button::TrackNext)).expect("no next");
     assert_eq!(deck.loaded().path(), Some(second.as_path()), "still there");
 
     deck.unload();
@@ -240,7 +240,7 @@ fn the_tap_follows_the_playing_track_not_the_selection() {
     deck.apply(Action::Press(Button::Enter)).expect("descend");
     select(&mut deck, "1-b-one.wav");
 
-    deck.apply(Action::Tap(Button::Ff)).expect("next");
+    deck.apply(Action::Press(Button::TrackNext)).expect("next");
     assert_eq!(
         deck.loaded().path(),
         Some(a_two.as_path()),

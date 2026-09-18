@@ -516,7 +516,7 @@ fn input_check() -> i32 {
 
     println!("press something; ^C to stop");
     let start = Instant::now();
-    let mut decoder = Decoder::new(deck_pi::input::HOLD_AFTER);
+    let mut decoder = Decoder::new();
     let mut actions = Vec::new();
     let mut events = Vec::new();
     loop {
@@ -549,9 +549,8 @@ fn input_check() -> i32 {
             }
         }
         for ev in &events {
-            decoder.feed(now, *ev, &mut actions);
+            decoder.feed(*ev, &mut actions);
         }
-        decoder.tick(now, &mut actions);
         for a in actions.drain(..) {
             match a {
                 Action::Browse(n) => println!("  {:>8.3}  browse {:+}", now.as_secs_f64(), n),

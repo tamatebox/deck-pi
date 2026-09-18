@@ -24,6 +24,8 @@
 //! | PLAY / PAUSE | `0x0cd` | `KEY_PLAYPAUSE` (164) |
 //! | BACK | `0x224` | `KEY_BACK` (158) |
 //! | CUE | `0x226` | `KEY_STOP` (128) |
+//! | TRACK SEARCH ►►| | `0x0b5` | `KEY_NEXTSONG` (163) |
+//! | TRACK SEARCH |◄◄ | `0x0b6` | `KEY_PREVIOUSSONG` (165) |
 //!
 //! **The obvious usage for CUE is the wrong one.** Consumer `0x0b7` is named
 //! "Stop" and maps to `KEY_STOPCD` (166), which the deck does not match. CUE
@@ -52,7 +54,6 @@
 #![cfg_attr(feature = "selftest", allow(unused_imports, dead_code))]
 
 use embassy_executor::Spawner;
-#[cfg(feature = "faderprobe")]
 use embassy_rp::adc::{Adc, Blocking, Channel as AdcChannel, Config as AdcConfig};
 use embassy_rp::bind_interrupts;
 use embassy_rp::gpio::{Input, Pull};
@@ -100,7 +101,7 @@ const STEPS_PER_DETENT: i8 = 4;
 /// the Consumer page, and the encoder as one signed relative axis.
 #[rustfmt::skip]
 const REPORT_DESCRIPTOR: &[u8] = &[
-    // --- Report 1: the six buttons, one bit each ------------------------
+    // --- Report 1: the eight buttons, one bit each ----------------------
     0x05, 0x0C,       // Usage Page (Consumer)
     0x09, 0x01,       // Usage (Consumer Control)
     0xA1, 0x01,       // Collection (Application)
@@ -108,16 +109,16 @@ const REPORT_DESCRIPTOR: &[u8] = &[
     0x15, 0x00,       //   Logical Minimum (0)
     0x25, 0x01,       //   Logical Maximum (1)
     0x75, 0x01,       //   Report Size (1)
-    0x95, 0x06,       //   Report Count (6)
+    0x95, 0x08,       //   Report Count (8)
     0x09, 0x84,       //   Usage (Media Select Home)     -> KEY_ENTER
     0x09, 0xB3,       //   Usage (Fast Forward)          -> KEY_FASTFORWARD
     0x09, 0xB4,       //   Usage (Rewind)                -> KEY_REWIND
     0x09, 0xCD,       //   Usage (Play/Pause)            -> KEY_PLAYPAUSE
     0x0A, 0x24, 0x02, //   Usage (AC Back)               -> KEY_BACK
     0x0A, 0x26, 0x02, //   Usage (AC Stop)               -> KEY_STOP
+    0x09, 0xB5,       //   Usage (Scan Next Track)       -> KEY_NEXTSONG
+    0x09, 0xB6,       //   Usage (Scan Previous Track)   -> KEY_PREVIOUSSONG
     0x81, 0x02,       //   Input (Data, Variable, Absolute)
-    0x95, 0x02,       //   Report Count (2)
-    0x81, 0x03,       //   Input (Constant) — pad to a byte
     0xC0,             // End Collection
 
     // --- Report 2: the browse encoder, as relative X --------------------
@@ -144,6 +145,12 @@ const BIT_REW: u8 = 2;
 const BIT_PLAY: u8 = 3;
 const BIT_BACK: u8 = 4;
 const BIT_CUE: u8 = 5;
+/// Read only by `LADDER_BITS`, which the `faderprobe` build does not compile —
+/// the panel's TRACK pair has no other source.
+#[cfg_attr(feature = "faderprobe", allow(dead_code))]
+const BIT_TRACK_NEXT: u8 = 6;
+#[cfg_attr(feature = "faderprobe", allow(dead_code))]
+const BIT_TRACK_PREV: u8 = 7;
 
 /// A switch to ground behind a pull-up: pressed reads low. One counter each,
 /// so a bouncing contact on one button cannot delay another.
@@ -220,6 +227,91 @@ impl<'d> Encoder<'d> {
             detents -= 1;
         }
         detents
+    }
+}
+
+/// The CDJ-200 switch panel's six shared buttons, read as one analog level.
+///
+/// `KSWB` gives PLAY and CUE their own lines and puts the other six on `KD2`
+/// through a resistor ladder, so which one is down is a voltage rather than a
+/// pin — `cdj-200.md` has the measured levels these boundaries sit between.
+///
+/// # Why this cannot reuse `Debounced`
+///
+/// A pin bounces between two states and either is a valid reading. **This line
+/// passes through other buttons' levels on its way to its own.** Measured, not
+/// feared: pressing TRACK ►► produced a sample of 3029 while SEARCH ◄◄ sits at
+/// 3061, so a decoder that acted on one reading would fire a different button
+/// every so often, on a press that was never made.
+///
+/// So the rule is not "ignore edges" but **"the same bucket, every tick, for
+/// `DEBOUNCE_TICKS`"**. A transition that crosses a bucket cannot hold it that
+/// long, and the same count that debounces a switch outlasts it.
+///
+/// The pad's own pull-up is what turns the ladder into a divider. It is weak
+/// and loosely specified, and the measured levels moved by up to 80 counts
+/// between runs because of it — **the boundaries below are wide enough to
+/// swallow that and no wider.** An external resistor of known value is the fix,
+/// and these numbers are taken again when it goes in.
+#[cfg(not(feature = "faderprobe"))]
+struct Ladder {
+    adc: Adc<'static, Blocking>,
+    pin: AdcChannel<'static>,
+    /// The bucket that has been read most recently, and for how many ticks.
+    candidate: usize,
+    held: u8,
+    /// The bucket that has held long enough to be believed.
+    settled: usize,
+}
+
+/// Boundaries between the seven states, highest first: above the first is
+/// nobody pressing. Each is the midpoint of two measured medians.
+#[cfg(not(feature = "faderprobe"))]
+const LADDER_BOUNDS: [u16; 6] = [3506, 2755, 2043, 1310, 748, 311];
+
+/// Which report-1 bit each bucket sets. **`None` is a button the panel has and
+/// the deck has no meaning for** — FOLDER SEARCH, whose behaviour is not
+/// settled. It is decoded anyway and deliberately emits nothing: a level that
+/// fell through to the idle bucket would be indistinguishable from a broken
+/// wire, and this project's recurring defect is exactly that kind of silence.
+#[cfg(not(feature = "faderprobe"))]
+const LADDER_BITS: [Option<u8>; 7] = [
+    None,                  // 0: idle
+    Some(BIT_REW),         // 1: SEARCH  |◄◄
+    Some(BIT_FF),          // 2: SEARCH  ►►|
+    Some(BIT_TRACK_PREV),  // 3: TRACK   |◄◄
+    Some(BIT_TRACK_NEXT),  // 4: TRACK   ►►|
+    None,                  // 5: FOLDER  |◄◄ — recognised, unassigned
+    None,                  // 6: FOLDER  ►►| — recognised, unassigned
+];
+
+#[cfg(not(feature = "faderprobe"))]
+impl Ladder {
+    fn new(adc: Adc<'static, Blocking>, pin: AdcChannel<'static>) -> Ladder {
+        Ladder { adc, pin, candidate: 0, held: 0, settled: 0 }
+    }
+
+    /// Call once per `TICK`. Returns the bits for whatever is settled.
+    fn poll(&mut self) -> u8 {
+        // A conversion that fails leaves the settled bucket alone rather than
+        // releasing it: a dropped reading is not a released button, and
+        // releasing one here would end a seek the operator is still holding.
+        if let Ok(count) = self.adc.blocking_read(&mut self.pin) {
+            let bucket = LADDER_BOUNDS.iter().take_while(|b| count <= **b).count();
+            if bucket == self.candidate {
+                self.held = self.held.saturating_add(1);
+            } else {
+                self.candidate = bucket;
+                self.held = 1;
+            }
+            if self.held >= DEBOUNCE_TICKS {
+                self.settled = bucket;
+            }
+        }
+        match LADDER_BITS[self.settled] {
+            Some(bit) => 1 << bit,
+            None => 0,
+        }
     }
 }
 
@@ -315,16 +407,26 @@ async fn main(spawner: Spawner) {
         // `CN602` is clipped to GP4 and GP5, so the firmware follows the wire
         // rather than the wire following the firmware — see `cdj-200.md`.
         // ENTER moves to GP7, which PLAY vacated; GP8 is now free.
-        Debounced::new(Input::new(p.PIN_7, Pull::Up)),  // ENTER — encoder push
-        Debounced::new(Input::new(p.PIN_6, Pull::Up)),  // BACK
-        Debounced::new(Input::new(p.PIN_4, Pull::Up)),  // PLAY / PAUSE — KSWB CN602-6
-        Debounced::new(Input::new(p.PIN_5, Pull::Up)),  // CUE — KSWB CN602-7
-        Debounced::new(Input::new(p.PIN_9, Pull::Up)),  // REW
-        Debounced::new(Input::new(p.PIN_10, Pull::Up)), // FF
-        Encoder::new(
-            Input::new(p.PIN_2, Pull::Up), // encoder A
-            Input::new(p.PIN_3, Pull::Up), // encoder B
-        ),
+        Controls {
+            enter: Debounced::new(Input::new(p.PIN_7, Pull::Up)), // encoder push
+            back: Debounced::new(Input::new(p.PIN_6, Pull::Up)),
+            play: Debounced::new(Input::new(p.PIN_4, Pull::Up)), // KSWB CN602-6
+            cue: Debounced::new(Input::new(p.PIN_5, Pull::Up)),  // KSWB CN602-7
+            rew: Debounced::new(Input::new(p.PIN_9, Pull::Up)),
+            ff: Debounced::new(Input::new(p.PIN_10, Pull::Up)),
+            encoder: Encoder::new(
+                Input::new(p.PIN_2, Pull::Up), // encoder A
+                Input::new(p.PIN_3, Pull::Up), // encoder B
+            ),
+            // **Under `faderprobe` the ADC belongs to the probe**, which is a
+            // bench instrument that replaces this decode rather than running
+            // beside it. The two cannot share GP26.
+            #[cfg(not(feature = "faderprobe"))]
+            ladder: Ladder::new(
+                Adc::new_blocking(p.ADC, AdcConfig::default()),
+                AdcChannel::new_pin(p.PIN_26, Pull::Up),
+            ),
+        },
     );
     #[cfg(not(feature = "selftest"))]
     spawner.spawn(controls.unwrap());
@@ -377,18 +479,31 @@ async fn run_selftest(mut writer: HidWriter<'static, Driver<'static, USB>, 8>) -
     }
 }
 
+/// Everything the control loop owns, in one value.
+///
+/// **Not tidiness.** Passed positionally these were eight `Debounced`s of the
+/// same type, where transposing two is a swap the compiler cannot see and the
+/// panel reports the wrong button for ever. Named fields make the wiring
+/// checkable against `cdj-200.md` at the call site — and the count had already
+/// crossed the lint's threshold, which was suppressed rather than fixed.
+#[cfg(not(feature = "selftest"))]
+struct Controls {
+    enter: Debounced<'static>,
+    back: Debounced<'static>,
+    play: Debounced<'static>,
+    cue: Debounced<'static>,
+    rew: Debounced<'static>,
+    ff: Debounced<'static>,
+    encoder: Encoder<'static>,
+    #[cfg(not(feature = "faderprobe"))]
+    ladder: Ladder,
+}
+
 #[cfg(not(feature = "selftest"))]
 #[embassy_executor::task]
-#[allow(clippy::too_many_arguments)]
 async fn run_controls(
     mut writer: HidWriter<'static, Driver<'static, USB>, 8>,
-    mut enter: Debounced<'static>,
-    mut back: Debounced<'static>,
-    mut play: Debounced<'static>,
-    mut cue: Debounced<'static>,
-    mut rew: Debounced<'static>,
-    mut ff: Debounced<'static>,
-    mut encoder: Encoder<'static>,
+    mut c: Controls,
 ) -> ! {
     let mut ticker = Ticker::every(TICK);
     let mut last_buttons = 0u8;
@@ -397,12 +512,19 @@ async fn run_controls(
         ticker.next().await;
 
         let mut buttons = 0u8;
-        buttons |= (enter.poll() as u8) << BIT_ENTER;
-        buttons |= (ff.poll() as u8) << BIT_FF;
-        buttons |= (rew.poll() as u8) << BIT_REW;
-        buttons |= (play.poll() as u8) << BIT_PLAY;
-        buttons |= (back.poll() as u8) << BIT_BACK;
-        buttons |= (cue.poll() as u8) << BIT_CUE;
+        buttons |= (c.enter.poll() as u8) << BIT_ENTER;
+        buttons |= (c.ff.poll() as u8) << BIT_FF;
+        buttons |= (c.rew.poll() as u8) << BIT_REW;
+        buttons |= (c.play.poll() as u8) << BIT_PLAY;
+        buttons |= (c.back.poll() as u8) << BIT_BACK;
+        buttons |= (c.cue.poll() as u8) << BIT_CUE;
+        // **OR'd, not replacing.** A discrete switch on GP9 or GP10 and the
+        // panel's SEARCH pair both mean the same control, and either may be
+        // the one that is wired.
+        #[cfg(not(feature = "faderprobe"))]
+        {
+            buttons |= c.ladder.poll();
+        }
 
         // Only on change. A HID device that repeats an unchanged report
         // wastes bus time the stick's reads are sharing.
@@ -411,7 +533,7 @@ async fn run_controls(
             let _ = writer.write(&[1, buttons]).await;
         }
 
-        let detents = encoder.poll();
+        let detents = c.encoder.poll();
         if detents != 0 {
             let _ = writer.write(&[2, detents as u8]).await;
         }

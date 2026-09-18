@@ -180,23 +180,27 @@ fn a_key_down_reaches_the_transport() {
 }
 
 #[test]
-fn a_hold_fires_on_a_turn_with_nothing_to_read() {
-    // `Decoder::tick` is called **outside** the `wait` branch, and this is
-    // why. A hold is defined by the button *not* coming back up, so the turn
-    // that has nothing to read is precisely the turn on which FF starts
-    // seeking. Ticking only when an event arrived would mean FF never seeks
-    // unless some other button happens to be pressed.
+fn a_seek_starts_on_the_turn_that_reads_the_press() {
+    // **This test asserted the opposite until SEARCH stopped being
+    // tap-or-hold.** It existed because a hold is defined by the button *not*
+    // coming back up, so the turn with nothing to read was the one on which
+    // FF started seeking — which is why `Decoder::tick` was called outside
+    // the `wait` branch at all. With TRACK SEARCH carrying the tap meaning,
+    // SEARCH has nothing to disambiguate and seeks on the way down. No turn
+    // without an event is needed, and none of the seek's start depends on the
+    // clock any more.
     let mut source = Script::new().events(&[key(Button::Ff, 1)]).idle(1);
-    let mut controls = Controls::with_hold(&source, ms(100));
+    let mut controls = Controls::new(&source);
     let mut deck = bare_deck();
 
-    controls.turn(&mut source, ms(0), &mut deck).expect("down");
-    assert_eq!(deck.transport().rate(), RATE_PAUSED, "not held long enough yet");
-
-    // Nothing to read on this turn — the source times out.
-    let turn = controls.turn(&mut source, ms(150), &mut deck).expect("tick");
-    assert_eq!(turn.actions, 1, "the hold should have fired with no event");
+    let turn = controls.turn(&mut source, ms(0), &mut deck).expect("down");
+    assert_eq!(turn.actions, 1, "the press should have come out at once");
     assert_eq!(deck.transport().rate(), RATE_SEEK, "FF did not start seeking");
+
+    // And the idle turn adds nothing, where it used to be the one that
+    // mattered.
+    let turn = controls.turn(&mut source, ms(150), &mut deck).expect("idle");
+    assert_eq!(turn.actions, 0, "nothing is waiting on the clock now");
 }
 
 #[test]
@@ -213,7 +217,7 @@ fn a_vanished_device_ends_the_gesture_it_was_holding() {
         .events(&[key(Button::Ff, 1)])
         .idle(1)
         .lost(1);
-    let mut controls = Controls::with_hold(&source, ms(100));
+    let mut controls = Controls::new(&source);
     let mut deck = bare_deck();
 
     controls.turn(&mut source, ms(0), &mut deck).expect("down");
@@ -244,7 +248,7 @@ fn a_dropped_queue_closes_the_gestures_it_lost() {
         .events(&[key(Button::Ff, 1)])
         .idle(1)
         .events(&[RawEvent { kind: EV_SYN, code: SYN_DROPPED, value: 0 }]);
-    let mut controls = Controls::with_hold(&source, ms(100));
+    let mut controls = Controls::new(&source);
     let mut deck = bare_deck();
 
     controls.turn(&mut source, ms(0), &mut deck).expect("down");

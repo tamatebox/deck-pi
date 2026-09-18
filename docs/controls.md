@@ -49,10 +49,23 @@ must hold for everything on the stick. The cue starts at frame zero unless set.
 Fine-adjusting the cue in single frames, which the 350 does with SEARCH while paused
 at the cue, would fall naturally to FF/REW in the same state. Free if ever wanted.
 
-## FF and REW
+## SEARCH, and TRACK SEARCH
 
-Hold to seek, tap to change track. **A tap loads the next track and waits at its
-head — it does not start playing, even if the deck was playing.**
+**Two pairs, one meaning each.** SEARCH seeks within the track while held.
+TRACK SEARCH loads the next or previous track and **waits at its head — it does
+not start playing, even if the deck was playing.**
+
+**They used to be one pair.** FF/REW carried both: hold to seek, tap to change
+track. The CDJ-200 switch panel put six buttons on one wire, so the pins that
+forced the compression stopped existing and the pair split — `cdj-200.md`. Three
+things changed with it, and none is cosmetic:
+
+- **The seek starts 400 ms earlier**, on the press. There is no second meaning
+  left to wait out.
+- **Nothing in the input path is timed any more.** Tap-versus-hold was the only
+  thing that read a clock; `src/input.rs` has two disciplines now, not three.
+- **The interval rule below has nothing left to constrain.** Debounce still
+  matters; the hold threshold it had to stay clear of is gone.
 
 **Departure, and an earlier version of this paragraph claimed the opposite from
 memory.** Read off the manual: TRACK SEARCH keeps playing, and pausing at the start
@@ -67,30 +80,36 @@ panel: **nothing produces sound that the operator did not press PLAY for.** It a
 means a track change always contains a pause, which the software design leans on —
 `architecture.md`.
 
-**This compresses two of the 350's controls into one pair, deliberately.** That
-player separates SEARCH (`◄◄ ►►`, within a track) from TRACK SEARCH (`|◄◄ ►►|`,
-between tracks) — four buttons where this deck has two. Worth knowing it is a
-compression rather than the idiom. Each half earns its keep on different material:
-hold-to-seek is what makes an 80-minute piece usable at all with no jog until v2,
-tap-for-next carries the weight across a folder of short tracks.
+**This used to compress two of the 350's controls into one pair**, and no longer
+does. That player separates SEARCH (`◄◄ ►►`, within a track) from TRACK SEARCH
+(`|◄◄ ►►|`, between tracks), and so does this deck. Each earns its keep on
+different material: hold-to-seek is what makes an 80-minute piece usable at all
+with no jog until v2, and stepping tracks carries the weight across a folder of
+short ones.
 
-It also removes a worse idea — overloading the browse encoder, browsing in the list
-and seeking during playback, which puts a hidden mode on the most-used control. Two
-dedicated buttons cost two pins and no mode, and the pins were there to spend at the
-time. **They are not now**, `hardware.md`'s tally having closed at zero spare, so
-read this as a cost already paid rather than slack still available. The argument
-never rested on the spareness; it rested on the mode.
+The compression's stated cost was two pins, on a header `hardware.md` had closed
+at zero spare. **That accounting is void**: the controls are on a Pico, and the
+CDJ-200's panel reports six buttons on a single analog line. What the argument
+*really* rested on is untouched and still worth having — **it is not a mode**. The
+idea it rejects is overloading the browse encoder, browsing in the list and
+seeking during playback, which puts a hidden mode on the most-used control.
 
 **Seeking is silent in v1.** Position advances and the display follows, but no audio
 is produced — an audible scan needs the resampler, which would give v1 a second mode.
 In v2 it becomes `r = 4` on the existing rate variable.
 
-Tap-versus-hold is discriminated in userspace, which does **not** contradict the
-kernel-decoding rule: that rule is about a poll loop quantising jog velocity, whereas
-this is a one-shot timer per keypress. Two consequences — the tap fires on *release*,
-imperceptible for a track change; and the **hold threshold (~300-500 ms) must sit
-well clear of the 30-50 ms debounce interval**.
+**Debounce is 30-50 ms and that is the only interval left.** It used to have to
+sit well clear of a 300-500 ms hold threshold, and the threshold is gone with the
+discipline that needed it. `implementation.md` is what says where the debounce
+happens — in the Pico's firmware, not the kernel, since the controls moved.
 
-Open — [#12](https://github.com/tamatebox/deck-pi/issues/12): what a tap does at a
-folder boundary. Stopping is the simple answer. A track reaching its end is settled:
-it stops, and nothing advances on its own.
+**The panel's own six buttons cannot be read like pins**, and that does bring one
+new interval: the CDJ-200's ladder passes through other buttons' voltages on the
+way to its own, measured, so a level must hold for the debounce count before it
+is believed. `cdj-200.md` has the numbers.
+
+Open — [#12](https://github.com/tamatebox/deck-pi/issues/12): what TRACK SEARCH
+does at a folder boundary. Stopping is the simple answer, and **FOLDER SEARCH
+existing on the panel gives the question a second half** — the deck has no
+meaning for those two buttons yet. A track reaching its end is settled: it stops,
+and nothing advances on its own.

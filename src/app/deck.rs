@@ -195,20 +195,24 @@ impl<S: AudioSink + Send + 'static> Deck<S> {
             Action::Press(Button::Cue) => self.cued(self.transport.cue_down())?,
             Action::Release(Button::Cue) => self.cued(self.transport.cue_up())?,
 
-            Action::HoldStart(b @ (Button::Ff | Button::Rew)) => {
+            // **SEARCH is a seek and nothing else.** It used to wait out the
+            // hold threshold before starting, because a short press meant
+            // "next track"; TRACK SEARCH owns that now, so the seek begins on
+            // the press — see `cdj-200.md`.
+            Action::Press(b @ (Button::Ff | Button::Rew)) => {
                 self.was_playing = self.transport.rate() != RATE_PAUSED;
                 self.transport.begin_seek(b == Button::Ff);
             }
-            Action::HoldEnd(Button::Ff | Button::Rew) => {
+            Action::Release(Button::Ff | Button::Rew) => {
                 self.transport.end_seek(self.was_playing);
             }
 
-            // **A tap acts on the playing track's folder position, not on the
-            // selection** — `src/loaded.rs`, settled by the user. `None` at a
-            // folder boundary is [#12](https://github.com/tamatebox/deck-pi/issues/12)'s
+            // **TRACK SEARCH acts on the playing track's folder position, not
+            // on the selection** — `src/loaded.rs`, settled by the user. `None`
+            // at a folder boundary is [#12](https://github.com/tamatebox/deck-pi/issues/12)'s
             // answer: do nothing, which is stopping.
-            Action::Tap(b @ (Button::Ff | Button::Rew)) => {
-                let step = if b == Button::Ff {
+            Action::Press(b @ (Button::TrackNext | Button::TrackPrev)) => {
+                let step = if b == Button::TrackNext {
                     Step::Next
                 } else {
                     Step::Previous
@@ -244,14 +248,12 @@ impl<S: AudioSink + Send + 'static> Deck<S> {
             // what the arm actually catches.
             //
             // **The compiler found two I had missed** on the first attempt —
-            // a plain `Press` of FF or REW, which are tap-or-hold and emit
+            // a plain `Press` of FF or REW, which were tap-or-hold and emitted
             // neither. That is the whole argument in one line: a catch-all
-            // compiles, and an enumeration is checked.
-            other @ (Action::Press(Button::Ff | Button::Rew)
-            | Action::Release(_)
-            | Action::Tap(_)
-            | Action::HoldStart(_)
-            | Action::HoldEnd(_)) => {
+            // compiles, and an enumeration is checked. It earned its keep a
+            // second time when TRACK SEARCH split off FF/REW, and the two new
+            // `Press` arms were the compiler's, not mine.
+            other @ Action::Release(_) => {
                 debug_assert!(
                     false,
                     "the decoder cannot emit {other:?} — see Button::discipline"

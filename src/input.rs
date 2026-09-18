@@ -1,44 +1,42 @@
-//! Input: `/dev/input`, the kernel-decoded encoder, and tap-versus-hold.
+//! Input: `/dev/input` and the kernel-decoded encoder.
 //!
 //! `architecture.md` puts this module's ignorance in its description: it
 //! "deliberately knows nothing" about GPIO or wiring, because it emits
 //! standard keycodes and **which GPIO produces which is a line in
 //! `config.txt`**. Nothing here names a pin.
 //!
-//! # Three disciplines, not one, and the difference is not cosmetic
+//! # Two disciplines, not one, and the difference is not cosmetic
 //!
 //! | Buttons | Discipline | Why |
 //! |---|---|---|
-//! | BACK, PLAY/PAUSE, ENTER | `Press` on key-down | No second meaning, so waiting would only add latency to the most-used controls. |
-//! | CUE | `Press` and `Release` | Three behaviours, and the *transport* picks from its own state — `cue_down` / `cue_up` are already exactly this pair. The Cue Point Sampler "continues while the button is held in", so it must start on the press, not after a threshold. |
-//! | FF, REW | `Tap`, `HoldStart`, `HoldEnd` | Genuinely two actions on one button: hold seeks, tap changes track. The tap meaning is unknowable until the button comes back up before the threshold. |
+//! | BACK, PLAY/PAUSE, ENTER, TRACK SEARCH | `Press` on key-down | No second meaning, so waiting would only add latency to the most-used controls. |
+//! | CUE, SEARCH | `Press` and `Release` | Both are gestures with a duration. The Cue Point Sampler "continues while the button is held in", and SEARCH seeks while held — so both must start on the press, and the *transport* picks from its own state. |
 //!
-//! Giving every button the tap-or-hold treatment would be simpler and wrong:
-//! **PLAY held a little long would emit a hold and never a tap**, so the deck
-//! would not start. That is the failure shape a uniform rule buys.
+//! # There were three, and the third was tap-or-hold
 //!
-//! `controls.md` fixes the two intervals and the gap between them: debounce is
-//! 30-50 ms and the hold threshold is 300-500 ms, and `implementation.md` is
-//! what says the debounce happens **in the kernel**; the threshold happens here. They must stay well clear of each other.
+//! FF and REW used to carry two meanings on one button: hold seeks, tap
+//! changes track. **That discipline is gone**, because TRACK SEARCH took the
+//! tap meaning onto its own button once the CDJ-200 panel made six switches
+//! available on one wire — `cdj-200.md`. Worth recording rather than quietly
+//! deleting, because what went with it was not just a variant:
 //!
-//! # The clock is read here, not taken from the event
+//! - **The seek now starts 400 ms earlier**, on the press, since there is no
+//!   longer a second meaning to disambiguate.
+//! - **The decoder no longer reads a clock at all.** It used to take the time
+//!   as an argument, deliberately rather than using the event's own
+//!   timestamp: those are `CLOCK_REALTIME` by default, so an NTP step —
+//!   plausible while the Ethernet cable is in for maintenance — would have
+//!   turned a tap into a forty-minute hold. The trap is real and the defence
+//!   was right; **both are now moot**, and that is the kind of fact that gets
+//!   re-derived from an empty page.
+//! - `controls.md`'s requirement that the hold threshold stay well clear of
+//!   the 30-50 ms debounce interval **has nothing left to constrain.**
 //!
-//! Every kernel input event carries a timestamp, and using it is the obvious
-//! thing. It is also a trap: those timestamps are **`CLOCK_REALTIME` by
-//! default**, so an NTP step — plausible while the Ethernet cable is in for
-//! maintenance — would turn a tap into a forty-minute hold. `EVIOCSCLOCKID`
-//! can switch the device to `CLOCK_MONOTONIC`, but a monotonic reading taken
-//! when the event is *read* is accurate to microseconds against a 300 ms
-//! threshold, so the extra ioctl and its extra failure mode buy nothing.
-//!
-//! The decoder therefore takes the time as an argument. That is also what
-//! makes tap-versus-hold testable with no device and no sleeping.
+//! Giving every button the tap-or-hold treatment would have been simpler and
+//! wrong: **PLAY held a little long would emit a hold and never a tap**, so
+//! the deck would not start. Recorded because it is the argument against the
+//! obvious uniform rule, and it survives the discipline it was written for.
 
-use std::time::Duration;
-
-/// `controls.md`: "the hold threshold (~300-500 ms) must sit well clear of the
-/// 30-50 ms debounce interval". The middle of the range.
-pub const HOLD_AFTER: Duration = Duration::from_millis(400);
 
 /// The controls, named by function rather than by pin or keycode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -49,6 +47,10 @@ pub enum Button {
     Enter,
     Rew,
     Ff,
+    /// TRACK SEARCH on the CDJ-200 panel. What an FF/REW *tap* used to mean,
+    /// now on its own button — `cdj-200.md` for why the compression ended.
+    TrackNext,
+    TrackPrev,
 }
 
 /// How a button's presses are interpreted.
@@ -58,8 +60,6 @@ pub enum Discipline {
     Simple,
     /// Down and up both matter, and the transport decides what they mean.
     Momentary,
-    /// Two meanings on one button, separated by [`HOLD_AFTER`].
-    TapOrHold,
 }
 
 impl Button {
@@ -78,6 +78,8 @@ impl Button {
             28 => Button::Enter,      // KEY_ENTER
             168 => Button::Rew,       // KEY_REWIND
             208 => Button::Ff,        // KEY_FASTFORWARD
+            163 => Button::TrackNext, // KEY_NEXTSONG
+            165 => Button::TrackPrev, // KEY_PREVIOUSSONG
             _ => return None,
         })
     }
@@ -90,6 +92,8 @@ impl Button {
             Button::Enter => 28,
             Button::Rew => 168,
             Button::Ff => 208,
+            Button::TrackNext => 163,
+            Button::TrackPrev => 165,
         }
     }
 
@@ -98,20 +102,28 @@ impl Button {
             // Nothing else to wait for, and these are the controls where
             // latency is felt.
             Button::Back | Button::PlayPause | Button::Enter => Discipline::Simple,
+            // Track stepping has nothing to wait for either, and the CDJ's
+            // own panel repeats when held; this does not, deliberately —
+            // `src/input.rs`'s autorepeat guard is load-bearing on USB HID.
+            Button::TrackNext | Button::TrackPrev => Discipline::Simple,
             // The Cue Point Sampler plays while held, so the press starts it.
             Button::Cue => Discipline::Momentary,
-            // Hold seeks, tap changes track.
-            Button::Rew | Button::Ff => Discipline::TapOrHold,
+            // **Seek only, and it starts on the press.** SEARCH's short press
+            // means nothing now that TRACK SEARCH exists, so there is no tap
+            // to wait for — which is what removed the hold threshold.
+            Button::Rew | Button::Ff => Discipline::Momentary,
         }
     }
 
-    const ALL: [Button; 6] = [
+    const ALL: [Button; 8] = [
         Button::Back,
         Button::PlayPause,
         Button::Cue,
         Button::Enter,
         Button::Rew,
         Button::Ff,
+        Button::TrackNext,
+        Button::TrackPrev,
     ];
 
     fn index(self) -> usize {
@@ -122,6 +134,8 @@ impl Button {
             Button::Enter => 3,
             Button::Rew => 4,
             Button::Ff => 5,
+            Button::TrackNext => 6,
+            Button::TrackPrev => 7,
         }
     }
 }
@@ -133,12 +147,6 @@ pub enum Action {
     Press(Button),
     /// The up half of a `Momentary` button.
     Release(Button),
-    /// A `TapOrHold` button released before the threshold.
-    Tap(Button),
-    /// A `TapOrHold` button still down at the threshold.
-    HoldStart(Button),
-    /// That button released.
-    HoldEnd(Button),
     /// Browse encoder detents, signed. One unit per detent — the kernel
     /// decodes the quadrature, so nothing here counts edges.
     Browse(i32),
@@ -214,9 +222,8 @@ pub const SYN_DROPPED: u16 = 0x03;
 /// Holds no clock and does no I/O, so tap-versus-hold is testable without a
 /// device and without sleeping.
 pub struct Decoder {
-    hold_after: Duration,
-    /// When each button went down, and whether its hold has already fired.
-    down: [Option<(Duration, bool)>; 6],
+    /// Which buttons are down. No timestamp: nothing here is timed any more.
+    down: [bool; 8],
     /// The last absolute encoder position, for the `EV_ABS` flavour.
     abs: Option<i32>,
     /// The axis range, when the device reported one. See `set_abs_range`.
@@ -225,15 +232,14 @@ pub struct Decoder {
 
 impl Default for Decoder {
     fn default() -> Self {
-        Decoder::new(HOLD_AFTER)
+        Decoder::new()
     }
 }
 
 impl Decoder {
-    pub fn new(hold_after: Duration) -> Decoder {
+    pub fn new() -> Decoder {
         Decoder {
-            hold_after,
-            down: [None; 6],
+            down: [false; 8],
             abs: None,
             abs_range: None,
         }
@@ -302,9 +308,9 @@ impl Decoder {
     }
 
     /// Feeds one event, appending whatever it means.
-    pub fn feed(&mut self, now: Duration, ev: RawEvent, out: &mut Vec<Action>) {
+    pub fn feed(&mut self, ev: RawEvent, out: &mut Vec<Action>) {
         match ev.kind {
-            EV_KEY => self.key(now, ev, out),
+            EV_KEY => self.key(ev, out),
             // The `rotary-encoder` overlay reports **either** a relative or an
             // absolute axis depending on its `relative` parameter, and
             // `implementation.md` says to check the overlay's parameters on the
@@ -347,7 +353,7 @@ impl Decoder {
         }
     }
 
-    fn key(&mut self, now: Duration, ev: RawEvent, out: &mut Vec<Action>) {
+    fn key(&mut self, ev: RawEvent, out: &mut Vec<Action>) {
         let Some(button) = Button::from_keycode(ev.code) else {
             return;
         };
@@ -356,63 +362,32 @@ impl Decoder {
             // ever did, treating a repeat as a fresh press would fire PLAY
             // over and over while a finger rested on it.
             2 => {}
-            1 => self.press(now, button, out),
+            1 => self.press(button, out),
             0 => self.release(button, out),
             _ => {}
         }
     }
 
-    fn press(&mut self, now: Duration, button: Button, out: &mut Vec<Action>) {
+    fn press(&mut self, button: Button, out: &mut Vec<Action>) {
         let slot = &mut self.down[button.index()];
-        if slot.is_some() {
+        if *slot {
             // A second down with no up between. The kernel does not do this;
             // ignoring it keeps the state machine total rather than trusting
             // that.
             return;
         }
-        *slot = Some((now, false));
-        match button.discipline() {
-            Discipline::Simple | Discipline::Momentary => out.push(Action::Press(button)),
-            // Nothing yet — which meaning it has is not known.
-            Discipline::TapOrHold => {}
-        }
+        *slot = true;
+        out.push(Action::Press(button));
     }
 
     fn release(&mut self, button: Button, out: &mut Vec<Action>) {
-        let Some((_, hold_fired)) = self.down[button.index()].take() else {
+        if !std::mem::take(&mut self.down[button.index()]) {
             // An up with no down. Happens after a device is reopened with a
             // button already held.
             return;
-        };
-        match button.discipline() {
-            Discipline::Simple => {}
-            Discipline::Momentary => out.push(Action::Release(button)),
-            Discipline::TapOrHold => out.push(if hold_fired {
-                Action::HoldEnd(button)
-            } else {
-                Action::Tap(button)
-            }),
         }
-    }
-
-    /// Emits [`Action::HoldStart`] for anything that has now been held long
-    /// enough.
-    ///
-    /// Must be called even when no event arrives, because a hold is defined
-    /// by an event *not* happening. The reader's poll timeout is what bounds
-    /// how late this can be.
-    pub fn tick(&mut self, now: Duration, out: &mut Vec<Action>) {
-        for button in Button::ALL {
-            if button.discipline() != Discipline::TapOrHold {
-                continue;
-            }
-            let slot = &mut self.down[button.index()];
-            if let Some((since, fired)) = slot {
-                if !*fired && now.saturating_sub(*since) >= self.hold_after {
-                    *fired = true;
-                    out.push(Action::HoldStart(button));
-                }
-            }
+        if button.discipline() == Discipline::Momentary {
+            out.push(Action::Release(button));
         }
     }
 
@@ -422,7 +397,7 @@ impl Decoder {
     ///
     /// **It terminates them first, and that is the point.** Dropping the state
     /// silently leaves whatever the gestures started running for ever: a
-    /// `HoldStart(Ff)` with no `HoldEnd` is a transport stuck in
+    /// `Press(Ff)` with no `Release` is a transport stuck in
     /// `SeekingForward`, and a `Press(Cue)` with no `Release` is the Cue Point
     /// Sampler playing until the deck is restarted. Nothing downstream can
     /// recover from that, because nothing downstream knows the press is gone.
@@ -433,20 +408,14 @@ impl Decoder {
     /// about to forget it.
     pub fn reset(&mut self, out: &mut Vec<Action>) {
         for button in Button::ALL {
-            let Some((_, fired)) = self.down[button.index()] else {
-                continue;
-            };
-            match button.discipline() {
-                // A hold that started must end. A hold that had not yet
-                // fired was going to be a tap on release — and a tap that
-                // never happened is better dropped than invented, since it
-                // would change track.
-                Discipline::TapOrHold if fired => out.push(Action::HoldEnd(button)),
-                Discipline::Momentary => out.push(Action::Release(button)),
-                _ => {}
+            // **`Simple` opens nothing, so there is nothing to close** — and
+            // inventing a `Press` here would change track because the kernel
+            // dropped some events, which is worse than doing nothing.
+            if self.down[button.index()] && button.discipline() == Discipline::Momentary {
+                out.push(Action::Release(button));
             }
         }
-        self.down = [None; 6];
+        self.down = [false; 8];
         self.abs = None;
     }
 }
@@ -930,58 +899,48 @@ mod tests {
             value,
         }
     }
-    fn ms(n: u64) -> Duration {
-        Duration::from_millis(n)
-    }
 
     #[test]
     fn play_fires_on_the_press_however_long_it_is_held() {
         // The failure a uniform tap-or-hold rule would cause: PLAY held a
         // little long emits a hold and never a tap, so the deck does not
-        // start. This is the test that pins the three-discipline split.
+        // start. The discipline it argued against is gone, but the argument
+        // is why PLAY is `Simple` and not something cleverer.
         let mut d = Decoder::default();
         let mut out = Vec::new();
 
-        d.feed(ms(0), key(Button::PlayPause.keycode(), 1), &mut out);
+        d.feed(key(Button::PlayPause.keycode(), 1), &mut out);
         assert_eq!(out, vec![Action::Press(Button::PlayPause)]);
 
         out.clear();
-        d.tick(ms(5_000), &mut out);
-        assert!(out.is_empty(), "a held PLAY must not become a hold gesture");
-
-        d.feed(ms(5_000), key(Button::PlayPause.keycode(), 0), &mut out);
-        assert!(out.is_empty(), "and releasing it must add nothing");
+        d.feed(key(Button::PlayPause.keycode(), 0), &mut out);
+        assert!(out.is_empty(), "a Simple button says nothing on release");
     }
 
     #[test]
-    fn ff_tapped_is_a_track_change_and_ff_held_is_a_seek() {
+    fn search_seeks_from_the_press_and_track_search_is_its_own_button() {
+        // **The seek used to wait out the hold threshold**, because a short
+        // press meant "next track" and which one it was could not be known
+        // until the button came back up. TRACK SEARCH owns that meaning now,
+        // so SEARCH starts seeking on the way down — 400 ms earlier.
         let mut d = Decoder::default();
         let mut out = Vec::new();
 
-        // Tap: down and up inside the threshold.
-        d.feed(ms(0), key(Button::Ff.keycode(), 1), &mut out);
-        assert!(out.is_empty(), "nothing is known yet on the way down");
-        d.tick(ms(100), &mut out);
-        assert!(out.is_empty(), "still inside the threshold");
-        d.feed(ms(100), key(Button::Ff.keycode(), 0), &mut out);
-        assert_eq!(out, vec![Action::Tap(Button::Ff)]);
-
-        // Hold: the threshold passes with the button still down.
+        d.feed(key(Button::Ff.keycode(), 1), &mut out);
+        assert_eq!(out, vec![Action::Press(Button::Ff)], "no threshold to wait out");
         out.clear();
-        d.feed(ms(1_000), key(Button::Ff.keycode(), 1), &mut out);
-        d.tick(ms(1_399), &mut out);
-        assert!(out.is_empty(), "one millisecond short");
-        d.tick(ms(1_400), &mut out);
-        assert_eq!(out, vec![Action::HoldStart(Button::Ff)]);
 
-        // And it fires once, not on every tick.
+
+        d.feed(key(Button::Ff.keycode(), 0), &mut out);
+        assert_eq!(out, vec![Action::Release(Button::Ff)], "the release ends the seek");
+
+        // The meaning that left: its own button, and it fires on the way down.
         out.clear();
-        d.tick(ms(1_500), &mut out);
-        d.tick(ms(2_000), &mut out);
-        assert!(out.is_empty(), "HoldStart must not repeat");
-
-        d.feed(ms(2_000), key(Button::Ff.keycode(), 0), &mut out);
-        assert_eq!(out, vec![Action::HoldEnd(Button::Ff)]);
+        d.feed(key(Button::TrackNext.keycode(), 1), &mut out);
+        assert_eq!(out, vec![Action::Press(Button::TrackNext)]);
+        out.clear();
+        d.feed(key(Button::TrackNext.keycode(), 0), &mut out);
+        assert!(out.is_empty(), "a Simple button says nothing on release");
     }
 
     #[test]
@@ -993,14 +952,12 @@ mod tests {
         let mut d = Decoder::default();
         let mut out = Vec::new();
 
-        d.feed(ms(0), key(Button::Cue.keycode(), 1), &mut out);
+        d.feed(key(Button::Cue.keycode(), 1), &mut out);
         assert_eq!(out, vec![Action::Press(Button::Cue)]);
         out.clear();
 
-        d.tick(ms(5_000), &mut out);
-        assert!(out.is_empty(), "CUE has no threshold");
 
-        d.feed(ms(5_000), key(Button::Cue.keycode(), 0), &mut out);
+        d.feed(key(Button::Cue.keycode(), 0), &mut out);
         assert_eq!(out, vec![Action::Release(Button::Cue)]);
     }
 
@@ -1011,9 +968,11 @@ mod tests {
             (Button::Back, Simple),
             (Button::PlayPause, Simple),
             (Button::Enter, Simple),
+            (Button::TrackNext, Simple),
+            (Button::TrackPrev, Simple),
             (Button::Cue, Momentary),
-            (Button::Rew, TapOrHold),
-            (Button::Ff, TapOrHold),
+            (Button::Rew, Momentary),
+            (Button::Ff, Momentary),
         ];
         for (b, want) in expected {
             assert_eq!(b.discipline(), want, "{:?}", b);
@@ -1030,17 +989,6 @@ mod tests {
     }
 
     #[test]
-    fn the_hold_threshold_sits_clear_of_the_kernel_debounce() {
-        // `controls.md` fixes debounce at 30-50 ms and the hold threshold at
-        // 300-500 ms, and says they must stay well clear of each other.
-        assert!(HOLD_AFTER >= ms(300) && HOLD_AFTER <= ms(500));
-        assert!(
-            HOLD_AFTER >= ms(50) * 6,
-            "the hold threshold must be far above the debounce interval"
-        );
-    }
-
-    #[test]
     fn a_relative_encoder_scrolls_and_an_absolute_one_does_not_jump_on_the_first_event() {
         // The `rotary-encoder` overlay reports one or the other depending on
         // a parameter nobody has run `dtoverlay -h` against yet. Handling
@@ -1050,7 +998,6 @@ mod tests {
 
         for v in [1, -1, 3] {
             d.feed(
-                ms(0),
                 RawEvent {
                     kind: EV_REL,
                     code: REL_X,
@@ -1072,10 +1019,10 @@ mod tests {
             code: ABS_X,
             value: v,
         };
-        d.feed(ms(0), abs(5000), &mut out);
+        d.feed(abs(5000), &mut out);
         assert!(out.is_empty(), "the first absolute reading must not scroll");
-        d.feed(ms(0), abs(5002), &mut out);
-        d.feed(ms(0), abs(5001), &mut out);
+        d.feed(abs(5002), &mut out);
+        d.feed(abs(5001), &mut out);
         assert_eq!(out, vec![Action::Browse(2), Action::Browse(-1)]);
     }
 
@@ -1095,10 +1042,10 @@ mod tests {
         let mut out = Vec::new();
 
         let abs = |v: i32| RawEvent { kind: EV_ABS, code: ABS_X, value: v };
-        d.feed(ms(0), abs(22), &mut out); // baseline, emits nothing
-        d.feed(ms(10), abs(23), &mut out);
-        d.feed(ms(20), abs(0), &mut out); // the wrap
-        d.feed(ms(30), abs(1), &mut out);
+        d.feed(abs(22), &mut out); // baseline, emits nothing
+        d.feed(abs(23), &mut out);
+        d.feed(abs(0), &mut out); // the wrap
+        d.feed(abs(1), &mut out);
         assert_eq!(
             out,
             vec![Action::Browse(1), Action::Browse(1), Action::Browse(1)],
@@ -1110,8 +1057,8 @@ mod tests {
         // wrap. Getting this wrong in the first draft of the test is the
         // small version of the bug itself — a wrap looks like a jump.
         out.clear();
-        d.feed(ms(40), abs(0), &mut out);
-        d.feed(ms(50), abs(23), &mut out);
+        d.feed(abs(0), &mut out);
+        d.feed(abs(23), &mut out);
         assert_eq!(
             out,
             vec![Action::Browse(-1), Action::Browse(-1)],
@@ -1128,8 +1075,8 @@ mod tests {
         let mut d = Decoder::default();
         let mut out = Vec::new();
         let abs = |v: i32| RawEvent { kind: EV_ABS, code: ABS_X, value: v };
-        d.feed(ms(0), abs(10), &mut out);
-        d.feed(ms(10), abs(13), &mut out);
+        d.feed(abs(10), &mut out);
+        d.feed(abs(13), &mut out);
         assert_eq!(out, vec![Action::Browse(3)]);
     }
 
@@ -1147,11 +1094,11 @@ mod tests {
 
         d.set_abs_range(0, 23);
         assert!(!d.absolute_axis_is_clamped(), "nothing seen yet");
-        d.feed(ms(0), abs(0), &mut out);
+        d.feed(abs(0), &mut out);
         assert!(d.absolute_axis_is_clamped(), "at the bottom of the axis");
-        d.feed(ms(10), abs(5), &mut out);
+        d.feed(abs(5), &mut out);
         assert!(!d.absolute_axis_is_clamped());
-        d.feed(ms(20), abs(23), &mut out);
+        d.feed(abs(23), &mut out);
         assert!(d.absolute_axis_is_clamped(), "at the top of the axis");
     }
 
@@ -1162,10 +1109,10 @@ mod tests {
         // finger rested on it.
         let mut d = Decoder::default();
         let mut out = Vec::new();
-        d.feed(ms(0), key(Button::PlayPause.keycode(), 1), &mut out);
+        d.feed(key(Button::PlayPause.keycode(), 1), &mut out);
         out.clear();
-        for t in [100, 200, 300] {
-            d.feed(ms(t), key(Button::PlayPause.keycode(), 2), &mut out);
+        for _ in 0..3 {
+            d.feed(key(Button::PlayPause.keycode(), 2), &mut out);
         }
         assert!(out.is_empty());
     }
@@ -1176,38 +1123,40 @@ mod tests {
         let mut out = Vec::new();
         // Some other key entirely — the deck's device could carry more than
         // the six the overlay declares.
-        d.feed(ms(0), key(30, 1), &mut out);
+        d.feed(key(30, 1), &mut out);
         // And an up with no down, which is what a device reopened with a
         // button already held produces.
-        d.feed(ms(0), key(Button::Ff.keycode(), 0), &mut out);
+        d.feed(key(Button::Ff.keycode(), 0), &mut out);
         assert!(out.is_empty());
     }
 
     #[test]
-    fn two_hold_buttons_are_tracked_independently() {
-        // FF and REW at once is not a designed gesture, but one must not
-        // clear the other's timer.
+    fn two_seek_buttons_are_tracked_independently() {
+        // FF and REW at once is not a designed gesture — and on the CDJ-200's
+        // ladder it is not even reportable — but one must not clear the
+        // other's slot, or a release would go missing and leave a seek
+        // running with nothing able to end it.
         let mut d = Decoder::default();
         let mut out = Vec::new();
-        d.feed(ms(0), key(Button::Ff.keycode(), 1), &mut out);
-        d.feed(ms(200), key(Button::Rew.keycode(), 1), &mut out);
+        d.feed(key(Button::Ff.keycode(), 1), &mut out);
+        d.feed(key(Button::Rew.keycode(), 1), &mut out);
+        assert_eq!(out, vec![Action::Press(Button::Ff), Action::Press(Button::Rew)]);
 
-        d.tick(ms(400), &mut out);
-        assert_eq!(out, vec![Action::HoldStart(Button::Ff)]);
         out.clear();
-        d.tick(ms(600), &mut out);
-        assert_eq!(out, vec![Action::HoldStart(Button::Rew)]);
+        d.feed(key(Button::Ff.keycode(), 0), &mut out);
+        assert_eq!(out, vec![Action::Release(Button::Ff)]);
+        out.clear();
+        d.feed(key(Button::Rew.keycode(), 0), &mut out);
+        assert_eq!(out, vec![Action::Release(Button::Rew)], "the other slot survived");
     }
 
     #[test]
     fn reset_forgets_everything_in_flight() {
         let mut d = Decoder::default();
         let mut out = Vec::new();
-        d.feed(ms(0), key(Button::Ff.keycode(), 1), &mut out);
+        d.feed(key(Button::Ff.keycode(), 1), &mut out);
         d.reset(&mut out);
         out.clear();
-        d.tick(ms(10_000), &mut out);
-        assert!(out.is_empty(), "a reset device has no presses in flight");
     }
 
     #[test]
@@ -1218,14 +1167,13 @@ mod tests {
         // downstream knows the press is gone.
         let mut d = Decoder::default();
         let mut out = Vec::new();
-        d.feed(ms(0), key(Button::Ff.keycode(), 1), &mut out);
-        d.tick(ms(400), &mut out); // the hold has started
-        d.feed(ms(500), key(Button::Cue.keycode(), 1), &mut out); // preview running
+        d.feed(key(Button::Ff.keycode(), 1), &mut out); // seeking
+        d.feed(key(Button::Cue.keycode(), 1), &mut out); // preview running
         out.clear();
 
         d.reset(&mut out);
         assert!(
-            out.contains(&Action::HoldEnd(Button::Ff)),
+            out.contains(&Action::Release(Button::Ff)),
             "a seek that started must be ended, got {out:?}"
         );
         assert!(
@@ -1235,18 +1183,36 @@ mod tests {
     }
 
     #[test]
-    fn a_hold_that_had_not_fired_yet_is_dropped_rather_than_turned_into_a_tap() {
-        // The other half of the rule, and the reason `reset` cannot simply
-        // replay the release path. A `TapOrHold` button released before the
-        // threshold means "next track" — inventing one here would change
-        // track because the kernel dropped some events, which is worse than
-        // doing nothing.
+    fn a_seek_is_closed_however_recently_it_started() {
+        // **This test inverted when SEARCH stopped being tap-or-hold.** It
+        // used to assert the opposite: a press younger than the threshold was
+        // going to be a tap, and inventing one would change track because the
+        // kernel dropped events. There is no tap any more, so a press that
+        // young is already a running seek, and dropping it silently is what
+        // leaves the transport in `SeekingForward` for ever.
         let mut d = Decoder::default();
         let mut out = Vec::new();
-        d.feed(ms(0), key(Button::Ff.keycode(), 1), &mut out);
+        d.feed(key(Button::Ff.keycode(), 1), &mut out);
         out.clear();
         d.reset(&mut out);
-        assert!(out.is_empty(), "no tap may be invented, got {out:?}");
+        assert_eq!(
+            out,
+            vec![Action::Release(Button::Ff)],
+            "a seek one millisecond old is still a seek"
+        );
+    }
+
+    #[test]
+    fn a_simple_button_in_flight_needs_no_closing() {
+        // The counterpart: `Simple` opens nothing, so `reset` has nothing to
+        // close, and a TRACK SEARCH lost to a dropped queue must not fire a
+        // second track change on the way out.
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        d.feed(key(Button::TrackNext.keycode(), 1), &mut out);
+        out.clear();
+        d.reset(&mut out);
+        assert!(out.is_empty(), "no track change may be invented, got {out:?}");
     }
 
     #[test]
@@ -1256,18 +1222,16 @@ mod tests {
         // what was lost, so carrying on would leave the button held for ever.
         let mut d = Decoder::default();
         let mut out = Vec::new();
-        d.feed(ms(0), key(Button::Rew.keycode(), 1), &mut out);
-        d.tick(ms(400), &mut out);
+        d.feed(key(Button::Rew.keycode(), 1), &mut out);
         out.clear();
 
         d.feed(
-            ms(500),
             RawEvent { kind: EV_SYN, code: SYN_DROPPED, value: 0 },
             &mut out,
         );
         assert_eq!(
             out,
-            vec![Action::HoldEnd(Button::Rew)],
+            vec![Action::Release(Button::Rew)],
             "a dropped queue must end the seek it can no longer see the end of"
         );
     }
@@ -1278,10 +1242,9 @@ mod tests {
         // drop would reset the decoder several times a second.
         let mut d = Decoder::default();
         let mut out = Vec::new();
-        d.feed(ms(0), key(Button::Ff.keycode(), 1), &mut out);
-        d.tick(ms(400), &mut out);
+        d.feed(key(Button::Ff.keycode(), 1), &mut out);
         out.clear();
-        d.feed(ms(410), RawEvent { kind: EV_SYN, code: 0, value: 0 }, &mut out);
+        d.feed(RawEvent { kind: EV_SYN, code: 0, value: 0 }, &mut out);
         assert!(out.is_empty(), "SYN_REPORT means nothing here, got {out:?}");
     }
 

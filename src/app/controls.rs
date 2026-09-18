@@ -43,7 +43,7 @@ use crate::app::medium::{Change, MediumSource, Mount};
 use crate::app::panel::{Panel, Show};
 use crate::display::Redraw;
 use crate::app::track::Ended;
-use crate::input::{Action, Decoder, RawEvent, HOLD_AFTER};
+use crate::input::{Action, Decoder, RawEvent};
 use crate::sink::AudioSink;
 
 /// Where raw events come from.
@@ -189,12 +189,7 @@ impl Controls {
     /// Takes the source at construction **because that is when the axis range
     /// has to be read**. See [`EventSource::abs_range`].
     pub fn new<E: EventSource + ?Sized>(source: &E) -> Controls {
-        Controls::with_hold(source, HOLD_AFTER)
-    }
-
-    /// For tests that would otherwise have to wait 400 ms to see a hold.
-    pub fn with_hold<E: EventSource + ?Sized>(source: &E, hold_after: Duration) -> Controls {
-        let mut decoder = Decoder::new(hold_after);
+        let mut decoder = Decoder::new();
         if let Some((min, max)) = source.abs_range() {
             decoder.set_abs_range(min, max);
         }
@@ -270,7 +265,7 @@ impl Controls {
                 self.retry_after = Duration::ZERO;
             }
             for i in 0..self.raw.len() {
-                self.decoder.feed(now, self.raw[i], &mut self.actions);
+                self.decoder.feed(self.raw[i], &mut self.actions);
             }
         }
 
@@ -286,7 +281,6 @@ impl Controls {
         // **Unconditional, and outside the `wait` branch.** A hold is defined
         // by an event not arriving, so the turn that has nothing to read is
         // exactly the turn in which a hold fires.
-        self.decoder.tick(now, &mut self.actions);
 
         turn.actions = self.actions.len();
         for i in 0..self.actions.len() {

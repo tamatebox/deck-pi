@@ -11,7 +11,6 @@
 //! while another plays. That is an undecided question, not something to settle
 //! inside a test.
 
-use std::time::Duration;
 
 use deck_pi::app::deck::Deck;
 use deck_pi::app::track::Config;
@@ -25,10 +24,6 @@ fn key(button: Button, value: i32) -> RawEvent {
         code: button.keycode(),
         value,
     }
-}
-
-fn ms(n: u64) -> Duration {
-    Duration::from_millis(n)
 }
 
 /// The **real** dispatch, driven by the real decoder.
@@ -61,17 +56,9 @@ fn deck() -> Deck<CaptureSink> {
 }
 
 /// Drives the decoder and applies whatever comes out.
-fn feed(deck: &mut Deck<CaptureSink>, d: &mut Decoder, now: Duration, ev: RawEvent) {
+fn feed(deck: &mut Deck<CaptureSink>, d: &mut Decoder, ev: RawEvent) {
     let mut out = Vec::new();
-    d.feed(now, ev, &mut out);
-    for a in out {
-        deck.apply(a).expect("the dispatch must not fail with no medium");
-    }
-}
-
-fn tick(deck: &mut Deck<CaptureSink>, d: &mut Decoder, now: Duration) {
-    let mut out = Vec::new();
-    d.tick(now, &mut out);
+    d.feed(ev, &mut out);
     for a in out {
         deck.apply(a).expect("the dispatch must not fail with no medium");
     }
@@ -85,43 +72,39 @@ fn play_toggles_on_each_press_and_a_long_press_is_still_one_toggle() {
     let mut deck = deck();
     let mut d = Decoder::default();
 
-    feed(&mut deck, &mut d, ms(0), key(Button::PlayPause, 1));
+    feed(&mut deck, &mut d, key(Button::PlayPause, 1));
     assert_eq!(deck.transport().rate(), RATE_UNITY, "PLAY starts on the press");
 
     // Held for two seconds. Nothing further may happen.
-    tick(&mut deck, &mut d, ms(2_000));
     assert_eq!(deck.transport().rate(), RATE_UNITY);
-    feed(&mut deck, &mut d, ms(2_000), key(Button::PlayPause, 0));
+    feed(&mut deck, &mut d, key(Button::PlayPause, 0));
     assert_eq!(deck.transport().rate(), RATE_UNITY, "releasing changes nothing");
 
-    feed(&mut deck, &mut d, ms(3_000), key(Button::PlayPause, 1));
+    feed(&mut deck, &mut d, key(Button::PlayPause, 1));
     assert_eq!(deck.transport().rate(), RATE_PAUSED, "and the next press pauses");
 }
 
 #[test]
 fn holding_ff_seeks_and_releasing_restores_what_was_playing() {
-    // The pair the `Momentary` / `TapOrHold` split exists to produce, and the
-    // piece of state that has to live between them.
+    // The pair `Momentary` exists to produce, and the piece of state that has
+    // to live between them: what the transport was doing before the seek, so
+    // the release can put it back.
     let mut deck = deck();
     let mut d = Decoder::default();
 
-    feed(&mut deck, &mut d, ms(0), key(Button::PlayPause, 1));
-    feed(&mut deck, &mut d, ms(0), key(Button::PlayPause, 0));
+    feed(&mut deck, &mut d, key(Button::PlayPause, 1));
+    feed(&mut deck, &mut d, key(Button::PlayPause, 0));
     assert_eq!(deck.transport().rate(), RATE_UNITY);
 
-    feed(&mut deck, &mut d, ms(100), key(Button::Ff, 1));
-    tick(&mut deck, &mut d, ms(300));
-    assert_eq!(deck.transport().rate(), RATE_UNITY, "not held long enough yet");
-
-    tick(&mut deck, &mut d, ms(500));
-    assert_eq!(deck.transport().rate(), RATE_SEEK, "the hold starts the seek");
+    feed(&mut deck, &mut d, key(Button::Ff, 1));
+    assert_eq!(deck.transport().rate(), RATE_SEEK, "the press starts the seek");
     assert_eq!(deck.transport().state(), State::SeekingForward);
     assert!(
         deck.transport().is_silent(),
         "v1's seek is silent — an audible scan would need the resampler"
     );
 
-    feed(&mut deck, &mut d, ms(2_000), key(Button::Ff, 0));
+    feed(&mut deck, &mut d, key(Button::Ff, 0));
     assert_eq!(deck.transport().rate(), RATE_UNITY, "playing resumes");
     assert!(!deck.transport().is_silent());
 }
@@ -135,11 +118,10 @@ fn seeking_from_a_pause_returns_to_a_pause() {
     let mut d = Decoder::default();
     assert_eq!(deck.transport().rate(), RATE_PAUSED);
 
-    feed(&mut deck, &mut d, ms(0), key(Button::Rew, 1));
-    tick(&mut deck, &mut d, ms(400));
+    feed(&mut deck, &mut d, key(Button::Rew, 1));
     assert_eq!(deck.transport().state(), State::SeekingBack);
 
-    feed(&mut deck, &mut d, ms(1_000), key(Button::Rew, 0));
+    feed(&mut deck, &mut d, key(Button::Rew, 0));
     assert_eq!(deck.transport().rate(), RATE_PAUSED, "it must not start playing");
 }
 
@@ -149,11 +131,11 @@ fn a_short_ff_never_touches_the_transport() {
     // transport must see nothing at all, or a tap would nudge the position.
     let mut deck = deck();
     let mut d = Decoder::default();
-    feed(&mut deck, &mut d, ms(0), key(Button::PlayPause, 1));
+    feed(&mut deck, &mut d, key(Button::PlayPause, 1));
     let before = deck.transport().state();
 
-    feed(&mut deck, &mut d, ms(1_000), key(Button::Ff, 1));
-    feed(&mut deck, &mut d, ms(1_050), key(Button::Ff, 0));
+    feed(&mut deck, &mut d, key(Button::Ff, 1));
+    feed(&mut deck, &mut d, key(Button::Ff, 0));
     assert_eq!(deck.transport().state(), before);
     assert_eq!(deck.transport().rate(), RATE_UNITY);
 }
@@ -170,10 +152,10 @@ fn cue_held_at_the_point_previews_and_releasing_it_returns() {
     assert_eq!(deck.transport().rate(), RATE_PAUSED);
     assert_eq!(deck.transport().cue_point(), 0);
 
-    feed(&mut deck, &mut d, ms(0), key(Button::Cue, 1));
+    feed(&mut deck, &mut d, key(Button::Cue, 1));
     assert_eq!(deck.transport().rate(), RATE_UNITY, "the preview starts at once");
 
-    feed(&mut deck, &mut d, ms(120), key(Button::Cue, 0));
+    feed(&mut deck, &mut d, key(Button::Cue, 0));
     assert_eq!(deck.transport().rate(), RATE_PAUSED, "release stops it");
     assert_eq!(deck.transport().peek_seek(), Some(0), "and returns to the point");
 }
@@ -186,8 +168,8 @@ fn cue_while_paused_away_from_the_point_sets_it_and_makes_no_sound() {
     deck.transport().pause();
     deck.transport().publish_position(150_000.0);
 
-    feed(&mut deck, &mut d, ms(0), key(Button::Cue, 1));
-    feed(&mut deck, &mut d, ms(50), key(Button::Cue, 0));
+    feed(&mut deck, &mut d, key(Button::Cue, 1));
+    feed(&mut deck, &mut d, key(Button::Cue, 0));
 
     assert_eq!(deck.transport().cue_point(), 150_000);
     assert_eq!(deck.transport().rate(), RATE_PAUSED, "setting a cue is silent");
@@ -212,23 +194,22 @@ fn cue_during_a_held_seek_pauses_and_releasing_the_button_does_not_undo_it() {
     let mut deck = deck();
     let mut d = Decoder::default();
 
-    feed(&mut deck, &mut d, ms(0), key(Button::PlayPause, 1));
-    feed(&mut deck, &mut d, ms(0), key(Button::PlayPause, 0));
+    feed(&mut deck, &mut d, key(Button::PlayPause, 1));
+    feed(&mut deck, &mut d, key(Button::PlayPause, 0));
     deck.transport().publish_position(500_000.0);
     assert_eq!(deck.transport().rate(), RATE_UNITY);
 
-    feed(&mut deck, &mut d, ms(100), key(Button::Ff, 1));
-    tick(&mut deck, &mut d, ms(500));
+    feed(&mut deck, &mut d, key(Button::Ff, 1));
     assert_eq!(deck.transport().state(), State::SeekingForward);
 
     // CUE, still holding FF.
-    feed(&mut deck, &mut d, ms(700), key(Button::Cue, 1));
-    feed(&mut deck, &mut d, ms(760), key(Button::Cue, 0));
+    feed(&mut deck, &mut d, key(Button::Cue, 1));
+    feed(&mut deck, &mut d, key(Button::Cue, 0));
     assert_eq!(deck.transport().state(), State::Paused, "Back Cue pauses");
     assert_eq!(deck.transport().peek_seek(), Some(0), "and returns to the point");
 
     // Now let FF go. This must change nothing.
-    feed(&mut deck, &mut d, ms(1_200), key(Button::Ff, 0));
+    feed(&mut deck, &mut d, key(Button::Ff, 0));
     assert_eq!(
         deck.transport().state(),
         State::Paused,
@@ -247,16 +228,15 @@ fn play_pressed_during_a_held_seek_is_not_swallowed_by_the_release() {
     let mut deck = deck();
     let mut d = Decoder::default();
 
-    feed(&mut deck, &mut d, ms(0), key(Button::PlayPause, 1));
-    feed(&mut deck, &mut d, ms(0), key(Button::PlayPause, 0));
-    feed(&mut deck, &mut d, ms(100), key(Button::Ff, 1));
-    tick(&mut deck, &mut d, ms(500));
+    feed(&mut deck, &mut d, key(Button::PlayPause, 1));
+    feed(&mut deck, &mut d, key(Button::PlayPause, 0));
+    feed(&mut deck, &mut d, key(Button::Ff, 1));
     assert_eq!(deck.transport().state(), State::SeekingForward);
 
-    feed(&mut deck, &mut d, ms(700), key(Button::PlayPause, 1));
+    feed(&mut deck, &mut d, key(Button::PlayPause, 1));
     assert_eq!(deck.transport().rate(), RATE_PAUSED, "PLAY takes effect at once");
 
-    feed(&mut deck, &mut d, ms(1_200), key(Button::Ff, 0));
+    feed(&mut deck, &mut d, key(Button::Ff, 0));
     assert_eq!(
         deck.transport().rate(),
         RATE_PAUSED,
