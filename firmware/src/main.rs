@@ -52,13 +52,17 @@
 #![cfg_attr(feature = "selftest", allow(unused_imports, dead_code))]
 
 use embassy_executor::Spawner;
+#[cfg(feature = "faderprobe")]
+use embassy_rp::adc::{Adc, Blocking, Channel as AdcChannel, Config as AdcConfig};
 use embassy_rp::bind_interrupts;
 use embassy_rp::gpio::{Input, Pull};
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Driver, InterruptHandler};
 use embassy_time::{Duration, Ticker};
-#[cfg(feature = "selftest")]
+#[cfg(any(feature = "selftest", feature = "faderprobe"))]
 use embassy_time::Timer;
+#[cfg(feature = "faderprobe")]
+use embassy_usb::class::cdc_acm::{CdcAcmClass, State as CdcState};
 use embassy_usb::class::hid::{HidBootProtocol, HidSubclass, HidWriter, State};
 use embassy_usb::{Builder, Config};
 use panic_halt as _;
@@ -223,6 +227,8 @@ static STATE: StaticCell<State> = StaticCell::new();
 static CONFIG_DESC: StaticCell<[u8; 256]> = StaticCell::new();
 static BOS_DESC: StaticCell<[u8; 256]> = StaticCell::new();
 static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
+#[cfg(feature = "faderprobe")]
+static CDC_STATE: StaticCell<CdcState> = StaticCell::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -262,8 +268,27 @@ async fn main(spawner: Spawner) {
     };
     let writer = HidWriter::<_, 8>::new(&mut builder, STATE.init(State::new()), hid_config);
 
+    // Before `build()`, which consumes the builder. A second interface, so
+    // the HID device above is unchanged and the six buttons keep working
+    // while the fader is being measured.
+    #[cfg(feature = "faderprobe")]
+    let cdc = CdcAcmClass::new(&mut builder, CDC_STATE.init(CdcState::new()), 64);
+
     let usb = builder.build();
     spawner.spawn(run_usb(usb).unwrap());
+
+    #[cfg(feature = "faderprobe")]
+    spawner.spawn(
+        run_faderprobe(
+            cdc,
+            Adc::new_blocking(p.ADC, AdcConfig::default()),
+            // No pull. The fader is a divider across 3V3 and AGND and
+            // supplies its own level; a pull-up here would sit across the
+            // top leg and bend the reading.
+            AdcChannel::new_pin(p.PIN_27, Pull::None),
+        )
+        .unwrap(),
+    );
 
     #[cfg(feature = "selftest")]
     {
@@ -378,4 +403,99 @@ async fn run_controls(
             let _ = writer.write(&[2, detents as u8]).await;
         }
     }
+}
+
+/// Prints the pitch fader's raw ADC counts, and the span seen so far, once
+/// every 100 ms.
+///
+/// `docs/hardware.md` says two things about this fader that are arguments
+/// rather than measurements: that 12 bits over a ±10% span is "ample by
+/// arithmetic, with ENOB unmeasured", and that the centre detent is what
+/// makes UNITY's *near centre* gate "a physical fact rather than an
+/// inference". Neither survives contact without numbers. This task is how
+/// the numbers are taken — **on the bench, by reading them off a terminal**,
+/// not by anything the deck does at runtime.
+///
+/// Three lines are worth writing down from it: the count at each end of
+/// travel, and the count at the detent. `span` carries the running extremes
+/// so the ends do not have to be caught by eye.
+///
+/// # Why a serial port and not another HID report
+///
+/// A HID absolute axis would show up in `evtest` with no extra tooling,
+/// which is tempting. But which `ABS_*` code a usage becomes is decided by
+/// `hid-input.c`, the same table that made CUE's obvious usage the wrong
+/// one — so that route costs a kernel-source reading before the first byte
+/// is written. A CDC interface costs nothing and is read with `cat`.
+#[cfg(feature = "faderprobe")]
+#[embassy_executor::task]
+async fn run_faderprobe(
+    mut cdc: CdcAcmClass<'static, Driver<'static, USB>>,
+    mut adc: Adc<'static, Blocking>,
+    mut pin: AdcChannel<'static>,
+) -> ! {
+    let mut min = u16::MAX;
+    let mut max = u16::MIN;
+
+    loop {
+        // Nothing written before the host opens the port is seen, and a
+        // probe that silently drops its first readings is worse than one
+        // that waits. Re-entered whenever the terminal is closed.
+        cdc.wait_connection().await;
+
+        while let Ok(count) = adc.blocking_read(&mut pin) {
+            if count < min {
+                min = count;
+            }
+            if count > max {
+                max = count;
+            }
+
+            // Four fields of at most five digits, their labels, and CRLF
+            // come to 44 bytes. The slack is deliberate: an overrun here
+            // indexes out of bounds, and `panic_halt` turns that into a
+            // probe that stops printing and says nothing about why.
+            let mut line = [0u8; 64];
+            let mut n = 0;
+            n += write_field(&mut line[n..], b"count=", count);
+            n += write_field(&mut line[n..], b" min=", min);
+            n += write_field(&mut line[n..], b" max=", max);
+            n += write_field(&mut line[n..], b" span=", max - min);
+            line[n] = b'\r';
+            line[n + 1] = b'\n';
+            n += 2;
+
+            if cdc.write_packet(&line[..n]).await.is_err() {
+                break;
+            }
+            Timer::after_millis(100).await;
+        }
+    }
+}
+
+/// `<label><value>` into `out`, returning the bytes written. Hand-rolled
+/// because `core::fmt` on a Cortex-M33 pulls in formatting machinery this
+/// firmware has no other use for, and the values are four digits at most.
+#[cfg(feature = "faderprobe")]
+fn write_field(out: &mut [u8], label: &[u8], value: u16) -> usize {
+    out[..label.len()].copy_from_slice(label);
+    let mut n = label.len();
+
+    let mut digits = [0u8; 5];
+    let mut d = 0;
+    let mut v = value;
+    loop {
+        digits[d] = b'0' + (v % 10) as u8;
+        d += 1;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    while d > 0 {
+        d -= 1;
+        out[n] = digits[d];
+        n += 1;
+    }
+    n
 }

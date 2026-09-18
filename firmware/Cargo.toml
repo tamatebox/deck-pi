@@ -10,6 +10,13 @@ edition = "2024"
 # presses its own buttons, which is not a thing to ship by accident.
 selftest = []
 
+# Reads the pitch fader on GP27 and prints its raw ADC counts over a USB
+# serial interface, alongside the running minimum and maximum. A bench
+# instrument, not a control path: `docs/hardware.md` records the fader's
+# span and its centre detent as *unmeasured*, and this is what measures
+# them. Off by default — the shipped deck has no serial port.
+faderprobe = []
+
 [dependencies]
 cortex-m-rt = "0.7.6"
 embassy-executor = { version = "0.10.0", features = ["executor-thread", "platform-cortex-m"] }
