@@ -286,13 +286,21 @@ async fn main(spawner: Spawner) {
             // supplies its own level; a pull-up here would sit across the
             // top leg and bend the reading.
             AdcChannel::new_pin(p.PIN_27, Pull::None),
+            // The opposite, and for the opposite reason. KSWB's six shared
+            // buttons are bare resistances to ground with no divider top, so
+            // without a pull-up this pin floats and reads noise. The pad's
+            // own is weak and loosely specified — good enough to tell six
+            // buttons apart, not good enough to write down as the ladder's
+            // characterisation. An external resistor of known value is what
+            // the shipped deck should use.
+            AdcChannel::new_pin(p.PIN_26, Pull::Up),
         )
         .unwrap(),
     );
 
     #[cfg(feature = "selftest")]
     {
-        let _ = (p.PIN_2, p.PIN_3, p.PIN_4, p.PIN_6, p.PIN_7, p.PIN_8, p.PIN_9, p.PIN_10);
+        let _ = (p.PIN_2, p.PIN_3, p.PIN_4, p.PIN_5, p.PIN_6, p.PIN_7, p.PIN_9, p.PIN_10);
         spawner.spawn(run_selftest(writer).unwrap());
         return;
     }
@@ -302,10 +310,15 @@ async fn main(spawner: Spawner) {
         writer,
         // The pinout. Switches go to ground; the pull-ups are internal, so
         // nothing external is needed for any of these.
-        Debounced::new(Input::new(p.PIN_4, Pull::Up)),  // ENTER — encoder push
+        //
+        // **PLAY and CUE are where the CDJ-200 switch panel put them.** Its
+        // `CN602` is clipped to GP4 and GP5, so the firmware follows the wire
+        // rather than the wire following the firmware — see `cdj-200.md`.
+        // ENTER moves to GP7, which PLAY vacated; GP8 is now free.
+        Debounced::new(Input::new(p.PIN_7, Pull::Up)),  // ENTER — encoder push
         Debounced::new(Input::new(p.PIN_6, Pull::Up)),  // BACK
-        Debounced::new(Input::new(p.PIN_7, Pull::Up)),  // PLAY / PAUSE
-        Debounced::new(Input::new(p.PIN_8, Pull::Up)),  // CUE
+        Debounced::new(Input::new(p.PIN_4, Pull::Up)),  // PLAY / PAUSE — KSWB CN602-6
+        Debounced::new(Input::new(p.PIN_5, Pull::Up)),  // CUE — KSWB CN602-7
         Debounced::new(Input::new(p.PIN_9, Pull::Up)),  // REW
         Debounced::new(Input::new(p.PIN_10, Pull::Up)), // FF
         Encoder::new(
@@ -432,10 +445,12 @@ async fn run_controls(
 async fn run_faderprobe(
     mut cdc: CdcAcmClass<'static, Driver<'static, USB>>,
     mut adc: Adc<'static, Blocking>,
-    mut pin: AdcChannel<'static>,
+    mut fader: AdcChannel<'static>,
+    mut kd2: AdcChannel<'static>,
 ) -> ! {
     let mut min = u16::MAX;
     let mut max = u16::MIN;
+    let mut kmin = u16::MAX;
 
     loop {
         // Nothing written before the host opens the port is seen, and a
@@ -443,12 +458,20 @@ async fn run_faderprobe(
         // that waits. Re-entered whenever the terminal is closed.
         cdc.wait_connection().await;
 
-        while let Ok(count) = adc.blocking_read(&mut pin) {
+        while let Ok(count) = adc.blocking_read(&mut fader) {
+            let Ok(k) = adc.blocking_read(&mut kd2) else {
+                break;
+            };
             if count < min {
                 min = count;
             }
             if count > max {
                 max = count;
+            }
+            // Only the floor, for the ladder. Idle sits at the pull-up's rail
+            // and every press pulls down, so the maximum says nothing.
+            if k < kmin {
+                kmin = k;
             }
 
             // Four fields of at most five digits, their labels, and CRLF
@@ -457,10 +480,11 @@ async fn run_faderprobe(
             // probe that stops printing and says nothing about why.
             let mut line = [0u8; 64];
             let mut n = 0;
-            n += write_field(&mut line[n..], b"count=", count);
-            n += write_field(&mut line[n..], b" min=", min);
-            n += write_field(&mut line[n..], b" max=", max);
-            n += write_field(&mut line[n..], b" span=", max - min);
+            n += write_field(&mut line[n..], b"f=", count);
+            n += write_field(&mut line[n..], b" fmin=", min);
+            n += write_field(&mut line[n..], b" fmax=", max);
+            n += write_field(&mut line[n..], b" k=", k);
+            n += write_field(&mut line[n..], b" kmin=", kmin);
             line[n] = b'\r';
             line[n + 1] = b'\n';
             n += 2;
@@ -468,7 +492,10 @@ async fn run_faderprobe(
             if cdc.write_packet(&line[..n]).await.is_err() {
                 break;
             }
-            Timer::after_millis(100).await;
+            // 20 Hz, not 10. A button press is short enough that a 100 ms
+            // cadence can miss one whole, which on a ladder reads as a dead
+            // button rather than as a missed sample.
+            Timer::after_millis(50).await;
         }
     }
 }
