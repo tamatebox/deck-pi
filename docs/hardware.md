@@ -409,8 +409,8 @@ its pins is a firmware question rather than a fact about the Pi.
 | PLAY / PAUSE | 1 | Real travel. Takes the most abuse of anything here |
 | CUE | 1 | Real travel |
 | BACK | 1 | A small tactile is fine |
-| FF | 1 | Comfortable **held** for seconds, not crisp |
-| REW | 1 | Same |
+| SEARCH — forward, back | 2 | Comfortable **held** for seconds, not crisp: holding is all they do |
+| TRACK SEARCH — next, previous | 2 | Tapped, never held. One press is one track |
 | UNITY — v2 | 1 | Set apart from PLAY, and different to the finger. A mis-press changes the audio path and the handover is cross-faded, so **it makes no sound** |
 | Source toggle — USB or a peer deck | **0 or 1** | Held, not scheduled. The only control asked for beyond the set above, and asked for tentatively |
 | Jog encoder — v2 | 1 | **Non**-detented, optical, 100-200 PPR |
@@ -418,8 +418,15 @@ its pins is a firmware question rather than a fact about the Pi.
 | Display panel | 1 | SPI. RESET tied high and no PWM backlight were load-bearing while the panel was on the Pi's header; they cost nothing either way now |
 | ADC | **0** | The RP2350 has one. The 16-bit external part is not needed — and note the swap is **12-bit**, which over a ±10% span is ~0.005% per count: ample by arithmetic. **No longer the operative number.** Measured on a real fader, the system is noise-limited around 7.3 effective bits, so the count size never binds — `cdj-200.md` |
 
-**Seven switches counting the encoder's push. Two encoders. One fader.** That is the
-whole control surface, and it is wired to the Pico, not to the Pi.
+**Nine switches counting the encoder's push, one of them v2. Two encoders. One
+fader.** That is the whole control surface, and it is wired to the Pico, not to the
+Pi.
+
+**Five of those switches need no pin of their own.** A salvaged CDJ-200 switch panel
+puts six buttons on a single analog line through a resistor ladder, and the Pico
+tells them apart by voltage — SEARCH and TRACK SEARCH are four of them, and the two
+FOLDER SEARCH buttons it also carries have no meaning here yet. So the counts above
+are what the deck needs, not what it costs in pins. `cdj-200.md`.
 
 Also needed, none of it a control: a 5 V regulator for the panel, four standoffs
 longer than the bundled
@@ -571,9 +578,6 @@ text says so.
 - **Raspberry Pi GPIO pinout** — <https://pinout.xyz/> — the header map's layout and
   the two-column convention. Common to every 40-pin Pi, but a *recalled-shaped* fact,
   so **confirm with `pinout` on the board** rather than against this table.
-- **Pioneer CDJ-350 operating instructions** (389414-01U) —
-  <https://imagescdn.juno.co.uk/manual/389414-01U.pdf> — p.17-18 for CUE and FF/REW.
-  Used by `controls.md`.
 - **Bourns PTA series datasheet** — <https://www.bourns.com/docs/product-datasheets/pta.pdf>
   Cited for a *market* fact, not a part: the centre detent is one digit of the
   ordering code, and travel tops out at 60 mm.

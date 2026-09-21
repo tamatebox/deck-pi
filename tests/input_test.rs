@@ -179,8 +179,8 @@ fn cue_while_paused_away_from_the_point_sets_it_and_makes_no_sound() {
 fn cue_during_a_held_seek_pauses_and_releasing_the_button_does_not_undo_it() {
     // Back Cue while FF is held. `controls.md` chooses this interpretation
     // deliberately — "anything not paused counts as moving, and returning to
-    // the point is the predictable answer" — and the CDJ-350 rule it inherits
-    // is quoted in `decisions.md`: **"Back Cue pauses; it does not resume."**
+    // the point is the predictable answer" — and the rule it rests on is
+    // `controls.md`'s: **Back Cue pauses; it does not resume.**
     //
     // The release used to undo it. `was_playing` below is captured when FF
     // goes down, and nothing updates it when CUE changes the state, so

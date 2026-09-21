@@ -188,8 +188,7 @@ fn kind_of(row: &Row) -> Kind {
     }
 }
 
-/// Renders `mm:ss.d`, which is what the CDJ-350 shows and what a cue is set
-/// against. Tenths rather than frames: a frame count is unreadable at a
+/// Renders `mm:ss.d`, which is what a cue is set against. Tenths rather than frames: a frame count is unreadable at a
 /// glance and the cue store keeps the exact value anyway.
 pub fn timecode(at: Duration) -> String {
     let tenths = at.as_millis() / 100;

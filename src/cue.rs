@@ -6,8 +6,9 @@
 //! consequence to accept, recorded there: cues do not travel between two
 //! decks, because they are two machines.
 //!
-//! One cue point per track, in frames, and **frame zero until set** — the
-//! CDJ-350 behaviour `controls.md` transcribes. A cue deliberately set at
+//! One cue point per track, in frames, and **frame zero until set** —
+//! `controls.md`'s rule, with `decisions.md` on why it is not "wherever the
+//! sound starts". A cue deliberately set at
 //! frame zero is therefore indistinguishable from an unset one, which is fine
 //! because they behave identically; it also means zeros need not be stored.
 //!
@@ -147,7 +148,8 @@ impl CueStore {
     }
 
     /// The cue point for a track, in frames. **Zero when unset**, which is
-    /// the CDJ-350 default and is why no "is there one" question is exposed.
+    /// the deck's own unset value and is why no "is there one" question is
+    /// exposed.
     pub fn get(&self, track: &Path) -> Result<u64, CueError> {
         let key = self.key(track)?;
         Ok(self.cues.get(&key).copied().unwrap_or(0))
@@ -533,7 +535,7 @@ mod tests {
 
     #[test]
     fn setting_a_new_cue_cancels_the_old_one() {
-        // The CDJ-350 rule: one cue point per track.
+        // `controls.md`'s rule: one cue point per track.
         let d = Dir::new("replace");
         let track = Path::new(MOUNT).join("t.wav");
         let mut s = CueStore::load(&d.0, "vol", Path::new(MOUNT)).expect("load");

@@ -3,51 +3,123 @@
 `hardware.md` says which switch sits on which pin. This file says what pressing it
 *does*, and `decisions.md` carries the one-line rulings.
 
-**The reference is the Pioneer CDJ-350 operating instructions (389414-01U, p.17-18),
-read rather than recalled** — an entry-level single player, closer in scope to a
-handful of buttons than a CDJ-3000X. That is a similarity of *button count*, not of
-function. **It is one reference and not an authority**: the deck has no CD, no
-network, no track database and no waveform. Every departure below is marked, because
-a rule re-derived from memory is how "pausing at the head of the next track is the
-CDJ's own behaviour" got written into two files while the manual said the opposite.
+**Every rule here is the deck's own and has to carry its own reason.** This file was
+once organised around one outside player's operating instructions, with each
+difference from it marked as a "departure" — that reference is gone, and
+`decisions.md` records why it went. What it cost while it was here was a habit of
+settling a question by looking up what some other machine does, which answers a
+question this deck is not asking. A single-deck bit-perfect transport with no CD, no
+network, no track database and no waveform inherits no button meanings from anything.
+
+So the test a rule has to pass below is **not** "is this what a player does". It is
+whether the rule is the only sensible reading of its own state, whether it holds for
+everything on the stick, and whether it costs a mode. Where a rule is a choice
+between defensible answers rather than a consequence, it says so.
+
+**One rule carries more of this file than any other**, and it belongs to this deck:
+*nothing produces sound that the operator did not press PLAY for.*
+
+## Browsing: the encoder, ENTER and BACK
+
+**The tree is the index**, so browsing is walking it: the encoder moves within a
+folder, ENTER goes down, BACK comes up. `src/browser.rs` is the model.
+
+| Control | What it does |
+|---|---|
+| Browse encoder | Moves the selection one row per detent. **Does not wrap** at either end |
+| ENTER | Descends into the selected folder, or **loads** the selected file, paused at frame zero |
+| BACK | Up one level, with the selection landing on the folder just left. At the root it does nothing |
+
+**Not wrapping is a decision and `decisions.md` carries it**: a detented encoder
+gives no feedback that a list has ended, and on the smallest candidate panel's three
+browsable rows, arriving back at the top is indistinguishable from a mis-scroll. The
+ends of a list are places you can feel.
+
+**ENTER on a file the deck cannot play does nothing, and that is not a silent
+failure.** Every rejection is decidable from the header, so the browser vets on
+*highlight* and the row already carries the reason — `decisions.md`'s "say *why*,
+not just *that*". By the time ENTER is reachable the answer is on the glass, so
+there is nothing left for the press to say.
+
+**ENTER acts on the selection; SEARCH and TRACK SEARCH act on the playing track.**
+Those are two different things and move independently — browsing one folder while
+another track plays is what a browser on a deck is *for*. `src/loaded.rs` exists
+because nothing owned the second of them, and the defect that came of it was a cue
+written against the highlighted row rather than the audible one.
+
+**ENTER is the encoder's own push switch today**, and whether it earns a button of
+its own is [#4](https://github.com/tamatebox/deck-pi/issues/4) — a question about how
+badly cheap push switches bounce, on the most-used control. Its original framing as
+a *swap* for one Pi pin is void: the controls are on a Pico and the firmware already
+reads one control from two sources at once.
+
+## PLAY / PAUSE
+
+One button, and it toggles. Playing, it pauses where it is; paused, it plays from
+where it is. It starts nothing that is not loaded — the transport refuses every
+control while nothing is loaded, in one place rather than at each caller.
+
+**It fires on the press, however long it is held**, and that is worth stating
+because the obvious uniform rule would break it: under tap-versus-hold, PLAY held a
+little long emits a hold and never a tap, so the deck does not start. The discipline
+that argument was written against is gone; the argument is why PLAY is still the
+simplest kind of button there is.
 
 ## CUE
 
-| State | Tap CUE | The manual's name |
+One button, three behaviours, selected by the transport's own state and never by a
+mode.
+
+| State | Tap CUE | The name used for it |
 |---|---|---|
 | Paused | **sets** the cue point at the paused position | Setting Cue |
 | Playing | **returns** to the cue point and pauses there | Back Cue |
 | Held at the cue point | **plays while held** | Cue Point Sampler |
 
-Four details, quoted from that page:
+Those three names are the code's as well — `Cued::Set`, `Cued::Returned` and
+`Cued::Previewing` in `src/transport.rs` — so a sentence here and a branch there name
+one thing.
 
-- **One cue point per track** — "when a new cue point is set, the previously set cue
-  point is canceled". A single point, not a set of hot cues.
-- **Setting it makes no sound** — "no sound is output at this time".
-- **Back Cue pauses; it does not resume** — "the set immediately returns to the
-  currently set cue point and pauses". Playback restarts only on PLAY, from the cue.
-- **The preview is momentary** — "playback continues while the button is held in", so
-  release means stop and return. No latching.
+**Nothing selects between them but the deck's own state**, which is what keeps this
+one button rather than a button and a modifier. Each is also the only sensible
+reading of the state it fires in: paused, you are marking where you are; playing, you
+want to get back to the mark; already at the mark with the button down, you want to
+hear what is there without committing to it.
 
-**There is no separate STOP, because a CDJ has none.** Returning to the cue point and
-standing by *is* stopping, which is why the button reads "CUE / STOP" and is one
-function. So the hold gesture is free for preview instead of being spent on a stop
-the transport already has. No new mechanism: hold is `r = 1.0`, release is `r = 0`
-with the position set back.
+Four details, each falling out of a rule the deck already has rather than standing on
+its own:
 
-**Departure — CUE during a held FF or REW is Back Cue.** The manual does not cover
-the combination, so this is a chosen interpretation: anything not paused counts as
-moving, and returning to the point is the predictable answer. Ignoring the press
-would be worse, a control that sometimes does nothing being harder to trust than one
-that always does the same thing.
+- **One cue point per track.** Setting a new one cancels the old. A second point
+  needs a second button and the panel has none to spare — and a transport that plays
+  one piece at a time has no use for a set of hot cues.
+- **Setting it makes no sound.** Nothing in that branch starts the transport, so this
+  holds by construction rather than by rule.
+- **Back Cue pauses; it does not resume.** Returning to a point is not a press of
+  PLAY, so playback restarts only when PLAY says so.
+- **The preview is momentary.** Release means stop and return, with no latching. A
+  latch would leave the deck making sound with nobody holding a button.
 
-**Departure — auto cue is not adopted.** The 350 has it: on load it skips the silent
-lead-in and places the cue where sound starts, thresholds from -36 to -78 dB. One
-piece opening below the threshold on purpose is enough to make that wrong, and a rule
-must hold for everything on the stick. The cue starts at frame zero unless set.
+**There is no separate STOP, and this deck needs none.** Returning to the cue point
+and standing by *is* stopping: the position is somewhere known, the output is silent,
+and PLAY starts from there. So the button reads `CUE / STOP` and is one function, and
+the hold gesture is free for the preview instead of being spent on a stop the
+transport already has. It costs no new mechanism either — hold is `r = 1.0`, release
+is `r = 0` with the position set back.
 
-Fine-adjusting the cue in single frames, which the 350 does with SEARCH while paused
-at the cue, would fall naturally to FF/REW in the same state. Free if ever wanted.
+**CUE during a held SEARCH is Back Cue, and that is a choice rather than a
+consequence.** Anything not paused counts as moving, and returning to the point is
+the predictable answer. Ignoring the press would be worse: a control that sometimes
+does nothing is harder to trust than one that always does the same thing.
+
+**Auto cue is not adopted.** The mechanism is a familiar one — on load, skip the
+silent lead-in and place the cue where sound starts, on a threshold somewhere in the
+region of -36 to -78 dB. It is refused on the quiet case alone: one piece that opens
+below the threshold on purpose is enough to make an automatic decision wrong, and a
+rule has to be right for everything on the stick. The cue starts at frame zero unless
+set.
+
+Fine-adjusting the cue in single frames while paused at it would fall naturally to
+SEARCH, which means nothing in that state today. Free if ever wanted.
 
 ## SEARCH, and TRACK SEARCH
 
@@ -55,8 +127,22 @@ at the cue, would fall naturally to FF/REW in the same state. Free if ever wante
 TRACK SEARCH loads the next or previous track and **waits at its head — it does
 not start playing, even if the deck was playing.**
 
-**They used to be one pair.** FF/REW carried both: hold to seek, tap to change
-track. The CDJ-200 switch panel put six buttons on one wire, so the pins that
+**Waiting at the head is the deck's rule and nothing else's.** An earlier version of
+this file justified it by attributing it to another player, and the attribution was
+false — that machine plays on through a track change. The rule survived the
+correction unchanged, which is the useful part: the attribution was never what made
+it right, and it has gone now along with the reference it pointed at. What makes it
+right is the one rule above. A track arriving already playing is sound the operator
+did not press PLAY for, and in a venue that is the worst version of it, because
+attention is elsewhere.
+
+It buys the software something as well, worth naming because `src/app/track.rs`
+depends on it: **a track change always contains a pause**, which is what lets the
+threads and the sink be per-track and every drop happen off the deadline. A
+load-and-play control added later is what would have to revisit that module.
+
+**They used to be one pair.** FF/REW carried both meanings: hold to seek, tap to
+change track. The CDJ-200 switch panel put six buttons on one wire, so the pins that
 forced the compression stopped existing and the pair split — `cdj-200.md`. Three
 things changed with it, and none is cosmetic:
 
@@ -67,32 +153,15 @@ things changed with it, and none is cosmetic:
 - **The interval rule below has nothing left to constrain.** Debounce still
   matters; the hold threshold it had to stay clear of is gone.
 
-**Departure, and an earlier version of this paragraph claimed the opposite from
-memory.** Read off the manual: TRACK SEARCH keeps playing, and pausing at the start
-happens **only with auto cue on** — p.17, "when auto cue is turned on, the set
-searches for the beginning of the track and pauses there". Selecting a track with the
-rotary selector is more emphatic: "the track is loaded and playback begins."
-
-Taking the pause anyway **separates the two halves of auto cue** rather than adopting
-it. What is rejected is auto cue deciding *where the music begins*; pausing on
-arrival decides nothing about the audio. The rule that buys is one line for the whole
-panel: **nothing produces sound that the operator did not press PLAY for.** It also
-means a track change always contains a pause, which the software design leans on —
-`architecture.md`.
-
-**This used to compress two of the 350's controls into one pair**, and no longer
-does. That player separates SEARCH (`◄◄ ►►`, within a track) from TRACK SEARCH
-(`|◄◄ ►►|`, between tracks), and so does this deck. Each earns its keep on
-different material: hold-to-seek is what makes an 80-minute piece usable at all
-with no jog until v2, and stepping tracks carries the weight across a folder of
-short ones.
-
-The compression's stated cost was two pins, on a header `hardware.md` had closed
-at zero spare. **That accounting is void**: the controls are on a Pico, and the
-CDJ-200's panel reports six buttons on a single analog line. What the argument
-*really* rested on is untouched and still worth having — **it is not a mode**. The
-idea it rejects is overloading the browse encoder, browsing in the list and
-seeking during playback, which puts a hidden mode on the most-used control.
+**Each pair earns its keep on different material.** Hold-to-seek is what makes an
+80-minute piece usable at all with no jog until v2, and stepping tracks carries the
+weight across a folder of short ones. The compression's stated cost was two pins, on
+a header `hardware.md` had closed at zero spare. **That accounting is void**: the
+controls are on a Pico, and the CDJ-200's panel reports six buttons on a single
+analog line. What the argument *really* rested on is untouched and still worth
+having — **it is not a mode**. The idea it rejects is overloading the browse encoder,
+browsing in the list and seeking during playback, which puts a hidden mode on the
+most-used control.
 
 **Seeking is silent in v1.** Position advances and the display follows, but no audio
 is produced — an audible scan needs the resampler, which would give v1 a second mode.
@@ -108,8 +177,16 @@ new interval: the CDJ-200's ladder passes through other buttons' voltages on the
 way to its own, measured, so a level must hold for the debounce count before it
 is believed. `cdj-200.md` has the numbers.
 
-Open — [#12](https://github.com/tamatebox/deck-pi/issues/12): what TRACK SEARCH
-does at a folder boundary. Stopping is the simple answer, and **FOLDER SEARCH
-existing on the panel gives the question a second half** — the deck has no
-meaning for those two buttons yet. A track reaching its end is settled: it stops,
-and nothing advances on its own.
+**At a folder boundary, TRACK SEARCH stops** —
+[#12](https://github.com/tamatebox/deck-pi/issues/12), settled and closed.
+`Loaded::neighbour` returns `None` at either end and the caller does nothing, which
+is what stopping is, and it is the same rule a track reaching its end already
+follows: nothing advances on its own. Folders are skipped on the way — TRACK SEARCH
+means next *track*, and stepping onto a folder would be a load that fails.
+
+**FOLDER SEARCH is the half of that question still open.** The CDJ-200 panel carries
+two more buttons, the firmware decodes both of them, and the deck has no meaning for
+either — so they deliberately emit nothing rather than falling through into the idle
+level, where a working button would be indistinguishable from a broken wire.
+`cdj-200.md` has the levels. What they should *do* is undecided and is not decided
+here.

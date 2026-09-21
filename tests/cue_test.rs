@@ -52,7 +52,7 @@ fn a_cue_set_on_the_deck_comes_back_after_a_power_cycle() {
     t.set_cue_point(store.get(&track).expect("get"));
     assert_eq!(t.cue_point(), 0, "an unseen track cues at frame zero");
 
-    // Pause somewhere and press CUE — Setting Cue, per the CDJ-350.
+    // Pause somewhere and press CUE — Setting Cue.
     t.pause();
     t.publish_position(90_000.0);
     let _ = t.cue_down();
@@ -114,7 +114,7 @@ fn two_sticks_with_the_same_relative_path_keep_separate_cues() {
 #[test]
 fn tracks_on_one_stick_are_independent_and_one_cue_each() {
     // "One cue point per track, and setting a new one cancels the old" is
-    // the CDJ-350 rule the transport implements; the store has to agree.
+    // the rule the transport implements; the store has to agree.
     let state = Dir::new("per-track");
     let first = Path::new(MOUNT).join("a.wav");
     let second = Path::new(MOUNT).join("b.wav");

@@ -947,8 +947,8 @@ mod tests {
     fn cue_is_a_press_and_a_release_because_the_transport_decides() {
         // The Cue Point Sampler "continues while the button is held in", so
         // it cannot wait for a threshold. `Transport::cue_down` /
-        // `cue_up` are exactly this pair, and which of the three CDJ-350
-        // behaviours happens is decided there from the transport's own state.
+        // `cue_up` are exactly this pair, and which of the three behaviours
+        // happens is decided there from the transport's own state.
         let mut d = Decoder::default();
         let mut out = Vec::new();
 

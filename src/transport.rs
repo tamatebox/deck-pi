@@ -8,10 +8,11 @@
 //!
 //! # CUE is one button with three behaviours
 //!
-//! Taken from the CDJ-350 operating instructions (Pioneer 389414-01U, p.18)
-//! and recorded in `decisions.md`, not from memory:
+//! `controls.md` has the reasoning and `decisions.md` the ruling. Which of
+//! the three happens is chosen from the deck's own state and never from a
+//! mode, which is what keeps this one button:
 //!
-//! | State | CUE | The manual's name |
+//! | State | CUE | The name used for it |
 //! |---|---|---|
 //! | Paused, away from the cue point | **sets** the point there | Setting Cue |
 //! | Playing | **returns** to the point and pauses | Back Cue |
@@ -22,15 +23,15 @@
 //! resume**, so PLAY restarts from the point; and the preview is momentary,
 //! with no latching.
 //!
-//! **There is no separate STOP**, because a CDJ has none — returning to the
-//! cue point and standing by *is* stopping. So the `CUE / STOP` label on
-//! GPIO 25 is one function, and the hold gesture is free for the preview.
+//! **There is no separate STOP**, and this deck needs none — returning to
+//! the cue point and standing by *is* stopping. So `CUE / STOP` is one
+//! function, and the hold gesture is free for the preview.
 //! None of it needs a new mechanism: hold is `r = 1.0`, release is `r = 0`
 //! with the position set back to the point.
 //!
-//! Auto cue is deliberately **not** implemented. The CDJ-350 skips the silent
-//! lead-in on load and places the cue where sound starts; `decisions.md`
-//! rejects that here, because a long-form piece may open below -78 dB on
+//! Auto cue is deliberately **not** implemented. The mechanism skips the
+//! silent lead-in on load and places the cue where sound starts;
+//! `decisions.md` refuses it here, because a long-form piece may open below -78 dB on
 //! purpose and letting the deck decide where the music "really" begins is the
 //! kind of silent, well-meant alteration this project exists to avoid. The
 //! cue point starts at frame zero unless set.
@@ -290,8 +291,8 @@ impl Transport {
     /// underneath it. The case that matters is CUE pressed during a held FF:
     /// `controls.md` chooses Back Cue there, which pauses at the cue point —
     /// and then releasing FF used to hand `was_playing == true` back and
-    /// **start playing**, directly against the CDJ-350's "Back Cue pauses; it
-    /// does not resume", which `decisions.md` quotes. The release is only
+    /// **start playing**, directly against the rule `controls.md` states —
+    /// Back Cue pauses; it does not resume. The release is only
     /// entitled to end a seek it is still in the middle of; if something else
     /// has already decided the state, that decision stands.
     ///

@@ -132,8 +132,9 @@ feed — and both live in [docs/hardware.md](docs/hardware.md).
 
 ## Controls
 
-A detented rotary encoder for browsing, plus BACK, PLAY/PAUSE, CUE/STOP, and FF and
-REW — hold to seek, tap to change track. ENTER is the encoder's push. The display
+A detented rotary encoder for browsing, plus BACK, PLAY/PAUSE, CUE, **SEARCH** —
+held, and it only seeks — and **TRACK SEARCH**, which steps to the next or previous
+track and waits at its head. ENTER is the encoder's push. The display
 shows the browser and the transport. It also shows the rate and depth in use, and
 **that is not how the chain is confirmed** — the panel reports what the deck believes,
 so a deck wrong about its own output would be wrong on the panel in the same way. The
@@ -141,7 +142,9 @@ confirmation is `deck-pi --device=`, which reads `hw_params` back out of
 `/proc/asound` and asks whether the mixer is empty: a different source, which is what
 makes it a check.
 
-Seven switches, two encoders and a fader, the v2 unity button being the seventh.
+Nine switches, two encoders and a fader, the v2 unity button being the ninth. Six of
+the switches come off a salvaged CDJ-200 panel, **five of them sharing one wire**
+through a resistor ladder that the Pico reads as a voltage — `docs/cdj-200.md`.
 **None of them is on the Pi.** They hang off a Pico 2 H which reaches the Pi as a USB
 device, so the deck reads the same `/dev/input` keycodes it always did and the Pi's
 header carries nothing but audio. The panel went the same way, with the deck still
