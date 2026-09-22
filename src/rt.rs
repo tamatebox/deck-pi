@@ -59,8 +59,9 @@ pub struct RtRequest {
     /// Stack bytes to touch before the deadline starts.
     pub stack_prefault_bytes: usize,
     /// Core to pin the audio thread to. `architecture.md` asks for the audio
-    /// thread and GPIO interrupt handling to be on different cores; the 3B+
-    /// has four and one deck to run.
+    /// thread and GPIO interrupt handling to be on different cores; the board
+    /// has four and one deck to run — true of the 3B+ this was written for and
+    /// of the Pi 4 that replaced it.
     pub cpu: Option<usize>,
 }
 

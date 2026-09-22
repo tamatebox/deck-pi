@@ -1,4 +1,4 @@
-//! `libsoxr` on the A53, thermally soaked — issue #3.
+//! `libsoxr` on the board the deck runs on, thermally soaked — issue #3.
 //!
 //! # What it measures, and why those two numbers
 //!
@@ -14,13 +14,19 @@
 //!
 //! # The soak
 //!
-//! The 3B+ soft-throttles 1.4 -> 1.2 GHz at 60 C, and `CLAUDE.md` says to size
-//! against 1.2. A run from cold measures a clock the board will not hold for a
-//! set and would pass hardware that fails twenty minutes in. Rather than
-//! demand a separate warm-up, this reports die temperature and ARM clock
-//! beside every row: the matrix takes minutes and heats the board as it goes,
-//! so the later rows are the soaked ones and the earlier ones are visibly not.
+//! A run from cold measures a clock the board will not hold for a set and would
+//! pass hardware that fails twenty minutes in. Rather than demand a separate
+//! warm-up, this reports die temperature and ARM clock beside every row: the
+//! matrix takes minutes and heats the board as it goes, so the later rows are
+//! the soaked ones and the earlier ones are visibly not.
 //! **Read the figures off the rows whose clock has settled.**
+//!
+//! This began as a 3B+ concern, where a soft limit dropped 1.4 GHz to 1.2 at
+//! 60 C and `CLAUDE.md` said to size against the lower figure. **That mechanism
+//! is 3A+/3B+ only and the deck now runs on a Pi 4**, which throttles from 80 C
+//! and is unharmed by it. The soak survives the move for a different reason: the
+//! clock column is also how a run admits that the *supply* gave out rather than
+//! the heat, which on this bench is the likelier of the two.
 //!
 //! # The one configuration that is not a choice
 //!

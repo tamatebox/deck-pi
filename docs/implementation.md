@@ -507,7 +507,10 @@ Measured in a Linux/aarch64 container, all four paths:
 On hardware — Pi 3B+, Raspberry Pi OS Lite (64-bit), the limits opened through
 `limits.d` rather than `--ulimit` — the third row reads back `SCHED_FIFO` 75 and
 `VmLck` **11,664 kB** (measured 2026-09-15). Both figures are real; the substrate is
-the difference, which is why the container one keeps its label.
+the difference, which is why the container one keeps its label. **[Not re-taken on the
+Pi 4.]** `VmLck` counts pages this process locked, so it is a property of the build
+and the limits rather than of the board, and it should come back the same — which is
+exactly why it is worth reading once rather than assuming.
 
 **Two corrections to what this section used to say.**
 
@@ -679,8 +682,14 @@ is not a dimension of anything v2 measures or chooses**, which is one of the two
 `/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq` reporting 1400 MHz while
 `vcgencmd measure_clock arm` reported 1200: the governor's request is in sysfs and
 the firmware's thermal throttle happens underneath it. Every figure in that run was
-taken at 1.2 GHz and labelled 1.4. `vcgencmd get_throttled` is the corroboration —
-non-zero means it really is being held down.
+taken at 1.2 GHz and labelled 1.4. `vcgencmd get_throttled` is the corroboration, and
+**it wants reading in two halves**: bits 0-3 are the present instant, bits 16-19 are
+sticky since boot. A board showing `0x50000` has been undervolted and throttled at
+some point in its uptime with nothing wrong at the moment you look, which is a
+different statement from `0x50005` and reads identically if you only check for
+non-zero. **On the Pi 4 the commonest cause of a held-down clock is the supply rather
+than the heat** — a synthetic spin loop on this bench pulled a board under 4.63 V and
+cut it to 600 MHz while the die sat at 70 C, nowhere near the 80 C throttle band.
 
 `mallopt(M_MMAP_MAX, 0)` and `M_TRIM_THRESHOLD, -1` were once proposed here to keep
 glibc's arena out of `mmap` under `MCL_FUTURE`. **Withdrawn** — correctly configured
@@ -789,17 +798,24 @@ dtoverlay=disable-bt
 sudo systemctl disable --now hciuart bluetooth
 ```
 
-On a Pi 3B+, Bluetooth occupies PL011, the good UART, leaving the serial console
-on the mini-UART — whose baud rate tracks the core clock. `disable-bt` moves
-PL011 to GPIO 14/15, so turning Bluetooth off and getting a solid serial console
-are the same action. The 3B+ radio is dual-band, so this drops a 5 GHz
-transmitter as well as the 2.4 GHz one.
+**[Written for the 3B+ and not re-checked on the Pi 4, which has six UARTs where
+the 3B+ had two. The conclusion — turn Bluetooth off — is unaffected; the reason
+given for it may be.]** On a Pi 3B+, Bluetooth occupies PL011, the good UART, leaving
+the serial console on the mini-UART — whose baud rate tracks the core clock.
+`disable-bt` moves PL011 to GPIO 14/15, so turning Bluetooth off and getting a solid
+serial console are the same action. The radio is dual-band on both boards, so this
+drops a 5 GHz transmitter as well as the 2.4 GHz one.
 
 The older note here — that `enable_uart=1` pins `core_freq` to 250 MHz — **is not
 confirmed for the 3B+**; the current `enable_uart` documentation does not mention
 `core_freq` at all. It also matters less once PL011 is in use, since PL011 does
 not take its baud rate from the core clock. What *does* still ride the core clock
-is **I2C**, and that bus carries both the WM8804 and the display.
+is **I2C**, and the one slave left on that bus is the **WM8804** — an earlier version
+of this sentence also named the display, which has since moved to the Pico along with
+every other control. **[The Pi 4 defaults `core_freq` to 500 MHz where the 3B+ used
+400.]** The driver divides for the rate asked of it, so nothing should change, and the
+WM8804's own ceiling is 400 kHz SCLK either way — but the divisor is different on the
+new board and nobody has looked.
 `core_freq_fixed=1` is the documented lever — it "ensures that any peripherals
 that use the core clock will maintain a consistent speed". A candidate, not a
 decision, until measured.

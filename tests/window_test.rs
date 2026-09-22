@@ -461,8 +461,10 @@ fn allocating_a_full_size_ring_is_quick_enough_to_do_per_track() {
     // the page faults inside the callback.
     //
     // A number, measured on this machine, not on the Pi: an aarch64 Mac is
-    // several times quicker than a 1.2 GHz A53, so treat this as an upper
-    // bound on plausibility rather than as the deck's figure.
+    // comfortably quicker than the Pi, so treat this as an upper bound on
+    // plausibility rather than as the deck's figure. The margin narrowed when
+    // the deck moved from a 1.2 GHz A53 to a Pi 4's A72 and the bound still
+    // holds by orders of magnitude, which is the point of setting it here.
     let frames = ring::capacity_frames(44_100, ring::WINDOW_BYTES_PLACEHOLDER);
     let started = Instant::now();
     let (_w, r) = ring::new(frames);

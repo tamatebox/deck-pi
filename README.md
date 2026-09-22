@@ -1,6 +1,6 @@
 # deck-pi
 
-A bit-perfect single-deck DJ transport on a Raspberry Pi 3B+. It reads a USB stick,
+A bit-perfect single-deck DJ transport on a Raspberry Pi 4. It reads a USB stick,
 browses it by folder, and plays WAV/AIFF out as S/PDIF with the source samples
 reaching the DAC untouched.
 
@@ -11,7 +11,7 @@ libsndfile, in the window thread     <- byte swap, 24-bit unpack, no deadline
    |
 locked int32 ring                    <- the audio callback reads only this
    |  ALSA hw:, output rate matched to the file
-Pi 3B+  --I2S-->  Digi2 Pro  --S/PDIF-->  DAC
+Pi 4    --I2S-->  Digi2 Pro  --S/PDIF-->  DAC
    |  USB
 Pico 2 H  <- buttons, browse encoder, panel
 ```
@@ -24,11 +24,21 @@ Ethernet cable can be out during a set.
 ## Status
 
 **The transport has run on hardware** — 2026-09-15, a Pi 3B+ with a Digi2 Pro
-mounted directly, no isolator. Real tracks play out of S/PDIF at every rate in scope:
-the device is opened at each track's own rate, the driver selects the right
-oscillator on every change, frame counts come back exact and no run underran. Hearing
+mounted directly, no isolator. Real tracks played out of S/PDIF at every rate in
+scope: the device was opened at each track's own rate, the driver selected the right
+oscillator on every change, frame counts came back exact and no run underran. Hearing
 a track proves the transport and nothing about the samples — `docs/implementation.md`
 says what does.
+
+**That board is dead.** Its PMIC failed on 2026-09-21 and the cause was never
+established; `docs/hardware.md` has the diagnosis and the two minutes of measurement
+that reach it. **The deck moves to a Pi 4, which has not yet run it.** No code changed
+for the move and none is expected to — the ALSA device is named by card rather than
+index and the controls come in over USB, so neither end of the deck can tell which
+board it is on. What is owed is a bring-up: `docs/implementation.md` marks the three
+claims that were measured on the 3B+ and have to be taken again. The resampler
+headroom was already re-measured on a Pi 4 and went the comfortable way — 14.50x
+realtime at 192 kHz against the 3B+'s 4.25x.
 
 A real stick works end to end the same day: plugged into any port it mounts read-only
 at the fixed path on its own, the browser lists it, and a track plays off it. Getting
@@ -111,7 +121,7 @@ rather than on PLAY. Nothing surprises you mid-set.
 
 | | |
 |---|---|
-| Raspberry Pi 3B+ | 1 GB, Cortex-A53 — sized against **1.2 GHz**, not the headline 1.4 |
+| Raspberry Pi 4 Model B | 2 GB, Cortex-A72 at 1.8 GHz. Any revision: the Digi2 Pro here is board release 2.2 |
 | HiFiBerry Digi2 Pro | WM8804, dual-domain clock, no volume control by design |
 | IsolatorPi III | **optional, not fitted** — 5 kV galvanic isolation between the Pi and the audio boards |
 | Pico 2 H | carries the buttons, the browse encoder and the panel; reaches the Pi over USB |
@@ -121,9 +131,9 @@ as clock master, so both come out of an exact crystal rather than the Pi's fract
 PLL — with or without an isolator, which is why fitting one is an improvement rather
 than a requirement. It would keep the Pi's ground noise off the audio boards; it would
 also offer the controls a header of their own, which this build has no use for now
-that they are on the Pico. The 3B+ soft-throttles to 1.2 GHz at
-60 °C by design, and a deck runs a continuous load inside a box, so the headline
-clock is a sprint clock.
+that they are on the Pico. A Pi 4 throttles from 80 °C and is
+unharmed by it, so the clock is not what a box has to protect — everything else inside
+one is rated lower than the SoC is.
 
 One assembly step is easy to get wrong and produces **no error when wrong**: leaving
 GPIO 5/6 free, which the machine driver uses to pick the oscillator. Two more join it

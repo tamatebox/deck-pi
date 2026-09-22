@@ -12,7 +12,10 @@ order or a sample width runs on a thread allowed to block.
 Uncompressed PCM has nothing expensive in it — a byte swap is one ARM instruction,
 unpacking 24-bit to 32-bit is a few more, and neither is a decoder. What was never
 affordable was doing them *under a deadline*. That is what makes bit-perfect
-playback and a sustained 1.2 GHz A53 compatible.
+playback and a sustained load on a small ARM core compatible. **That was written
+against a 1.2 GHz A53** — the number the 3B+ held once warm — and the deck now runs on
+a Pi 4's A72. The argument does not depend on the figure; it is quoted that way
+because the smaller machine is what proved it.
 
 ## Library
 
@@ -306,7 +309,9 @@ memory, 2026-09-16, by `tests/render_bench.rs`: a full 128x64 frame at 12 px is
 **0.26-0.30 ms**, a 320x240 one at 16 px is **1.4-1.7 ms**, and the
 status-line-only redraw is 0.04-0.10 ms. The ranges are two runs of the same
 bench on the same machine, quoted rather than averaged because a 3B+ clocks
-where it likes. Against a 40 ms coalescing window that is nothing, and
+where it likes. **Not re-taken on the Pi 4 that replaced it, and not worth taking**:
+the conclusion is that drawing is nothing against a 40 ms window, and a faster board
+cannot overturn that in the direction that would matter. Against a 40 ms coalescing window that is nothing, and
 it says the budget question is entirely about the link rather than about the
 rendering. **The link is still unmeasured** — these figures stop at the
 `DrawTarget`, and re-running them is a command rather than a memory.

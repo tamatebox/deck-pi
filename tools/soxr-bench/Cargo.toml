@@ -9,10 +9,11 @@ publish = false
 # deadline; keeping this outside the deck's crate is what guarantees that.
 #
 # What it answers: precision x source rate, for realtime ratio *and* worst-case
-# block time, on the A53 the deck actually runs on. The issue is explicit that
-# a run started from cold measures a clock the 3B+ will not hold — it soft
-# throttles 1.4 -> 1.2 GHz at 60 C — so this reports die temperature and ARM
-# clock beside every row and the reader takes the soaked ones.
+# block time, on the board the deck actually runs on. A run started from cold
+# measures a clock the board will not hold, so this reports die temperature and
+# ARM clock beside every row and the reader takes the soaked ones. Written for a
+# 3B+ and its 60 C soft limit; the deck is on a Pi 4 now and the soak still
+# earns its place — see the module doc.
 
 [dependencies]
 

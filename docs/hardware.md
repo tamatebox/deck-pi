@@ -6,7 +6,7 @@ what is still open.
 ## Board stack
 
 ```
-Raspberry Pi 3B+
+Raspberry Pi 4 Model B
    |  40-pin GPIO
 HiFiBerry Digi2 Pro   <- WM8804, dual-domain clock, master mode
    |  S/PDIF (RCA coax, 75 ohm)
@@ -67,38 +67,123 @@ isolator sits between them, so longer standoffs are needed.
 
 ## The Pi
 
-Raspberry Pi 3 Model B+ — same header and footprint as a 3B, so nothing here depends
-on which it is.
+Raspberry Pi 4 Model B — same 40-pin header and footprint as the 3B+ it replaces, so
+nothing else in the board stack moved with it. **Any Pi 4 revision will do**: the
+Digi2 Pro's incompatibility with Pi 4 Rev 1.5 was fixed in the HAT, and board release
+**2.2 is the fixed one** — item 0 of the assembly checklist.
 
 | | |
 |---|---|
-| SoC | Broadcom BCM2837B0, quad Cortex-A53, **1.4 GHz** |
-| RAM | 1 GB |
-| Ethernet | Gigabit, **over USB 2.0** — 300 Mbps maximum |
-| Wireless | 802.11b/g/n/ac dual-band 2.4/5 GHz, BT 4.2/BLE — both disabled here |
-| USB | 4 x USB 2.0 on one shared bus |
-| Power in | 5 V / 2.5 A micro-USB, **or 5 V via the GPIO header**; PoE needs a separate HAT |
-| Operating temp | 0-50 C |
+| SoC | Broadcom BCM2711, quad Cortex-A72, **1.8 GHz** |
+| RAM | LPDDR4-3200; the board here has **2 GB** |
+| Ethernet | Gigabit on its own controller — **not over USB**, as it was on the 3B+ |
+| Wireless | 802.11ac dual-band 2.4/5 GHz, BT 5.0/BLE — both disabled here |
+| USB | 2 x USB 3.0 and 2 x USB 2.0; USB 3 is a separate controller |
+| Power in | **5 V / 3 A via USB-C**, or 5 V via the GPIO header; PoE needs a separate HAT |
+| Operating temp | 0-50 C ambient |
 
-Supply voltage must stay **above 4.8 V**; some USB supplies sag to 4.2 V, being built
-to charge a LiPo rather than run a computer. `vcgencmd get_throttled` reports
-undervoltage, but only after it has happened.
+**A micro-USB supply does not fit this board, and a marginal one is worse than it
+looks.** Official guidance is 5.1 V rather than 5.0, the extra tenth being headroom
+for the drop along the cable, and the firmware trips undervoltage below **4.63 V
+(±5%)**. The documented causes are an inadequate supply, too many USB devices, and **a
+cable whose wires are too thin** — the last being the commonest and the cheapest to
+rule out. What makes this a deck problem rather than a speed problem is the
+consequence the same page names: low-quality supplies "risk **storage corruption** and
+unpredictable device behavior", and this deck's library is a USB stick.
 
-### 1.2 GHz is the planning number, not 1.4
+`vcgencmd get_throttled` reports it in two halves — bits 0-3 are the present instant,
+bits 16-19 are sticky since boot. **A board can read `0x50000`, meaning undervoltage
+and throttling have both happened, while nothing at all is wrong right now.** Two
+unrelated Pi 4s on this bench read exactly that, which is how much the supply end of
+this is worth attending to.
 
-The 3B+ has a **soft** temperature limit — 60 C by default — that drops the clock
-from 1.4 to 1.2 GHz to trade a short sprint for a longer run. `temp_soft_limit`
-raises it to 70 at most, and the docs say that "might cause instability".
+### One chip makes every rail except 5 V, and it is not replaceable
 
-A deck runs a continuous realtime load, in a box, for the length of a set, so
-**1.2 GHz is the steady state** and what `architecture.md` sizes against. Going 3B to
-3B+ buys thermal mass and Gigabit Ethernet; it does *not* buy 17% of resampler
-headroom. It also settles how the v2 libsoxr benchmark must run: **thermally soaked**,
-or it reports a clock the board will not hold and passes a part that fails twenty
-minutes into a set.
+**Since the 3B+, a single PMIC — MxL7704, `-R3` on the 3B+ and `-R4` here — generates
+3V3, 1V8, the DDR rail and the SoC core.** Only the 5 V input bypasses it, which is
+why a board with a dead PMIC still lights its red LED: that LED watches 5 V through a
+separate supervisor sitting *before* the chip. **A lit PWR LED is not evidence that
+the board can boot.**
+
+It is not user-serviceable. The package is a 5 mm QFN, and Raspberry Pi's own
+engineers state plainly that an MxL7704 compatible with these boards cannot be
+sourced. **A dead 3V3 rail means a new board, not a repair.**
+
+**Shorting 5 V to 3V3 destroys it permanently**, on the record from Raspberry Pi. The
+mechanism is worth knowing because it explains what the corpse looks like: the buck
+regulator sees its output pulled above target, turns on the low-side FET to clamp it,
+and that FET then carries 5 V to ground until it burns. It fails *shorted*, so the
+symptom afterwards is **3V3 reading a couple of ohms to ground with nothing visibly
+damaged and nothing getting warm** — nothing is driving the rail, so the short carries
+no current. Do not read that as a shorted capacitor that could be lifted.
+
+**The bench lost a 3B+ to exactly this failure on 2026-09-21** and the cause was never
+established; documented cases exist with no shorting event at all. The precautions are
+cheap and worth taking regardless: **never fit or remove a HAT with power applied**,
+and see the note under the header table about probing.
+
+The 3B+ needed one. It carried a **soft** temperature limit — 60 C by default,
+adjustable to 70 at most and "might cause instability" beyond — that dropped the clock
+from 1.4 to 1.2 GHz, so 1.2 was the steady state and what `architecture.md` sized
+against.
+
+**That mechanism does not exist on this board.** `temp_soft_limit` is documented as
+3A+/3B+ only. A Pi 4 throttles the Arm cores between **80 and 85 C**, adds the GPU
+above 85 C, and `temp_limit` defaults to 85 and refuses higher. The official sentence
+is worth keeping whole: **"Hitting the temperature limit is not harmful to the SoC,
+but it will cause the CPU to throttle."** Nothing shuts down and nothing is damaged;
+it slows and recovers.
+
+What replaces the planning number is an argument that does not need one. **Measured
+2026-09-22 on a Pi 4 at 1.8 GHz with an audio HAT fitted and in a case** — libsoxr,
+all five recipes, every rate in scope, five minutes soaked, and the clock read 1800
+MHz on all thirty rows:
+
+| | 3B+ at 1.2 GHz | Pi 4 at 1.8 GHz |
+|---|---|---|
+| 192 kHz, realtime ratio | 4.25x | **14.50x** |
+| worst block against one period | about half | **16%** |
+
+At 192 kHz the resampler is **16% of one core**, and v1 has no resampler at all.
+Throttling takes the clock down rather than out, so **a fully throttled Pi 4 is still
+faster than a 3B+ that was never throttled** — and the 3B+ passed. There is no clock
+this board can reach that the deck cannot live at, which is why sizing against a
+reduced figure would be arithmetic with no decision hanging off it.
+
+**The soak still matters, for the measurement rather than for the design.** A run from
+cold reports a clock the board will not hold. `tools/soxr-bench` prints die temperature
+and ARM clock beside every row so the settled rows are visible, and that is still how
+to read it.
+
+### The thermal budget is not about the Pi
+
+**Measured on the same machine**, a Pi 4 with a HAT fitted and in a case:
+
+| | |
+|---|---|
+| idle | **57.6 C** |
+| one core pinned at 1800 MHz, five minutes | **75.5 C** |
+| soft limit | 80 C |
+
+One core pinned is more than six times the deck's load and it did not reach the limit.
+**So the Pi is not what an enclosure has to protect.** A box hot enough to throttle a
+Pi 4 is at 80 C inside, and the Pico, the Digi2 Pro and every capacitor sharing that
+box have their own ratings, none of which is 85 C. `decisions.md` makes this point
+about a panel component and it survives the move to a board with a higher limit: **the
+ceiling is set by the least tolerant part in the box, and that is never the SoC.**
 
 Official case guidance is that a case "should not be covered", which a sealed DJ
 enclosure is in tension with — [#6](https://github.com/tamatebox/deck-pi/issues/6).
+The measurement above does not settle #6, it moves it: the question is no longer
+whether a Pi 4 can take the heat but how much of a roughly twenty-degree margin an
+enclosure is allowed to spend.
+
+**Cheap things that spend none of it**, in descending order of what they are worth
+here: turn off wireless and HDMI, neither of which this deck uses; stand the board
+vertically, which the official thermal testing found runs about 2 C cooler at idle and
+"extended the throttle point significantly"; fit a passive heatsink, which is not a
+fan. **`arm_boost=0` is available and nearly pointless** — the deck does not ask for
+1.8 GHz in the first place, so capping it caps something unused.
 
 ## Assembly checklist
 
@@ -106,6 +191,20 @@ Three things are easy to get wrong and produce no error when wrong. **Only the t
 applies to the deck as built** — the first two are the isolator's, and no isolator is
 fitted. They are checked here anyway because a mistake in either is silent, and the
 day one goes in is the day nobody re-reads this file.
+
+**0. Read the Digi2 Pro's board version off the silkscreen. This one is settled and
+needs no action, and it is written down so it is not re-opened.** Digi2 Pro boards
+made before May 2022 are incompatible with **Pi 4 Rev 1.5**: that revision changed the
+power management circuit and, in HiFiBerry's words, "doesn't ramp up the voltages as
+clean as all previous versions did", so the WM8804's mode-select pin has not settled
+high when reset releases and the chip comes up in the wrong mode. The card is then
+simply **not detected** — which at least is loud, and this project's ALSA device is
+named `hw:CARD=sndrpihifiberry`, so the deck refuses to start rather than playing
+somewhere else. **What makes it nasty is that it is intermittent**: HiFiBerry's own
+testing did not reproduce it, so one successful boot proves nothing and no amount of
+booting proves much. **The board here is release 2.2, which is the fixed one** — "now
+fully compatible with the latest Pi4 hardware", per HiFiBerry — so the Pi's revision
+does not matter and no boot testing is owed.
 
 **1. Set J12 / J13 to master mode.** The default is *slave*, in which the Pi
 generates the I2S clock from its own PLL — the high-jitter path this build exists to
@@ -147,7 +246,10 @@ so audio still plays, through the jitter path the build exists to avoid.
 Fit the isolator **last**: §J-1 says to prove the hardware and software produce audio
 *before* inserting it, because debugging is much harder afterwards. The audio half and
 the control half are independent and neither waits for the other; the only constraint
-is that the Digi2 Pro is a terminating HAT, so swap it on and off.
+is that the Digi2 Pro is a terminating HAT, so swap it on and off. **Always with the
+power out.** Fitting or removing a HAT live makes the pins touch in an order nobody
+controls, and one of the orders available puts 5 V on 3V3 — which is the one thing
+that kills the PMIC outright.
 
 - **A — bare Pi, no audio hardware.** A stick in a USB port, and the Pico on another
   with the controls and panel on it. Everything except the audio engine, and it
@@ -178,6 +280,49 @@ Pi pins routed *through* the isolator, so removing it does not free them; and **
 Digi2 Pro's crystals are the clock master either way** — what the isolator adds is
 ground and power separation, not clock purity, which §J-2 is blunt about. So A and B
 together are the whole v1 software stack, but B is **not** an audio-quality baseline.
+
+## When the board will not boot
+
+Written after a 3B+ died on this bench and took most of a day to diagnose, nearly all
+of it spent on the wrong things. **Two minutes with a meter settles it**, and the LEDs
+lie in specific ways worth knowing first.
+
+**The red PWR LED says nothing about whether the board can boot.** It watches the 5 V
+input through a supervisor that sits before the PMIC, so it reports 5 V present and
+above about 4.63 V and nothing else. Official documentation for Pi 1-4 says the red
+LED "is off or flickering when there is undervoltage" — so **solid red is the healthy
+reading for the one rail it covers, and a board whose every other rail is dead looks
+exactly the same.**
+
+**A green ACT LED that never lights once means firmware never ran at all**, which is
+earlier than "the card was not read". On a 3B+ that LED is not on a normal GPIO: it
+hangs off an I2C expander only VideoCore can reach, so it cannot light until
+`bootcode.bin` has been loaded and executed. *(Confirmed on the 3B+. The Pi 4's
+arrangement was not checked.)*
+
+**And therefore no flash code is not the same as no error.** Every entry in the LED
+warning flash code table — `start*.elf` not found, partition not FAT, kernel image not
+found — is blinked through that same path. A fault that stops firmware running stops
+the error reporting with it, so a silent board is *below* the level the table
+describes rather than passing it.
+
+What to measure, in this order:
+
+| | expected |
+|---|---|
+| powered, header **pin 2** | about 5 V |
+| powered, header **pin 1** | 3.3 V |
+| powered off, **pin 1 to pin 6**, ohms | not near zero |
+
+**5 V present, 3V3 at zero, and 3V3 to ground reading a couple of ohms is a dead
+PMIC** and the board is finished — see the PMIC note under *The Pi*. Do not go hunting
+for a shorted capacitor: nothing is driving that rail, so nothing will be warm, and
+the short is inside the chip.
+
+Two traps in taking those readings. **The continuity beeper is not a short detector** —
+its threshold is tens of ohms and a healthy 3V3 rail beeps, so read the number.
+And **an in-circuit resistance reading drifts** as the meter's own test current charges
+the decoupling capacitors, which is normal; a real short sits at zero and stays there.
 
 ## Power budget (clean side) — only if an isolator is fitted
 
@@ -227,6 +372,13 @@ what.
 
 **bold** — hard-reserved. Ground is 6, 9, 14, 20, 25, 30, 34, 39, all
 interchangeable.
+
+**One adjacency in that table has a price on it: 1 is 3V3 and 2 is 5 V, and bridging
+them kills the board** — see the PMIC note above. The commonest way it happens is not
+a stray wire but **a meter probe slipping between two pins during a voltage
+measurement**, so when measuring here, clip the black lead to a ground pin and move
+only one hand. Pin 1 is at the end away from the USB and Ethernet ports; on the
+underside it is the only square pad, every other pin being round.
 
 **Sixteen GPIOs read `free` where controls used to be, and that is the whole of what
 changed here.** `decisions.md` moved every control — buttons, browse encoder, pitch
@@ -340,7 +492,11 @@ Three cautions from HiFiBerry's GPIO-usage page, all of which this build touches
   so worth a scope on the real stack. What does not go away is **bus time**, one
   logical bus from one controller — though **the only slave left on it is the
   WM8804**, the v2 ADC having gone to the Pico with the fader. The ceiling is the
-  codec's anyway: the WM8804 datasheet (v4.5, Table 5) caps SCLK at **400 kHz**. The BCM2837 does have a second
+  codec's anyway: the WM8804 datasheet (v4.5, Table 5) caps SCLK at **400 kHz**.
+  **I2C's clock is derived from `core_freq`, and the Pi 4 defaults to 500 MHz where
+  the 3B+ used 400** — the driver divides for the requested rate, so this should
+  change nothing, and it is on the list of things to confirm on the new board rather
+  than assume. The BCM2711 does have a second
   controller, I2C0 on GPIO 0/1, but three things about using it are unknown and all
   silent when wrong — see [#2](https://github.com/tamatebox/deck-pi/issues/2).
 - **The whole stack is outside HiFiBerry's supported configuration.** No guarantee of
@@ -544,14 +700,37 @@ text says so.
   `SLAVE`/`MASTER` labels. Board is 65 x 65.5 mm. **Ian's manuals are mirrored on
   manual-aggregator sites; do not cite those** — one transcribes the J12/J13 table
   backwards.
+- **Raspberry Pi 4 Model B specifications** —
+  <https://www.raspberrypi.com/products/raspberry-pi-4-model-b/specifications/>
+  SoC, RAM, Ethernet, USB arrangement, the USB-C 3 A input and the ambient range.
+- **Power supplies** —
+  <https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#power-supply>
+  Source of 5.1 V, the **4.63 V (±5%)** undervoltage threshold, the three documented
+  causes, and the "storage corruption" consequence.
+- **Overclocking options** —
+  <https://www.raspberrypi.com/documentation/computers/config_txt.html#overclocking-options>
+  Source of `temp_limit` defaulting to 85, the 80-85 C throttle band, **that
+  `temp_soft_limit` is 3A+/3B+ only**, and "Hitting the temperature limit is not
+  harmful to the SoC". Also where `arm_freq_min` is documented as buying no
+  significant power saving.
+- **`vcgencmd get_throttled`** —
+  <https://www.raspberrypi.com/documentation/computers/os.html#get_throttled>
+  The bit table. Bits 0-3 are now, bits 16-19 are sticky since boot.
+- **Thermal testing Raspberry Pi 4** —
+  <https://www.raspberrypi.com/news/thermal-testing-raspberry-pi-4/>
+  Bare-board figures — 2.1 W idle, 6.41 W peak — and the vertical-orientation finding.
+- **LED warning flash codes** —
+  <https://www.raspberrypi.com/documentation/computers/configuration.html#led-warning-flash-codes>
+  The table that a silent board is *below* rather than passing.
 - **Raspberry Pi 3B+ product brief** —
   <https://datasheets.raspberrypi.com/rpi3/raspberry-pi-3-b-plus-product-brief.pdf>
-  Specification, input-power table, operating temperature, case warnings.
-- **Frequency management and thermal control** —
-  <https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#frequency-management-and-thermal-control>
-  with `temp_soft_limit` under
-  <https://www.raspberrypi.com/documentation/computers/config_txt.html#overclocking-options>.
-  Source of the 60 C soft limit and the 4.8 V figure.
+  Kept for the superseded board: the 60 C soft limit and the 4.8 V figure are its,
+  and the comparison rows above are read against it.
+- **Digi2 Pro / Raspberry Pi 4 Rev 1.5** —
+  <https://www.hifiberry.com/blog/compatibility-issues-of-the-digi2-pro-and-raspberry-pi-4-rev-1-5/>
+  The voltage-ramp cause and that it is intermittent, with the fix announced at
+  <https://www.hifiberry.com/blog/new-digi2-pro-boards-release-available/> and board
+  release **2.2** named as compatible on the shop page.
 - **HiFiBerry Digi2 Pro datasheet** —
   <https://www.hifiberry.com/docs/data-sheets/datasheet-digi2-pro/>
 - **GPIO usage of HiFiBerry boards** —

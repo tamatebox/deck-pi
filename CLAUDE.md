@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Bit-perfect single-deck DJ transport on a Raspberry Pi 3B+. Plays WAV/AIFF straight
+Bit-perfect single-deck DJ transport on a Raspberry Pi 4. Plays WAV/AIFF straight
 off removable USB media, read-only, no import step, no database, out over I2S to a
 HiFiBerry Digi2 Pro, S/PDIF to an external DAC. An IsolatorPi III can go between the
 Pi and the HAT and **is not fitted** — optional, not part of the deck. One Pi is
@@ -32,7 +32,9 @@ than in a document you would have to think to open.
   is PCM_DIN, unused for playback and claimed anyway.
 - **The playback position accumulator is float64.** float32 loses the fraction past
   ~190 s at 44.1 kHz.
-- **Size against 1.2 GHz, not 1.4.** The 3B+ soft-throttles at 60 C.
+- **A box hot enough to throttle the Pi is already too hot for everything else in
+  it.** A Pi 4 throttles from 80 C and is unharmed; the Pico, the HAT and the
+  capacitors beside them are not rated for that. Measure the box, not the SoC.
 
 ## How to work here
 
@@ -60,7 +62,7 @@ and `docs/README.md` says why.
 
 | | |
 |---|---|
-| `docs/hardware.md` | Boards, jumpers, power, the 40-pin header map, how many of what, assembly and bring-up. **Any pin, jumper, connector or part-count question.** |
+| `docs/hardware.md` | Boards, jumpers, power, the 40-pin header map, how many of what, assembly and bring-up. **Any pin, jumper, connector or part-count question — and, before spending a day on it, what to measure when the board will not boot.** |
 | `docs/cdj-200.md` | The CDJ-200 donor boards: connector pinouts, what is wired, and the pitch fader's measured span, detent and noise. **Anything about the salvaged fader, jog or switch panel — and before choosing a UNITY gate width.** |
 | `docs/controls.md` | What pressing each control *does*, and what makes each rule right. **There is no reference player** — every rule is the deck's own or it is unjustified. **Any question about what a button means.** |
 | `docs/architecture.md` | Format scope, the ring and window, transport, threading, v2. **The design; should be stable.** |
