@@ -427,6 +427,7 @@ mod device {
     use std::io::Read;
     use std::os::fd::AsRawFd;
     use std::path::Path;
+    use std::time::Duration;
 
     /// `struct input_event`, derived rather than hardcoded.
     ///
@@ -1284,10 +1285,10 @@ mod tests {
 
         let mut out = Vec::new();
         let mut spins = 0u32;
-        let deadline = std::time::Instant::now() + Duration::from_millis(200);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
         let mut lost_total = 0usize;
         while std::time::Instant::now() < deadline {
-            devices.wait(Duration::from_millis(10)).expect("wait");
+            devices.wait(std::time::Duration::from_millis(10)).expect("wait");
             lost_total += devices.read_pending(&mut out).expect("read");
             spins += 1;
             if devices.is_empty() {
@@ -1313,9 +1314,9 @@ mod tests {
         // by subtraction rather than by error.
         let mut devices = Devices::open(&[]).expect("open none");
         let started = std::time::Instant::now();
-        assert!(!devices.wait(Duration::from_millis(50)).expect("wait"));
+        assert!(!devices.wait(std::time::Duration::from_millis(50)).expect("wait"));
         assert!(
-            started.elapsed() >= Duration::from_millis(40),
+            started.elapsed() >= std::time::Duration::from_millis(40),
             "waiting on nothing must still wait, took {:?}",
             started.elapsed()
         );
