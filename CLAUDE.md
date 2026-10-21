@@ -55,10 +55,17 @@ than in a document you would have to think to open.
 - **Another session may be in this tree.** Check `ListAgents`; land doc changes in
   coherent steps rather than leaving speculative text sitting in the tree.
 
+## This build — loaded every session
+
+Nobody opens a document to check whether a part is there; they assume it is. So the
+one document that says which parts exist is imported rather than mapped:
+
+@docs/this-build.md
+
 ## Where things are — read on demand, not up front
 
-None of these are auto-loaded. Open the one the task touches; that is deliberate,
-and `docs/README.md` says why.
+Apart from `docs/this-build.md` above, none of these are auto-loaded. Open the one
+the task touches; that is deliberate, and `docs/README.md` says why.
 
 | | |
 |---|---|

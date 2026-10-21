@@ -481,10 +481,15 @@ recomputes it.
 Three cautions from HiFiBerry's GPIO-usage page, all of which this build touches:
 
 - **"Do not use more than a few mA from the 3.3V line."** They ask for 5 V plus a
-  regulator. A small OLED at 10-25 mA is already past "a few" and a backlit TFT far
-  past it, so the display gets 5 V and its own regulation. **The caution moved rather
-  than lapsed**: the panel hangs off the Pico now, so it is the Pico's rail that must
-  not be asked for the panel's current.
+  regulator. That is the **Pi's** 3.3 V, the rail the Digi2 Pro shares, and with the
+  controls and the panel on the Pico nothing else here draws from it. **It does not
+  carry over to the Pico**, which this line used to claim — "the caution moved rather
+  than lapsed" — by moving the rule and leaving its reason behind. The Pico's 3V3
+  touches no audio board, and its datasheet says the pin "can be used to power
+  external circuitry", recommending under **300 mA** (§3.1). What bounds a panel on
+  it is the panel's own draw and the ADC: `ADC_VREF` is that same rail through 201 Ω
+  into 2.2 µF (§5.3), so a panel's load reaches the ladder's thresholds and the
+  fader. `this-build.md` has what that means for the panel actually bought.
 - **They do not recommend adding I2C slaves** alongside the WM8804, their reason being
   uncertain pull-ups. The isolator largely answers it: a Control I2C Isolator sits
   between the two sides and J6 carries dedicated pull-up pins, so I2C is **two
@@ -584,8 +589,7 @@ tells them apart by voltage — SEARCH and TRACK SEARCH are four of them, and th
 FOLDER SEARCH buttons it also carries have no meaning here yet. So the counts above
 are what the deck needs, not what it costs in pins. `cdj-200.md`.
 
-Also needed, none of it a control: a 5 V regulator for the panel, four standoffs
-longer than the bundled
+Also needed, none of it a control: four standoffs longer than the bundled
 M2.5x12 mm, a clean linear 5 V supply for J1, an enclosure, and stranded 26-28 AWG
 wire wherever it flexes.
 
@@ -743,6 +747,10 @@ text says so.
   <https://www.hifiberry.com/wp-content/uploads/2021/02/board-parts.jpg>
   Source of `JP1` beside the output transformer, `P3` for 5 V in, the `P4` BNC
   footprint, and the board printing its own overlay line. Marked "HW 2.1".
+- **Raspberry Pi Pico 2 datasheet** (build 2026-07-03) —
+  <https://datasheets.raspberrypi.com/pico/pico-2-datasheet.pdf>
+  §3.1 for the 3V3 pin's 300 mA recommendation, §5.3 for `ADC_VREF` being that rail
+  through 201 Ω into 2.2 µF, §5.4 for GPIO23 forcing the RT6150 into PWM.
 - **WM8804 datasheet** (v4.5) — <https://statics.cirrus.com/pubs/proDatasheet/WM8804_v4.5.pdf>
   Table 5 is the authority for the **400 kHz** I2C ceiling (`tSCY` min 2500 ns, which
   is exactly 1/400 kHz, so the table is self-consistent). Cirrus's own CDN.

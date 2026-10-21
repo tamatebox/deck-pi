@@ -48,8 +48,10 @@ reading before writing another one.
 The Pico's firmware **enumerates on the Pi and declares the right things**: the
 kernel registers keycodes 28, 128, 158, 164, 168 and 208 — exactly the six
 `src/input.rs` matches — and a relative `REL_X` for the detents. That is the
-declaration, read back from the kernel's own capability bitmaps. **No switch has
-been wired to it yet**, so nothing has been pressed and no detent has been turned.
+declaration, read back from the kernel's own capability bitmaps. **The CDJ-200
+switch panel has since been pressed through it** — PLAY, CUE and the ladder's six,
+`docs/cdj-200.md` — but **no detent has been turned**: there is no browse encoder
+yet. What is wired today is in `docs/this-build.md`.
 
 Worth knowing before sizing anything: **192 kHz at a 1.33 ms period ran clean on the
 ordinary scheduler, with no realtime privileges** — and with nothing else on the
@@ -325,6 +327,7 @@ plays bit-perfect without pitch rather than not playing.
 
 | | |
 |---|---|
+| [this-build.md](docs/this-build.md) | **This** deck: which parts exist, what is wired where, what is not bought. The rest hold for any build |
 | [hardware.md](docs/hardware.md) | Boards, jumpers, power, the 40-pin header map, assembly, bring-up |
 | [controls.md](docs/controls.md) | What pressing each control *does* |
 | [architecture.md](docs/architecture.md) | Format scope, playback model, program shape, v2 |

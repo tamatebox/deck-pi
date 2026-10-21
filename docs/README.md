@@ -5,10 +5,11 @@ because a reader who notices should find an argument rather than an absence.
 
 ## The measurement
 
-These documents total about **24,000 words**, and all of it used to enter every
-session before the user had said anything. Now none of it does: `CLAUDE.md` is the
-only always-loaded file, at **65 lines**. Check both with `wc`; nothing was deleted
-to get there, and the documents are read when the task touches them.
+These documents total about **35,000 words**, and all of it used to enter every
+session before the user had said anything. Now one of them does: `CLAUDE.md` and the
+document it imports, `this-build.md`, are the only always-loaded files, at
+**173 lines** together. Check both with `wc`; nothing was deleted to get there, and
+the rest are read when the task touches them.
 
 ## The argument
 
@@ -37,7 +38,7 @@ So the split is by *when you need it*, not by *how important it is*:
 
 | | |
 |---|---|
-| **Eager** — `CLAUDE.md` | What you must know **before you know you need it**: the invariants, which are short, catastrophic when broken, and silent. Nobody opens a document to check whether a gain stage is allowed; they add one. |
+| **Eager** — `CLAUDE.md`, and `this-build.md` through it | What you must know **before you know you need it**: the invariants, which are short, catastrophic when broken, and silent. Nobody opens a document to check whether a gain stage is allowed; they add one. **Which parts exist is the same kind of fact** — nobody looks up whether the encoder is wired; they assume it is. |
 | **On demand** — here | Everything you would **look up**. Pin numbers, ALSA flags, the format table, the reasoning behind a decision. You already know to ask, and `CLAUDE.md`'s map says where. |
 
 ## Which document
