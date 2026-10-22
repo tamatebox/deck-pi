@@ -62,7 +62,13 @@ use embassy_rp::usb::{Driver, InterruptHandler};
 use embassy_time::{Duration, Ticker};
 #[cfg(feature = "faderprobe")]
 use core::sync::atomic::{AtomicU8, Ordering};
-#[cfg(any(feature = "selftest", feature = "faderprobe"))]
+#[cfg(feature = "paneltest")]
+use embassy_rp::gpio::{Level, Output};
+#[cfg(feature = "paneltest")]
+use embassy_rp::peripherals::SPI0;
+#[cfg(feature = "paneltest")]
+use embassy_rp::spi::{self, Spi};
+#[cfg(any(feature = "selftest", feature = "faderprobe", feature = "paneltest"))]
 use embassy_time::Timer;
 #[cfg(feature = "faderprobe")]
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State as CdcState};
@@ -267,9 +273,11 @@ struct Ladder {
 }
 
 /// Boundaries between the seven states, highest first: above the first is
-/// nobody pressing. Each is the midpoint of two measured medians.
+/// nobody pressing. Each is the midpoint of two measured medians — 2026-09-18's,
+/// except SEARCH's pair. That one was 2755 until SEARCH ▶▶ moved 221 counts
+/// and came within 35 of it, and is now 2026-10-22's midpoint instead.
 #[cfg(not(feature = "faderprobe"))]
-const LADDER_BOUNDS: [u16; 6] = [3506, 2755, 2043, 1310, 748, 311];
+const LADDER_BOUNDS: [u16; 6] = [3506, 2862, 2043, 1310, 748, 311];
 
 /// Which report-1 bit each bucket sets. **`None` is a button the panel has and
 /// the deck has no meaning for** — FOLDER SEARCH, whose behaviour is not
@@ -398,6 +406,29 @@ async fn main(spawner: Spawner) {
         )
         .unwrap(),
     );
+
+    // Before the selftest branch, which returns. SPI0 on GP18/GP19 with CS,
+    // DC and RES beside them — `docs/this-build.md` has the wiring.
+    #[cfg(feature = "paneltest")]
+    {
+        let mut config = spi::Config::default();
+        // The SSD1322 allows 10 MHz (a 100 ns cycle, Table 13-4). Jumper
+        // wires get less than that until a frame has been seen arriving
+        // intact. Mode 0, the default: it shifts data in on SCLK's rising
+        // edge (§8.1.3).
+        config.frequency = 4_000_000;
+        spawner.spawn(
+            run_paneltest(Panel {
+                spi: Spi::new_blocking_txonly(p.SPI0, p.PIN_18, p.PIN_19, config),
+                // All three idle high: CS# and RES# are active low, and DC
+                // is set before every byte that matters.
+                cs: Output::new(p.PIN_17, Level::High),
+                dc: Output::new(p.PIN_16, Level::High),
+                res: Output::new(p.PIN_20, Level::High),
+            })
+            .unwrap(),
+        );
+    }
 
     #[cfg(feature = "selftest")]
     {
@@ -663,4 +694,151 @@ fn write_field(out: &mut [u8], label: &[u8], value: u16) -> usize {
         n += 1;
     }
     n
+}
+
+/// The panel as `paneltest` drives it: SPI out, and three control lines.
+#[cfg(feature = "paneltest")]
+struct Panel {
+    spi: Spi<'static, SPI0, spi::Blocking>,
+    cs: Output<'static>,
+    dc: Output<'static>,
+    res: Output<'static>,
+}
+
+#[cfg(feature = "paneltest")]
+const PANEL_W: usize = 256;
+#[cfg(feature = "paneltest")]
+const PANEL_H: usize = 64;
+
+/// The first RAM column the glass is wired to, in the SSD1322's unit of
+/// four pixels. **Not in the controller's datasheet** — the glass decides
+/// it, so it comes from u8g2's driver, which carries two answers for 256x64:
+/// 28 for Newhaven's, and 24 for a ZJY module that also reverses the COM scan.
+/// Which one this module is, the test card says.
+#[cfg(feature = "paneltest")]
+const PANEL_COL0: u8 = 28;
+
+/// u8g2's Newhaven 256x64 sequence, every value checked against the SSD1322
+/// datasheet's command table (Rev 1.2, Table 9-1) for range. Contrast is the
+/// reset value rather than u8g2's 0x9F: the first image on an unmeasured
+/// rail should not be the brightest one.
+#[cfg(feature = "paneltest")]
+const PANEL_INIT: &[(u8, &[u8])] = &[
+    (0xFD, &[0x12]),       // unlock the command interface
+    (0xAE, &[]),           // display off
+    (0xB3, &[0x91]),       // clock: divide by 2, oscillator level 9
+    (0xCA, &[0x3F]),       // 64 MUX
+    (0xA2, &[0x00]),       // display offset 0
+    (0xA1, &[0x00]),       // start line 0
+    (0xA0, &[0x06, 0x11]), // column and nibble remap; dual COM, which 64 MUX allows
+    (0xAB, &[0x01]),       // internal VDD regulator
+    (0xB4, &[0xA0, 0xFD]), // external VSL, enhanced low grey levels
+    (0xC1, &[0x7F]),       // contrast, the reset value
+    (0xC7, &[0x0F]),       // master contrast, no reduction
+    (0xB9, &[]),           // the default linear grey table
+    (0xB1, &[0xE2]),       // phase 1 five DCLKs, phase 2 fourteen
+    (0xD1, &[0xA2, 0x20]), // display enhancement B, normal
+    (0xBB, &[0x1F]),       // pre-charge 0.60 x VCC
+    (0xB6, &[0x08]),       // second pre-charge eight DCLKs
+    (0xBE, &[0x07]),       // VCOMH 0.86 x VCC
+    (0xA6, &[]),           // normal display
+    (0xA9, &[]),           // exit partial display
+];
+
+#[cfg(feature = "paneltest")]
+impl Panel {
+    /// One command byte with D/C# low, then its parameters with D/C# high:
+    /// the SSD1322 takes parameters as data (Table 9-1's D/C# column).
+    fn command(&mut self, cmd: u8, args: &[u8]) {
+        self.cs.set_low();
+        self.dc.set_low();
+        let _ = self.spi.blocking_write(&[cmd]);
+        if !args.is_empty() {
+            self.dc.set_high();
+            let _ = self.spi.blocking_write(args);
+        }
+        self.cs.set_high();
+    }
+
+    fn data(&mut self, bytes: &[u8]) {
+        self.cs.set_low();
+        self.dc.set_high();
+        let _ = self.spi.blocking_write(bytes);
+        self.cs.set_high();
+    }
+
+    /// Opens a RAM window and leaves the controller in Write RAM, so what
+    /// follows is pixels until the next command.
+    fn window(&mut self, col: (u8, u8), row: (u8, u8)) {
+        self.command(0x15, &[col.0, col.1]);
+        self.command(0x75, &[row.0, row.1]);
+        self.command(0x5C, &[]);
+    }
+}
+
+/// The test card, one grey level of 0-15 per pixel. A border, so a wrong
+/// column window shows as a missing or displaced edge. One square in the
+/// top-left corner and nowhere else, so any flip shows as the square in a
+/// different corner. A sixteen-step ramp, so the grey scale is seen to be one.
+#[cfg(feature = "paneltest")]
+fn test_card(x: usize, y: usize) -> u8 {
+    let border = x == 0 || x == PANEL_W - 1 || y == 0 || y == PANEL_H - 1;
+    let marker = (3..11).contains(&x) && (3..11).contains(&y);
+    let ramp = (16..240).contains(&x) && (36..56).contains(&y);
+    if border || marker {
+        15
+    } else if ramp {
+        ((x - 16) / 14) as u8
+    } else {
+        0
+    }
+}
+
+/// Brings the panel up and draws the test card once.
+///
+/// **Not the panel's driver.** The deck draws and its frames will arrive
+/// over USB; this proves the wires and the init sequence first, so that
+/// when the real path shows nothing, the panel end is already known good.
+#[cfg(feature = "paneltest")]
+#[embassy_executor::task]
+async fn run_paneltest(mut panel: Panel) -> ! {
+    // §8.9: commands wait at least 300 ms after the supply is stable, and
+    // RES# goes low for at least 100 µs. The wait after RES# is u8g2's, whose
+    // note says these modules want longer than the datasheet suggests.
+    Timer::after_millis(300).await;
+    panel.res.set_low();
+    Timer::after_millis(1).await;
+    panel.res.set_high();
+    Timer::after_millis(100).await;
+
+    for &(cmd, args) in PANEL_INIT {
+        panel.command(cmd, args);
+    }
+
+    // The whole RAM to black first, all 120 columns and 128 rows, so that a
+    // window in the wrong place shows black beside the card rather than
+    // whatever the RAM powered up holding.
+    panel.window((0, 119), (0, 127));
+    let black = [0u8; 240];
+    for _ in 0..128 {
+        panel.data(&black);
+    }
+
+    // Two pixels per byte, the left one in the high nibble — u8g2's packing
+    // under the same 0xA0 remap. If it is wrong, every edge doubles.
+    panel.window((PANEL_COL0, PANEL_COL0 + 63), (0, PANEL_H as u8 - 1));
+    let mut row = [0u8; PANEL_W / 2];
+    for y in 0..PANEL_H {
+        for (i, byte) in row.iter_mut().enumerate() {
+            *byte = (test_card(2 * i, y) << 4) | test_card(2 * i + 1, y);
+        }
+        panel.data(&row);
+    }
+
+    // §8.9: the segments come on about 200 ms after this.
+    panel.command(0xAF, &[]);
+
+    loop {
+        Timer::after_secs(3600).await;
+    }
 }

@@ -17,6 +17,12 @@ selftest = []
 # them. Off by default — the shipped deck has no serial port.
 faderprobe = []
 
+# Draws one fixed test card on the SSD1322 panel over SPI0 and nothing else,
+# to prove the seven wires and the init sequence before the deck's frames
+# have anywhere to go. A bench instrument like the two above; it leaves the
+# controls running, so it combines with either.
+paneltest = []
+
 [dependencies]
 cortex-m-rt = "0.7.6"
 embassy-executor = { version = "0.10.0", features = ["executor-thread", "platform-cortex-m"] }

@@ -44,7 +44,9 @@ three presses as three clean edges — after a first try in which PLAY read as C
 and CUE as nothing, fixed by moving the jumpers. The ladder gave six distinct
 plateaus, each inside its own bucket, and idle sat at 3952 as it did on
 2026-09-18. **Two of the six levels moved by about 200 counts since then, and one
-now sits 35 counts from its boundary** — `cdj-200.md` has the numbers.
+came within 35 counts of its boundary**, which moved to 2862 the same day —
+`cdj-200.md` has the numbers. The jumpers are soldered at the `KSWB` end and
+plugged onto the Pico's header.
 
 **GP9 and GP10 are read, and nothing is on them.** The firmware ORs a discrete SEARCH
 pair on those pins with the ladder's; this build has none and is not getting one
@@ -55,23 +57,31 @@ been declared to the kernel and never sent by a real knob.
 
 ## The panel
 
-An **SSD1322 3.12" 256x64 OLED** module, sold by WAVGAT. **Owned, not wired**
-(2026-10-21). That answers [#2](https://github.com/tamatebox/deck-pi/issues/2) by
-purchase rather than by its comparison.
+An **SSD1322 3.12" 256x64 OLED** module, sold by WAVGAT, **blue** — its grey levels
+are shades of blue. **Wired and showing the `paneltest` card correctly** on
+2026-10-22: border on all four edges, the corner marker where it was drawn, and
+the ramp in steps, at 4 MHz over jumper wires from the Pico's 3V3. That settles the
+two things the controller's datasheet cannot: the glass starts at **RAM column 28**
+and wants **`0xA0` = `0x06, 0x11`** — u8g2's Newhaven values, not its ZJY ones.
+That answers [#2](https://github.com/tamatebox/deck-pi/issues/2) by purchase rather
+than by its comparison.
 
-- **Interface select is unread.** The SSD1322 chooses parallel or 4-wire SPI on two
-  pins, `BS0` and `BS1` — 4-wire SPI is both low, per Orient Display's datasheet for
-  its own SSD1322 module. Which way *this* board ships, and where it is set, comes off
-  the board itself; no document for it has been found.
-- **Power from the Pico's 3V3 is the plan.** The Pico 2 datasheet says the pin "can be
+- **The header is seven pins, SPI only:** `GND VCC SCK SDA RES DC CS` (2026-10-22).
+  The SSD1322 chooses parallel or 4-wire SPI on `BS0` and `BS1` — both low for
+  4-wire SPI, per Orient Display's datasheet for its own SSD1322 module — and this
+  board brings out no parallel data lines at all, so it is set for 4-wire SPI.
+  **Inferred from the header**, not read off the select pins. `SDA` is SPI data in,
+  not I2C.
+- **It runs from the Pico's 3V3**, so 3.3 V is enough for it. The Pico 2 datasheet says the pin "can be
   used to power external circuitry" and recommends under **300 mA** (§3.1). Two things
   are owed before it is relied on: the panel's own draw at full white, **unmeasured**,
   and its effect on the ADC, which reads against that same rail filtered through
   201 Ω into 2.2 µF (§5.3). `faderprobe` with the panel blank and then full white,
   against the 2026-09-18 figures in `cdj-200.md`, is that measurement. GPIO23 high
   forces the regulator into PWM and cuts its ripple, if it comes to that.
-- **Pins, proposed and not wired:** SPI0 — SCK GP18, MOSI GP19, CS GP17, DC GP16,
-  RES GP20. Read against `embassy-rp` 0.10's pin table, not recalled.
+- **Pins, wired 2026-10-22:** SPI0 — `SCK` GP18 (pin 24), `SDA` GP19 (25),
+  `CS` GP17 (22), `DC` GP16 (21), `RES` GP20 (26), `GND` pin 23, `VCC` 3V3 (36).
+  The SPI functions were read against `embassy-rp` 0.10's pin table, not recalled.
 
 ## Pins on the Pico
 
@@ -80,7 +90,7 @@ purchase rather than by its comparison.
 | In use | GP4, GP5, GP26 (`KSWB`), GP27 (fader) |
 | Held for parts not bought | GP2, GP3, GP6, GP7 |
 | Read, nothing attached | GP9, GP10 |
-| Proposed for the panel | GP16, GP17, GP18, GP19, GP20 |
+| The panel | GP16, GP17, GP18, GP19, GP20 |
 | Free | GP0, GP1, GP8, GP11-GP15, GP21, GP22, GP28 |
 
 ## The medium
