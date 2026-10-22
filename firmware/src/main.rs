@@ -60,6 +60,8 @@ use embassy_rp::gpio::{Input, Pull};
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Driver, InterruptHandler};
 use embassy_time::{Duration, Ticker};
+#[cfg(feature = "faderprobe")]
+use core::sync::atomic::{AtomicU8, Ordering};
 #[cfg(any(feature = "selftest", feature = "faderprobe"))]
 use embassy_time::Timer;
 #[cfg(feature = "faderprobe")]
@@ -322,6 +324,13 @@ static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
 #[cfg(feature = "faderprobe")]
 static CDC_STATE: StaticCell<CdcState> = StaticCell::new();
 
+/// The last report-1 byte the control loop sent, for the probe to print.
+/// PLAY and CUE are digital and never reach the serial port otherwise, and a
+/// Mac has no `evtest` — so without this, checking a solder joint on GP4 or
+/// GP5 needs a Linux host.
+#[cfg(feature = "faderprobe")]
+static BUTTONS: AtomicU8 = AtomicU8::new(0);
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
@@ -530,6 +539,8 @@ async fn run_controls(
         // wastes bus time the stick's reads are sharing.
         if buttons != last_buttons {
             last_buttons = buttons;
+            #[cfg(feature = "faderprobe")]
+            BUTTONS.store(buttons, Ordering::Relaxed);
             let _ = writer.write(&[1, buttons]).await;
         }
 
@@ -541,7 +552,7 @@ async fn run_controls(
 }
 
 /// Prints the pitch fader's raw ADC counts, and the span seen so far, once
-/// every 100 ms.
+/// every 50 ms — with `KD2`'s, and whether PLAY and CUE are down.
 ///
 /// `docs/hardware.md` says two things about this fader that are arguments
 /// rather than measurements: that 12 bits over a ±10% span is "ample by
@@ -596,10 +607,13 @@ async fn run_faderprobe(
                 kmin = k;
             }
 
-            // Four fields of at most five digits, their labels, and CRLF
-            // come to 44 bytes. The slack is deliberate: an overrun here
-            // indexes out of bounds, and `panic_halt` turns that into a
-            // probe that stops printing and says nothing about why.
+            // Five counts of at most four digits — the converter is 12-bit —
+            // two one-digit states, their labels and CRLF come to 58 bytes.
+            // 64 is also the packet size, so the line cannot simply grow.
+            // The slack is deliberate: an overrun here indexes out of bounds,
+            // and `panic_halt` turns that into a probe that stops printing
+            // and says nothing about why.
+            let b = BUTTONS.load(Ordering::Relaxed);
             let mut line = [0u8; 64];
             let mut n = 0;
             n += write_field(&mut line[n..], b"f=", count);
@@ -607,6 +621,8 @@ async fn run_faderprobe(
             n += write_field(&mut line[n..], b" fmax=", max);
             n += write_field(&mut line[n..], b" k=", k);
             n += write_field(&mut line[n..], b" kmin=", kmin);
+            n += write_field(&mut line[n..], b" play=", ((b >> BIT_PLAY) & 1) as u16);
+            n += write_field(&mut line[n..], b" cue=", ((b >> BIT_CUE) & 1) as u16);
             line[n] = b'\r';
             line[n + 1] = b'\n';
             n += 2;

@@ -23,9 +23,10 @@ you change, and when a line's date is old and the question matters, ask.
 
 | Control | Part | Pico | State |
 |---|---|---|---|
-| PLAY | CDJ-200 `KSWB`, CN602-6 | GP4 | **soldered** 2026-10-21 |
-| CUE | `KSWB`, CN602-7 | GP5 | **soldered** 2026-10-21 |
-| SEARCH, TRACK SEARCH, FOLDER SEARCH — two each | `KSWB` ladder, CN602-8 `KD2` | GP26 / ADC0, the pad's pull-up and **no external resistor** | **soldered** 2026-10-21 |
+| PLAY | CDJ-200 `KSWB`, CN602-6 | GP4, pin 6 | jumper wire; **reads** 2026-10-22 |
+| CUE | `KSWB`, CN602-7 | GP5, pin 7 | jumper wire; **reads** 2026-10-22 |
+| SEARCH, TRACK SEARCH, FOLDER SEARCH — two each | `KSWB` ladder, CN602-8 `KD2` | GP26 / ADC0, pin 31, the pad's pull-up and **no external resistor** | jumper wire; **all six read** 2026-10-22 |
+| Their ground | `KSWB`, CN602-9 `GNDA` | GND, pin 3 | jumper wire |
 | Browse encoder, push = ENTER | **not bought** | GP2, GP3, GP7 held for it | 2026-10-21 |
 | BACK | **not bought** | GP6 held for it | 2026-10-21 |
 | Pitch fader — v2 | CDJ-200 `SLDB` | GP27 / ADC1 | test clips |
@@ -34,11 +35,16 @@ you change, and when a line's date is old and the question matters, ask.
 The connectors pin by pin, and every measurement taken through them, are in
 `cdj-200.md`.
 
-**Soldered is not re-checked.** The joints replaced the test clips the measurements
-were taken through, and nobody has yet confirmed that each wire landed on the GP the
-table says. The ladder's thresholds in `firmware/src/main.rs` were set with the same
-pad pull-up and no resistor went in, so they should still hold — **inferred, not
-measured**. `faderprobe` prints `KD2`'s raw count and is the check.
+**`KSWB` takes four wires and no supply.** `CN602-3` (`V+5V`) and the LED pins 1, 2,
+4 and 5 are left off: the buttons only ever pull to ground, and the pull-ups are the
+Pico's (2026-10-22).
+
+**Checked through `faderprobe`, from a Mac, 2026-10-22.** PLAY and CUE each read
+three presses as three clean edges — after a first try in which PLAY read as CUE
+and CUE as nothing, fixed by moving the jumpers. The ladder gave six distinct
+plateaus, each inside its own bucket, and idle sat at 3952 as it did on
+2026-09-18. **Two of the six levels moved by about 200 counts since then, and one
+now sits 35 counts from its boundary** — `cdj-200.md` has the numbers.
 
 **GP9 and GP10 are read, and nothing is on them.** The firmware ORs a discrete SEARCH
 pair on those pins with the ladder's; this build has none and is not getting one
