@@ -128,12 +128,15 @@ One real stick, mounted read-only at `/media/stick`: **2192 names** (2026-09-16)
   journal does not survive a reboot.
 - **`phono:~/music` is the listening harness's, not a medium** — the deck reads only
   a mount point, and a folder on the SD card is not one (`src/media.rs`). Its
-  `CD_BURN` folder holds 35 AIFFs from the CD_BURN tracklists, bit-identical to
-  their ALAC sources (2026-10-22). **`phono:~/deck-bin/run-sd.sh` runs the deck on
+  `CD_BURN` folder holds 36 AIFFs from the CD_BURN tracklists, checked
+  bit-identical to their ALAC sources on the card (2026-10-22). **`phono` runs the
+  deck at boot** — `@reboot ~/deck-bin/boot.sh`, which waits up to a minute for
+  the Pico's link and the Digi2 Pro, because the deck looks for its panel only once
+  — and **`phono:~/deck-bin/run-sd.sh` is what it runs: the deck on
   that folder anyway, without `sudo`**: inside `unshare --user --map-root-user
   --mount` it mounts an empty tmpfs and bind-mounts the folder read-only beneath it,
   so the mount point's device differs from its parent's. Temporary, like the
-  FOLDER mapping above, and the listening harness has to be stopped first — both
-  want the Digi2 Pro.
+  FOLDER mapping above. The listening harness no longer starts at boot, and is not
+  to be started while the deck runs: both want the Digi2 Pro.
 - **`phono` is someone's working machine first.** `sudo` asks for a password, a
   capture service runs on it, and the user may be logged in — do not reboot it unasked.
