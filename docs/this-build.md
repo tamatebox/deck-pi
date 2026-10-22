@@ -29,7 +29,7 @@ you change, and when a line's date is old and the question matters, ask.
 | Their ground | `KSWB`, CN602-9 `GNDA` | GND, pin 3 | jumper wire |
 | Browse encoder, push = ENTER | **not bought** | GP2, GP3, GP7 held for it | 2026-10-21 |
 | BACK | **not bought** | GP6 held for it | 2026-10-21 |
-| Pitch fader — v2 | CDJ-200 `SLDB` | GP27 / ADC1 | test clips |
+| Pitch fader — v2 | CDJ-200 `SLDB` | GP27 / ADC1 held for it | **unconnected** 2026-10-22 — the Pico has one 3V3 pin and the panel has it |
 | Jog — v2 | CDJ-200 `JOGB` | undecided | unconnected |
 
 The connectors pin by pin, and every measurement taken through them, are in
@@ -47,6 +47,9 @@ plateaus, each inside its own bucket, and idle sat at 3952 as it did on
 came within 35 counts of its boundary**, which moved to 2862 the same day —
 `cdj-200.md` has the numbers. The jumpers are soldered at the `KSWB` end and
 plugged onto the Pico's header.
+
+**And through `phono`'s kernel the same day**: all eight buttons pressed as their
+own keycodes, FOLDER's 403 and 402 included.
 
 **GP9 and GP10 are read, and nothing is on them.** The firmware ORs a discrete SEARCH
 pair on those pins with the ladder's; this build has none and is not getting one
@@ -87,8 +90,9 @@ than by its comparison.
 
 | | |
 |---|---|
-| In use | GP4, GP5, GP26 (`KSWB`), GP27 (fader) |
+| In use | GP4, GP5, GP26 (`KSWB`) |
 | Held for parts not bought | GP2, GP3, GP6, GP7 |
+| Held for a part not connected | GP27 (fader) |
 | Read, nothing attached | GP9, GP10 |
 | The panel | GP16, GP17, GP18, GP19, GP20 |
 | Free | GP0, GP1, GP8, GP11-GP15, GP21, GP22, GP28 |

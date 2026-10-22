@@ -46,12 +46,12 @@ there needed one fix — the drafted udev rule matched nothing, for a reason wor
 reading before writing another one.
 
 The Pico's firmware **enumerates on the Pi and declares the right things**: the
-kernel registers keycodes 28, 128, 158, 164, 168 and 208 — exactly the six
-`src/input.rs` matches — and a relative `REL_X` for the detents. That is the
-declaration, read back from the kernel's own capability bitmaps. **The CDJ-200
-switch panel has since been pressed through it** — PLAY, CUE and the ladder's six,
-`docs/cdj-200.md` — but **no detent has been turned**: there is no browse encoder
-yet. What is wired today is in `docs/this-build.md`.
+kernel registers ten keycodes — the eight `src/input.rs` matches, and FOLDER's 402
+and 403, which it ignores — and a relative `REL_X` for the detents. That is the
+declaration, read back from the kernel's own capability bitmaps. **All eight of the
+CDJ-200 panel's buttons have been pressed through it** and arrived as their own
+keycodes, on 2026-10-22 — `docs/cdj-200.md` — but **no detent has been turned**:
+there is no browse encoder yet. What is wired today is in `docs/this-build.md`.
 
 Worth knowing before sizing anything: **192 kHz at a 1.33 ms period ran clean on the
 ordinary scheduler, with no realtime privileges** — and with nothing else on the

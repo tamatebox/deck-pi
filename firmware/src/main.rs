@@ -12,7 +12,7 @@
 //! It declares a HID *usage*. The kernel's `drivers/hid/hid-input.c` decides
 //! which keycode that becomes, and a usage that maps somewhere unexpected
 //! leaves `Button::from_keycode` returning `None` — a button that is silently
-//! dead, with nothing logged anywhere. So the six below are not guesses:
+//! dead, with nothing logged anywhere. So the ten below are not guesses:
 //! each was read out of the mapping table in `hid-input.c` on the `rpi-6.18.y`
 //! branch, which is the kernel the deck actually runs.
 //!
@@ -26,6 +26,16 @@
 //! | CUE | `0x226` | `KEY_STOP` (128) |
 //! | TRACK SEARCH ►►| | `0x0b5` | `KEY_NEXTSONG` (163) |
 //! | TRACK SEARCH |◄◄ | `0x0b6` | `KEY_PREVIOUSSONG` (165) |
+//! | FOLDER SEARCH ►►| | `0x09c` | `KEY_CHANNELUP` (402) |
+//! | FOLDER SEARCH |◄◄ | `0x09d` | `KEY_CHANNELDOWN` (403) |
+//!
+//! **FOLDER is sent, and the deck ignores it.** What the pair should do is
+//! undecided, and that is a question for the Pi alone: the button exists, so
+//! this end reports it. Sending it is also what makes a broken FOLDER wire
+//! visible — a button that emits nothing looks the same from outside whether
+//! it works or not. The channel pair was picked as keys nothing on the deck
+//! matches; whether anything else on the image reacts to them is unchecked.
+//! The numbers are from the running image's `input-event-codes.h`.
 //!
 //! **The obvious usage for CUE is the wrong one.** Consumer `0x0b7` is named
 //! "Stop" and maps to `KEY_STOPCD` (166), which the deck does not match. CUE
@@ -61,7 +71,7 @@ use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Driver, InterruptHandler};
 use embassy_time::{Duration, Ticker};
 #[cfg(feature = "faderprobe")]
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU16, Ordering};
 #[cfg(feature = "paneltest")]
 use embassy_rp::gpio::{Level, Output};
 #[cfg(feature = "paneltest")]
@@ -109,7 +119,7 @@ const STEPS_PER_DETENT: i8 = 4;
 /// the Consumer page, and the encoder as one signed relative axis.
 #[rustfmt::skip]
 const REPORT_DESCRIPTOR: &[u8] = &[
-    // --- Report 1: the eight buttons, one bit each ----------------------
+    // --- Report 1: the ten buttons, one bit each, in two bytes -----------
     0x05, 0x0C,       // Usage Page (Consumer)
     0x09, 0x01,       // Usage (Consumer Control)
     0xA1, 0x01,       // Collection (Application)
@@ -117,7 +127,7 @@ const REPORT_DESCRIPTOR: &[u8] = &[
     0x15, 0x00,       //   Logical Minimum (0)
     0x25, 0x01,       //   Logical Maximum (1)
     0x75, 0x01,       //   Report Size (1)
-    0x95, 0x08,       //   Report Count (8)
+    0x95, 0x0A,       //   Report Count (10)
     0x09, 0x84,       //   Usage (Media Select Home)     -> KEY_ENTER
     0x09, 0xB3,       //   Usage (Fast Forward)          -> KEY_FASTFORWARD
     0x09, 0xB4,       //   Usage (Rewind)                -> KEY_REWIND
@@ -126,7 +136,11 @@ const REPORT_DESCRIPTOR: &[u8] = &[
     0x0A, 0x26, 0x02, //   Usage (AC Stop)               -> KEY_STOP
     0x09, 0xB5,       //   Usage (Scan Next Track)       -> KEY_NEXTSONG
     0x09, 0xB6,       //   Usage (Scan Previous Track)   -> KEY_PREVIOUSSONG
+    0x09, 0x9D,       //   Usage (Channel Decrement)     -> KEY_CHANNELDOWN
+    0x09, 0x9C,       //   Usage (Channel Increment)     -> KEY_CHANNELUP
     0x81, 0x02,       //   Input (Data, Variable, Absolute)
+    0x95, 0x06,       //   Report Count (6)
+    0x81, 0x01,       //   Input (Constant) — pads the ten to two bytes
     0xC0,             // End Collection
 
     // --- Report 2: the browse encoder, as relative X --------------------
@@ -154,11 +168,15 @@ const BIT_PLAY: u8 = 3;
 const BIT_BACK: u8 = 4;
 const BIT_CUE: u8 = 5;
 /// Read only by `LADDER_BITS`, which the `faderprobe` build does not compile —
-/// the panel's TRACK pair has no other source.
+/// the panel's TRACK and FOLDER pairs have no other source.
 #[cfg_attr(feature = "faderprobe", allow(dead_code))]
 const BIT_TRACK_NEXT: u8 = 6;
 #[cfg_attr(feature = "faderprobe", allow(dead_code))]
 const BIT_TRACK_PREV: u8 = 7;
+#[cfg_attr(feature = "faderprobe", allow(dead_code))]
+const BIT_FOLDER_PREV: u8 = 8;
+#[cfg_attr(feature = "faderprobe", allow(dead_code))]
+const BIT_FOLDER_NEXT: u8 = 9;
 
 /// A switch to ground behind a pull-up: pressed reads low. One counter each,
 /// so a bouncing contact on one button cannot delay another.
@@ -279,11 +297,11 @@ struct Ladder {
 #[cfg(not(feature = "faderprobe"))]
 const LADDER_BOUNDS: [u16; 6] = [3506, 2862, 2043, 1310, 748, 311];
 
-/// Which report-1 bit each bucket sets. **`None` is a button the panel has and
-/// the deck has no meaning for** — FOLDER SEARCH, whose behaviour is not
-/// settled. It is decoded anyway and deliberately emits nothing: a level that
-/// fell through to the idle bucket would be indistinguishable from a broken
-/// wire, and this project's recurring defect is exactly that kind of silence.
+/// Which report-1 bit each bucket sets; `None` is idle and nothing else.
+/// **FOLDER SEARCH is sent although the deck has no meaning for it yet** — it
+/// used to be decoded and then dropped, which kept it out of the idle bucket
+/// but left a working button and a broken wire looking the same from outside.
+/// What it means is the Pi's to decide, and this end only reports the press.
 #[cfg(not(feature = "faderprobe"))]
 const LADDER_BITS: [Option<u8>; 7] = [
     None,                  // 0: idle
@@ -291,8 +309,8 @@ const LADDER_BITS: [Option<u8>; 7] = [
     Some(BIT_FF),          // 2: SEARCH  ►►|
     Some(BIT_TRACK_PREV),  // 3: TRACK   |◄◄
     Some(BIT_TRACK_NEXT),  // 4: TRACK   ►►|
-    None,                  // 5: FOLDER  |◄◄ — recognised, unassigned
-    None,                  // 6: FOLDER  ►►| — recognised, unassigned
+    Some(BIT_FOLDER_PREV), // 5: FOLDER  |◄◄ — sent, ignored by the deck
+    Some(BIT_FOLDER_NEXT), // 6: FOLDER  ►►| — sent, ignored by the deck
 ];
 
 #[cfg(not(feature = "faderprobe"))]
@@ -302,7 +320,7 @@ impl Ladder {
     }
 
     /// Call once per `TICK`. Returns the bits for whatever is settled.
-    fn poll(&mut self) -> u8 {
+    fn poll(&mut self) -> u16 {
         // A conversion that fails leaves the settled bucket alone rather than
         // releasing it: a dropped reading is not a released button, and
         // releasing one here would end a seek the operator is still holding.
@@ -319,7 +337,7 @@ impl Ladder {
             }
         }
         match LADDER_BITS[self.settled] {
-            Some(bit) => 1 << bit,
+            Some(bit) => 1u16 << bit,
             None => 0,
         }
     }
@@ -332,12 +350,12 @@ static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
 #[cfg(feature = "faderprobe")]
 static CDC_STATE: StaticCell<CdcState> = StaticCell::new();
 
-/// The last report-1 byte the control loop sent, for the probe to print.
+/// The last report-1 bitmap the control loop sent, for the probe to print.
 /// PLAY and CUE are digital and never reach the serial port otherwise, and a
 /// Mac has no `evtest` — so without this, checking a solder joint on GP4 or
 /// GP5 needs a Linux host.
 #[cfg(feature = "faderprobe")]
-static BUTTONS: AtomicU8 = AtomicU8::new(0);
+static BUTTONS: AtomicU16 = AtomicU16::new(0);
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -481,17 +499,19 @@ async fn run_usb(mut usb: UsbDevice) -> ! {
 
 /// Presses every button in turn, then turns the encoder each way, for ever.
 ///
-/// The point is not that something happens — `evtest` already showed the six
+/// The point is not that something happens — `evtest` already showed the
 /// keycodes are *declared*. The point is the **order**. Nothing so far has
 /// checked that bit 3 of report 1 is the bit the descriptor's fourth `Usage`
 /// line claims, and a descriptor whose usages and bit constants disagree
-/// declares exactly the same six keycodes while sending the wrong one for
-/// every press. That is the CUE trap again, one layer down.
+/// declares exactly the same keycodes while sending the wrong one for every
+/// press. That is the CUE trap again, one layer down.
 ///
 /// So watch the order rather than the count. It must be:
 ///
 /// `KEY_ENTER` 28, `KEY_FASTFORWARD` 208, `KEY_REWIND` 168,
 /// `KEY_PLAYPAUSE` 164, `KEY_BACK` 158, `KEY_STOP` 128,
+/// `KEY_NEXTSONG` 163, `KEY_PREVIOUSSONG` 165,
+/// `KEY_CHANNELDOWN` 403, `KEY_CHANNELUP` 402,
 /// then four `REL_X` of +1 and four of -1.
 #[cfg(feature = "selftest")]
 #[embassy_executor::task]
@@ -501,10 +521,11 @@ async fn run_selftest(mut writer: HidWriter<'static, Driver<'static, USB>, 8>) -
     // would read as a dead button.
     Timer::after_secs(3).await;
     loop {
-        for bit in 0..6u8 {
-            let _ = writer.write(&[1, 1 << bit]).await;
+        for bit in 0..10u8 {
+            let [lo, hi] = (1u16 << bit).to_le_bytes();
+            let _ = writer.write(&[1, lo, hi]).await;
             Timer::after_millis(120).await;
-            let _ = writer.write(&[1, 0]).await;
+            let _ = writer.write(&[1, 0, 0]).await;
             Timer::after_millis(380).await;
         }
         for _ in 0..4 {
@@ -546,18 +567,18 @@ async fn run_controls(
     mut c: Controls,
 ) -> ! {
     let mut ticker = Ticker::every(TICK);
-    let mut last_buttons = 0u8;
+    let mut last_buttons = 0u16;
 
     loop {
         ticker.next().await;
 
-        let mut buttons = 0u8;
-        buttons |= (c.enter.poll() as u8) << BIT_ENTER;
-        buttons |= (c.ff.poll() as u8) << BIT_FF;
-        buttons |= (c.rew.poll() as u8) << BIT_REW;
-        buttons |= (c.play.poll() as u8) << BIT_PLAY;
-        buttons |= (c.back.poll() as u8) << BIT_BACK;
-        buttons |= (c.cue.poll() as u8) << BIT_CUE;
+        let mut buttons = 0u16;
+        buttons |= (c.enter.poll() as u16) << BIT_ENTER;
+        buttons |= (c.ff.poll() as u16) << BIT_FF;
+        buttons |= (c.rew.poll() as u16) << BIT_REW;
+        buttons |= (c.play.poll() as u16) << BIT_PLAY;
+        buttons |= (c.back.poll() as u16) << BIT_BACK;
+        buttons |= (c.cue.poll() as u16) << BIT_CUE;
         // **OR'd, not replacing.** A discrete switch on GP9 or GP10 and the
         // panel's SEARCH pair both mean the same control, and either may be
         // the one that is wired.
@@ -572,7 +593,10 @@ async fn run_controls(
             last_buttons = buttons;
             #[cfg(feature = "faderprobe")]
             BUTTONS.store(buttons, Ordering::Relaxed);
-            let _ = writer.write(&[1, buttons]).await;
+            // Little-endian, so bit 0 of the descriptor is bit 0 of the first
+            // byte, as HID packs report fields.
+            let [lo, hi] = buttons.to_le_bytes();
+            let _ = writer.write(&[1, lo, hi]).await;
         }
 
         let detents = c.encoder.poll();
@@ -652,8 +676,8 @@ async fn run_faderprobe(
             n += write_field(&mut line[n..], b" fmax=", max);
             n += write_field(&mut line[n..], b" k=", k);
             n += write_field(&mut line[n..], b" kmin=", kmin);
-            n += write_field(&mut line[n..], b" play=", ((b >> BIT_PLAY) & 1) as u16);
-            n += write_field(&mut line[n..], b" cue=", ((b >> BIT_CUE) & 1) as u16);
+            n += write_field(&mut line[n..], b" play=", (b >> BIT_PLAY) & 1);
+            n += write_field(&mut line[n..], b" cue=", (b >> BIT_CUE) & 1);
             line[n] = b'\r';
             line[n + 1] = b'\n';
             n += 2;

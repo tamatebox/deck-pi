@@ -185,8 +185,8 @@ follows: nothing advances on its own. Folders are skipped on the way — TRACK S
 means next *track*, and stepping onto a folder would be a load that fails.
 
 **FOLDER SEARCH is the half of that question still open.** The CDJ-200 panel carries
-two more buttons, the firmware decodes both of them, and the deck has no meaning for
-either — so they deliberately emit nothing rather than falling through into the idle
-level, where a working button would be indistinguishable from a broken wire.
-`cdj-200.md` has the levels. What they should *do* is undecided and is not decided
+two more buttons, the firmware sends both of them — as `KEY_CHANNELDOWN` and
+`KEY_CHANNELUP` — and the deck has no meaning for either and ignores them. Sending is
+what lets a broken FOLDER wire be seen; a meaning is the deck's to add, with nothing
+to change on the Pico. `cdj-200.md` has the levels. What they should *do* is undecided and is not decided
 here.
