@@ -136,6 +136,14 @@ impl<W: Write> Show for Text<W> {
     // place would need the cursor moved up and back down, and the saving is a
     // few hundred bytes on a terminal. `Redraw::Position` exists for a link
     // that costs something; this one does not have one.
+
+    /// The trait's door to [`Text::note`] — **without it, every note the deck
+    /// made went nowhere.** A call on a `Text` reaches the inherent method of
+    /// the same name, so that method's own test passed; the loop holds a
+    /// `D: Show`, and that reached the trait's do-nothing default instead.
+    fn note(&mut self, line: &str) -> std::io::Result<()> {
+        Text::note(self, line)
+    }
 }
 
 #[cfg(test)]
@@ -216,6 +224,19 @@ mod tests {
         // Two rewinds: one before the note, one before the second draw.
         assert_eq!(out.matches("\x1b[12A").count(), 1, "{out:?}");
         assert!(out.contains("medium: browsable\n"), "{out:?}");
+    }
+
+    #[test]
+    fn a_note_through_the_trait_reaches_the_console() {
+        // The way the deck calls it: `report_turn` holds a `D: Show`, not a
+        // `Text`. The test above calls the inherent method and passed for as
+        // long as this path printed nothing.
+        fn say<D: Show>(show: &mut D) {
+            show.note("medium: browsable").expect("note");
+        }
+        let mut buf = Vec::new();
+        say(&mut Text::new(&mut buf, CONSOLE));
+        assert_eq!(String::from_utf8(buf).expect("utf-8"), "medium: browsable\n");
     }
 
     #[test]

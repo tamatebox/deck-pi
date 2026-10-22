@@ -246,6 +246,44 @@ fn the_tap_follows_the_playing_track_not_the_selection() {
         Some(a_two.as_path()),
         "the tap moved inside the playing folder, not the browsed one"
     );
+    // And the selection in the browsed folder stayed put, even while the
+    // selection follows taps in the folder it shows — see below.
+    let browsed = deck.browser().expect("a medium").selected_path();
+    assert_eq!(
+        browsed.as_deref().and_then(|p| p.file_name()),
+        Some(std::ffi::OsStr::new("1-b-one.wav"))
+    );
+
+    deck.unload();
+    drop(r.scratch);
+}
+
+#[test]
+fn the_selection_follows_a_tap_in_the_folder_it_shows_until_there_is_an_encoder() {
+    // Temporary, like FOLDER ►►| as ENTER (`docs/this-build.md`): with no
+    // encoder the highlighted row never moved, so the panel named the first
+    // file of the folder whatever was playing. Asserted so that removing the
+    // rule is a visible change.
+    let r = rig("deck-tap-select");
+    r.track("set", "1-first", 2_000);
+    let second = r.track("set", "2-second", 2_000);
+    let mut deck = r.deck();
+
+    select(&mut deck, "set");
+    deck.apply(Action::Press(Button::Enter)).expect("descend");
+    select(&mut deck, "1-first.wav");
+    deck.apply(Action::Press(Button::Enter)).expect("load");
+
+    deck.apply(Action::Press(Button::TrackNext)).expect("next");
+    let selected = deck.browser().expect("a medium").selected_path();
+    assert_eq!(selected.as_deref(), Some(second.as_path()));
+
+    deck.apply(Action::Press(Button::TrackPrev)).expect("previous");
+    let selected = deck.browser().expect("a medium").selected_path();
+    assert_eq!(
+        selected.as_deref().and_then(|p| p.file_name()),
+        Some(std::ffi::OsStr::new("1-first.wav"))
+    );
 
     deck.unload();
     drop(r.scratch);

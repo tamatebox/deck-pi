@@ -80,6 +80,12 @@ impl Button {
             208 => Button::Ff,        // KEY_FASTFORWARD
             163 => Button::TrackNext, // KEY_NEXTSONG
             165 => Button::TrackPrev, // KEY_PREVIOUSSONG
+            // **FOLDER SEARCH ►►| as ENTER, until the browse encoder is bought**
+            // — `docs/this-build.md`. With no encoder nothing else can load a
+            // first track, and the selection never leaves the top row, so on a
+            // flat folder this reads "load the first file". It goes when the
+            // encoder's push is wired; FOLDER's own meaning is still open.
+            402 => Button::Enter, // KEY_CHANNELUP, which FOLDER ►►| sends
             _ => return None,
         })
     }
@@ -1116,6 +1122,16 @@ mod tests {
             d.feed(key(Button::PlayPause.keycode(), 2), &mut out);
         }
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn folder_next_is_enter_until_the_encoder_arrives_and_folder_prev_is_nothing() {
+        // Temporary, and asserted so that removing it is a visible change
+        // rather than a silent one. ENTER's own keycode is unchanged: the
+        // mapping is many-to-one, not a renumbering.
+        assert_eq!(Button::from_keycode(402), Some(Button::Enter));
+        assert_eq!(Button::from_keycode(403), None);
+        assert_eq!(Button::Enter.keycode(), 28);
     }
 
     #[test]

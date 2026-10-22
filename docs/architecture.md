@@ -301,8 +301,13 @@ the one `tools/panel-compare` already draws, which is how it was judged.
 **And the link finally measures itself.** Every frame carries a sequence number and
 the Pico acknowledges it, so the round trip from write to ack is the figure this
 section has been missing — taken on every frame the deck draws rather than in a
-benchmark that would have to imitate drawing. It reads zero until there is a Pico
-that speaks the protocol.
+benchmark that would have to imitate drawing. **First reading, 2026-10-22: 30.3 ms**
+for one 256x64 frame — 2,048 bytes of bitmap — on `phono`, and the same figure on
+the last of 261 frames in a later run, none of them left unacknowledged. It is not
+the link alone: it includes the Pico writing the expanded 8 KiB to the panel over
+SPI at 4 MHz, about 16 ms by arithmetic, and up to 10 ms of the deck reading the ack
+a turn late. So the panel end is likely most of it, and raising the SPI clock is the
+lever before anything on the USB side — **estimated, not separated**.
 
 **Drawing the frame is not what costs.** Measured on the 3B+ in release, into
 memory, 2026-09-16, by `tests/render_bench.rs`: a full 128x64 frame at 12 px is
@@ -313,8 +318,8 @@ where it likes. **Not re-taken on the Pi 4 that replaced it, and not worth takin
 the conclusion is that drawing is nothing against a 40 ms window, and a faster board
 cannot overturn that in the direction that would matter. Against a 40 ms coalescing window that is nothing, and
 it says the budget question is entirely about the link rather than about the
-rendering. **The link is still unmeasured** — these figures stop at the
-`DrawTarget`, and re-running them is a command rather than a memory.
+rendering. **The link has one reading**, above, and these figures stop at the
+`DrawTarget`; re-running them is a command rather than a memory.
 
 One qualification, because the rule as written is too strong: a position readout has
 to advance while a track plays, and that *is* a timer. Take it as **full redraws on

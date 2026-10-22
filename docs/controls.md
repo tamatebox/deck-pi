@@ -186,7 +186,9 @@ means next *track*, and stepping onto a folder would be a load that fails.
 
 **FOLDER SEARCH is the half of that question still open.** The CDJ-200 panel carries
 two more buttons, the firmware sends both of them — as `KEY_CHANNELDOWN` and
-`KEY_CHANNELUP` — and the deck has no meaning for either and ignores them. Sending is
-what lets a broken FOLDER wire be seen; a meaning is the deck's to add, with nothing
-to change on the Pico. `cdj-200.md` has the levels. What they should *do* is undecided and is not decided
+`KEY_CHANNELUP` — and the deck has no meaning for either. Sending is what lets a
+broken FOLDER wire be seen; a meaning is the deck's to add, with nothing to change
+on the Pico. `cdj-200.md` has the levels. **One stand-in, not a meaning**: while the
+build has no browse encoder, FOLDER ►►| is ENTER — `this-build.md` says why and for
+how long. What they should *do* is undecided and is not decided
 here.

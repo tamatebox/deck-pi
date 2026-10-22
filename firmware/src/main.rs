@@ -29,9 +29,9 @@
 //! | FOLDER SEARCH ►►| | `0x09c` | `KEY_CHANNELUP` (402) |
 //! | FOLDER SEARCH |◄◄ | `0x09d` | `KEY_CHANNELDOWN` (403) |
 //!
-//! **FOLDER is sent, and the deck ignores it.** What the pair should do is
-//! undecided, and that is a question for the Pi alone: the button exists, so
-//! this end reports it. Sending it is also what makes a broken FOLDER wire
+//! **FOLDER is sent, whatever the deck makes of it.** What the pair should do
+//! is undecided, and that is a question for the Pi alone: the button exists,
+//! so this end reports it. Sending it is also what makes a broken FOLDER wire
 //! visible — a button that emits nothing looks the same from outside whether
 //! it works or not. The channel pair was picked as keys nothing on the deck
 //! matches; whether anything else on the image reacts to them is unchecked.
@@ -69,20 +69,21 @@ use embassy_rp::bind_interrupts;
 use embassy_rp::gpio::{Input, Pull};
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Driver, InterruptHandler};
-use embassy_time::{Duration, Ticker};
+use embassy_time::{Duration, Ticker, Timer};
 #[cfg(feature = "faderprobe")]
 use core::sync::atomic::{AtomicU16, Ordering};
-#[cfg(feature = "paneltest")]
+#[cfg(any(link, card))]
 use embassy_rp::gpio::{Level, Output};
-#[cfg(feature = "paneltest")]
-use embassy_rp::peripherals::SPI0;
-#[cfg(feature = "paneltest")]
+#[cfg(any(link, card))]
+use embassy_rp::peripherals::{DMA_CH0, SPI0};
+#[cfg(any(link, card))]
 use embassy_rp::spi::{self, Spi};
-#[cfg(any(feature = "selftest", feature = "faderprobe", feature = "paneltest"))]
-use embassy_time::Timer;
-#[cfg(feature = "faderprobe")]
+#[cfg(link)]
+use embassy_time::with_timeout;
+#[cfg(any(feature = "faderprobe", link))]
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State as CdcState};
 use embassy_usb::class::hid::{HidBootProtocol, HidSubclass, HidWriter, State};
+use embassy_usb::control::{OutResponse, Recipient, Request, RequestType};
 use embassy_usb::{Builder, Config};
 use panic_halt as _;
 use static_cell::StaticCell;
@@ -96,6 +97,13 @@ static IMAGE_DEF: embassy_rp::block::ImageDef = embassy_rp::block::ImageDef::sec
 
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;
+});
+
+// The panel's SPI writes go by DMA, so a frame's 8 KiB does not hold the
+// executor — and with it the control loop's 1 ms tick — for 16 ms at a time.
+#[cfg(any(link, card))]
+bind_interrupts!(struct DmaIrqs {
+    DMA_IRQ_0 => embassy_rp::dma::InterruptHandler<DMA_CH0>;
 });
 
 /// How often every input is sampled. The debounce interval below is counted
@@ -347,8 +355,50 @@ static STATE: StaticCell<State> = StaticCell::new();
 static CONFIG_DESC: StaticCell<[u8; 256]> = StaticCell::new();
 static BOS_DESC: StaticCell<[u8; 256]> = StaticCell::new();
 static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
-#[cfg(feature = "faderprobe")]
+#[cfg(any(feature = "faderprobe", link))]
 static CDC_STATE: StaticCell<CdcState> = StaticCell::new();
+static RESET: StaticCell<ResetToBootsel> = StaticCell::new();
+
+/// The Pico SDK's reset interface, from `pico/usb_reset_interface.h`: a
+/// vendor-class interface with this subclass and protocol, and no endpoints.
+const RESET_SUBCLASS: u8 = 0x00;
+const RESET_PROTOCOL: u8 = 0x01;
+/// The one request answered. The SDK's other, 0x02, reboots to the
+/// application; a replug does that.
+const RESET_REQUEST_BOOTSEL: u8 = 0x01;
+
+/// Reboots into BOOTSEL when picotool asks, so flashing needs no button.
+///
+/// **Not an invention of this project.** The Pico SDK puts this interface in
+/// every program that uses its USB stdio — `PICO_ENABLE_USB_RESET_VIA_VENDOR_INTERFACE`
+/// defaults to 1 — and picotool looks for it on any device, its own vendor id
+/// or not. The request, read from picotool's `reboot_device`: a **class**
+/// request to the interface, `bRequest` 0x01, `wIndex` the interface number,
+/// and `wValue` bits 0-1 the bootrom's mask of USB interfaces to leave off.
+/// Bits 7-15 can name an activity LED, and this board has none to name.
+///
+/// `picotool reboot -f -u` uses it. `picotool load -f` does too and then
+/// cannot find the board again — it follows the USB serial number across
+/// the reboot, and this firmware's is a name rather than the chip's.
+struct ResetToBootsel {
+    interface: u8,
+}
+
+impl embassy_usb::Handler for ResetToBootsel {
+    fn control_out(&mut self, req: Request, _data: &[u8]) -> Option<OutResponse> {
+        if req.request_type == RequestType::Class
+            && req.recipient == Recipient::Interface
+            && req.index == u16::from(self.interface)
+            && req.request == RESET_REQUEST_BOOTSEL
+        {
+            // Does not return: the bootrom takes the chip, and the control
+            // transfer's status stage goes with it. picotool expects that and
+            // ignores the result, as the SDK's own handler does.
+            embassy_rp::rom_data::reset_to_usb_boot(0, u32::from(req.value & 0x3));
+        }
+        None
+    }
+}
 
 /// The last report-1 bitmap the control loop sent, for the probe to print.
 /// PLAY and CUE are digital and never reach the serial port otherwise, and a
@@ -362,10 +412,17 @@ async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     let driver = Driver::new(p.USB, Irqs);
 
-    // 0x2e8a is Raspberry Pi's vendor id; 0x000a is the product id reserved
-    // for "a Pico running someone's own code", which is what this is. It is
-    // not a claim to be any particular Raspberry Pi product.
-    let mut config = Config::new(0x2e8a, 0x000a);
+    // Raspberry Pi's vendor id with **0x0009, "Raspberry Pi Pico SDK CDC
+    // UART"** in their published list (`raspberrypi/usb-pid`) — the id the
+    // SDK gives its own RP2350 programs. That list's README is also the
+    // licence for using it: a device on standard interfaces keeps the
+    // standard id and tells itself apart by its strings, which is what the
+    // three below are for and what udev and `/dev/serial/by-id` match on.
+    //
+    // **It was 0x000a until 2026-10-22**, which the same list gives to the
+    // RP2040, under a comment that called it "reserved for a Pico running
+    // someone's own code". picotool reads the id to guess the chip.
+    let mut config = Config::new(0x2e8a, 0x0009);
     config.manufacturer = Some("deck-pi");
     config.product = Some("deck-pi control surface");
     config.serial_number = Some("deck-pico-1");
@@ -395,11 +452,28 @@ async fn main(spawner: Spawner) {
     };
     let writer = HidWriter::<_, 8>::new(&mut builder, STATE.init(State::new()), hid_config);
 
+    // picotool's way in — see `ResetToBootsel`. **In every build**, the bench
+    // ones included: a bench build is the one most certainly about to be
+    // replaced.
+    let reset = {
+        let mut function = builder.function(0xFF, RESET_SUBCLASS, RESET_PROTOCOL);
+        let mut interface = function.interface();
+        let number = interface.interface_number();
+        interface.alt_setting(0xFF, RESET_SUBCLASS, RESET_PROTOCOL, None);
+        number
+    };
+    builder.handler(RESET.init(ResetToBootsel { interface: reset.into() }));
+
     // Before `build()`, which consumes the builder. A second interface, so
     // the HID device above is unchanged and the six buttons keep working
     // while the fader is being measured.
     #[cfg(feature = "faderprobe")]
     let cdc = CdcAcmClass::new(&mut builder, CDC_STATE.init(CdcState::new()), 64);
+    // The same kind of interface, for the opposite reason: this one carries
+    // the deck's frames, and only the shipped build has it — a bench build
+    // that owns the serial port draws the test card instead.
+    #[cfg(link)]
+    let link = CdcAcmClass::new(&mut builder, CDC_STATE.init(CdcState::new()), 64);
 
     let usb = builder.build();
     spawner.spawn(run_usb(usb).unwrap());
@@ -425,28 +499,29 @@ async fn main(spawner: Spawner) {
         .unwrap(),
     );
 
-    // Before the selftest branch, which returns. SPI0 on GP18/GP19 with CS,
-    // DC and RES beside them — `docs/this-build.md` has the wiring.
-    #[cfg(feature = "paneltest")]
-    {
+    // SPI0 on GP18/GP19 with CS, DC and RES beside them — `docs/this-build.md`
+    // has the wiring.
+    #[cfg(any(link, card))]
+    let panel = {
         let mut config = spi::Config::default();
         // The SSD1322 allows 10 MHz (a 100 ns cycle, Table 13-4). Jumper
         // wires get less than that until a frame has been seen arriving
         // intact. Mode 0, the default: it shifts data in on SCLK's rising
         // edge (§8.1.3).
         config.frequency = 4_000_000;
-        spawner.spawn(
-            run_paneltest(Panel {
-                spi: Spi::new_blocking_txonly(p.SPI0, p.PIN_18, p.PIN_19, config),
-                // All three idle high: CS# and RES# are active low, and DC
-                // is set before every byte that matters.
-                cs: Output::new(p.PIN_17, Level::High),
-                dc: Output::new(p.PIN_16, Level::High),
-                res: Output::new(p.PIN_20, Level::High),
-            })
-            .unwrap(),
-        );
-    }
+        Panel {
+            spi: Spi::new_txonly(p.SPI0, p.PIN_18, p.PIN_19, p.DMA_CH0, DmaIrqs, config),
+            // All three idle high: CS# and RES# are active low, and DC is
+            // set before every byte that matters.
+            cs: Output::new(p.PIN_17, Level::High),
+            dc: Output::new(p.PIN_16, Level::High),
+            res: Output::new(p.PIN_20, Level::High),
+        }
+    };
+    #[cfg(link)]
+    spawner.spawn(run_panel(panel, link).unwrap());
+    #[cfg(card)]
+    spawner.spawn(run_paneltest(panel).unwrap());
 
     #[cfg(feature = "selftest")]
     {
@@ -720,33 +795,33 @@ fn write_field(out: &mut [u8], label: &[u8], value: u16) -> usize {
     n
 }
 
-/// The panel as `paneltest` drives it: SPI out, and three control lines.
-#[cfg(feature = "paneltest")]
+/// The SSD1322 on SPI0: data out by DMA, and three control lines.
+#[cfg(any(link, card))]
 struct Panel {
-    spi: Spi<'static, SPI0, spi::Blocking>,
+    spi: Spi<'static, SPI0, spi::Async>,
     cs: Output<'static>,
     dc: Output<'static>,
     res: Output<'static>,
 }
 
-#[cfg(feature = "paneltest")]
+#[cfg(any(link, card))]
 const PANEL_W: usize = 256;
-#[cfg(feature = "paneltest")]
+#[cfg(any(link, card))]
 const PANEL_H: usize = 64;
 
 /// The first RAM column the glass is wired to, in the SSD1322's unit of
 /// four pixels. **Not in the controller's datasheet** — the glass decides
-/// it, so it comes from u8g2's driver, which carries two answers for 256x64:
-/// 28 for Newhaven's, and 24 for a ZJY module that also reverses the COM scan.
-/// Which one this module is, the test card says.
-#[cfg(feature = "paneltest")]
+/// it. u8g2's driver carries two answers for 256x64, 28 for Newhaven's and
+/// 24 for a ZJY module that also reverses the COM scan, and the test card
+/// settled it on 2026-10-22: this module is the Newhaven one.
+#[cfg(any(link, card))]
 const PANEL_COL0: u8 = 28;
 
 /// u8g2's Newhaven 256x64 sequence, every value checked against the SSD1322
 /// datasheet's command table (Rev 1.2, Table 9-1) for range. Contrast is the
 /// reset value rather than u8g2's 0x9F: the first image on an unmeasured
 /// rail should not be the brightest one.
-#[cfg(feature = "paneltest")]
+#[cfg(any(link, card))]
 const PANEL_INIT: &[(u8, &[u8])] = &[
     (0xFD, &[0x12]),       // unlock the command interface
     (0xAE, &[]),           // display off
@@ -769,34 +844,81 @@ const PANEL_INIT: &[(u8, &[u8])] = &[
     (0xA9, &[]),           // exit partial display
 ];
 
-#[cfg(feature = "paneltest")]
+#[cfg(any(link, card))]
 impl Panel {
     /// One command byte with D/C# low, then its parameters with D/C# high:
     /// the SSD1322 takes parameters as data (Table 9-1's D/C# column).
-    fn command(&mut self, cmd: u8, args: &[u8]) {
+    async fn command(&mut self, cmd: u8, args: &[u8]) {
         self.cs.set_low();
         self.dc.set_low();
-        let _ = self.spi.blocking_write(&[cmd]);
+        let _ = self.spi.write(&[cmd]).await;
         if !args.is_empty() {
             self.dc.set_high();
-            let _ = self.spi.blocking_write(args);
+            let _ = self.spi.write(args).await;
         }
         self.cs.set_high();
     }
 
-    fn data(&mut self, bytes: &[u8]) {
+    async fn data(&mut self, bytes: &[u8]) {
         self.cs.set_low();
         self.dc.set_high();
-        let _ = self.spi.blocking_write(bytes);
+        let _ = self.spi.write(bytes).await;
         self.cs.set_high();
     }
 
     /// Opens a RAM window and leaves the controller in Write RAM, so what
     /// follows is pixels until the next command.
-    fn window(&mut self, col: (u8, u8), row: (u8, u8)) {
-        self.command(0x15, &[col.0, col.1]);
-        self.command(0x75, &[row.0, row.1]);
-        self.command(0x5C, &[]);
+    async fn window(&mut self, col: (u8, u8), row: (u8, u8)) {
+        self.command(0x15, &[col.0, col.1]).await;
+        self.command(0x75, &[row.0, row.1]).await;
+        self.command(0x5C, &[]).await;
+    }
+
+    /// Reset, the init sequence, the whole RAM to black, display on.
+    ///
+    /// **On, and black**, rather than off until the first frame: the Pi
+    /// sends lighting only when its policy changes it, and it starts out
+    /// believing the panel is lit. A panel that waited to be told would
+    /// stay dark.
+    async fn init(&mut self) {
+        // §8.9: commands wait at least 300 ms after the supply is stable, and
+        // RES# goes low for at least 100 µs. The wait after RES# is u8g2's,
+        // whose note says these modules want longer than the datasheet does.
+        Timer::after_millis(300).await;
+        self.res.set_low();
+        Timer::after_millis(1).await;
+        self.res.set_high();
+        Timer::after_millis(100).await;
+
+        for &(cmd, args) in PANEL_INIT {
+            self.command(cmd, args).await;
+        }
+
+        // All 120 columns and 128 rows, so that a window in the wrong place
+        // shows black beside the picture rather than whatever the RAM
+        // powered up holding.
+        self.window((0, 119), (0, 127)).await;
+        let black = [0u8; 240];
+        for _ in 0..128 {
+            self.data(&black).await;
+        }
+
+        // §8.9: the segments come on about 200 ms after this.
+        self.command(0xAF, &[]).await;
+    }
+
+    /// Writes a whole picture, one grey level of 0-15 per pixel.
+    async fn picture(&mut self, mut pixel: impl FnMut(usize, usize) -> u8) {
+        self.window((PANEL_COL0, PANEL_COL0 + 63), (0, PANEL_H as u8 - 1)).await;
+        // Two pixels per byte, the left one in the high nibble — u8g2's
+        // packing under the same 0xA0 remap, and what the card showed right.
+        let mut row = [0u8; PANEL_W / 2];
+        for y in 0..PANEL_H {
+            for (i, byte) in row.iter_mut().enumerate() {
+                *byte = (pixel(2 * i, y) << 4) | pixel(2 * i + 1, y);
+            }
+            self.data(&row).await;
+        }
     }
 }
 
@@ -804,7 +926,7 @@ impl Panel {
 /// column window shows as a missing or displaced edge. One square in the
 /// top-left corner and nowhere else, so any flip shows as the square in a
 /// different corner. A sixteen-step ramp, so the grey scale is seen to be one.
-#[cfg(feature = "paneltest")]
+#[cfg(card)]
 fn test_card(x: usize, y: usize) -> u8 {
     let border = x == 0 || x == PANEL_W - 1 || y == 0 || y == PANEL_H - 1;
     let marker = (3..11).contains(&x) && (3..11).contains(&y);
@@ -820,49 +942,272 @@ fn test_card(x: usize, y: usize) -> u8 {
 
 /// Brings the panel up and draws the test card once.
 ///
-/// **Not the panel's driver.** The deck draws and its frames will arrive
-/// over USB; this proves the wires and the init sequence first, so that
-/// when the real path shows nothing, the panel end is already known good.
-#[cfg(feature = "paneltest")]
+/// **Not the panel's driver.** The deck draws, and its frames arrive over the
+/// link in the shipped build; this proves the wires and the init sequence on
+/// their own, so that when the real path shows nothing the panel end is
+/// already known good.
+#[cfg(card)]
 #[embassy_executor::task]
 async fn run_paneltest(mut panel: Panel) -> ! {
-    // §8.9: commands wait at least 300 ms after the supply is stable, and
-    // RES# goes low for at least 100 µs. The wait after RES# is u8g2's, whose
-    // note says these modules want longer than the datasheet suggests.
-    Timer::after_millis(300).await;
-    panel.res.set_low();
-    Timer::after_millis(1).await;
-    panel.res.set_high();
-    Timer::after_millis(100).await;
-
-    for &(cmd, args) in PANEL_INIT {
-        panel.command(cmd, args);
-    }
-
-    // The whole RAM to black first, all 120 columns and 128 rows, so that a
-    // window in the wrong place shows black beside the card rather than
-    // whatever the RAM powered up holding.
-    panel.window((0, 119), (0, 127));
-    let black = [0u8; 240];
-    for _ in 0..128 {
-        panel.data(&black);
-    }
-
-    // Two pixels per byte, the left one in the high nibble — u8g2's packing
-    // under the same 0xA0 remap. If it is wrong, every edge doubles.
-    panel.window((PANEL_COL0, PANEL_COL0 + 63), (0, PANEL_H as u8 - 1));
-    let mut row = [0u8; PANEL_W / 2];
-    for y in 0..PANEL_H {
-        for (i, byte) in row.iter_mut().enumerate() {
-            *byte = (test_card(2 * i, y) << 4) | test_card(2 * i + 1, y);
-        }
-        panel.data(&row);
-    }
-
-    // §8.9: the segments come on about 200 ms after this.
-    panel.command(0xAF, &[]);
-
+    panel.init().await;
+    panel.picture(test_card).await;
     loop {
         Timer::after_secs(3600).await;
+    }
+}
+
+// --- The link: `src/display/wire.rs`, from the Pico's end -------------------
+//
+// The bytes are the Pi's module's, written again rather than shared: the two
+// sides share no code (`README.md` says why), so **`wire.rs` is the
+// specification** and this is checked against it by the deck talking to it.
+
+#[cfg(link)]
+const MAGIC: [u8; 2] = *b"DP";
+#[cfg(link)]
+const VERSION: u8 = 1;
+/// Magic, version, kind, length; the CRC follows the payload.
+#[cfg(link)]
+const HEADER: usize = 6;
+
+#[cfg(link)]
+const KIND_HELLO: u8 = 1;
+#[cfg(link)]
+const KIND_DECLARE: u8 = 2;
+#[cfg(link)]
+const KIND_FRAME: u8 = 3;
+#[cfg(link)]
+const KIND_ACK: u8 = 4;
+#[cfg(link)]
+const KIND_FAULT: u8 = 5;
+#[cfg(link)]
+const KIND_BRIGHTNESS: u8 = 6;
+#[cfg(link)]
+const KIND_BLANK: u8 = 7;
+
+/// What a frame's bitmap must be: 1 bpp, rows padded to whole bytes.
+#[cfg(link)]
+const FRAME_BITS: usize = PANEL_W.div_ceil(8) * PANEL_H;
+
+/// The largest payload taken, and what `Declare` says. A whole frame is
+/// 2,048 bytes of bitmap plus nine per span, so this is room to spare rather
+/// than a limit anything reaches.
+#[cfg(link)]
+const MAX_PAYLOAD: usize = 4096;
+
+/// Brightness steps declared. The Pi's `Lighting::Dim` asks for a quarter of
+/// them, `Full` for the top one.
+#[cfg(link)]
+const BRIGHTNESS_LEVELS: u8 = 16;
+
+/// The contrast the top step reaches: u8g2's own value, not 0xFF. The
+/// panel's current is unmeasured, and the top of the range is where it is
+/// largest.
+#[cfg(link)]
+const CONTRAST_MAX: u16 = 0x9F;
+
+/// CRC-16/CCITT-FALSE, the same ten lines as `wire::crc16`.
+#[cfg(link)]
+fn crc16(bytes: &[u8]) -> u16 {
+    let mut crc: u16 = 0xFFFF;
+    for b in bytes {
+        crc ^= u16::from(*b) << 8;
+        for _ in 0..8 {
+            crc = if crc & 0x8000 != 0 { (crc << 1) ^ 0x1021 } else { crc << 1 };
+        }
+    }
+    crc
+}
+
+#[cfg(link)]
+fn le16(p: &[u8], at: usize) -> Option<u16> {
+    Some(u16::from_le_bytes([*p.get(at)?, *p.get(at + 1)?]))
+}
+
+/// Messages out of the byte stream the host sends, resynchronising on
+/// [`MAGIC`] when it has to — `wire::Reader`'s rules, in a fixed buffer.
+#[cfg(link)]
+struct LinkReader {
+    buf: [u8; HEADER + MAX_PAYLOAD + 2 + 64],
+    len: usize,
+}
+
+#[cfg(link)]
+impl LinkReader {
+    const fn new() -> LinkReader {
+        LinkReader { buf: [0; HEADER + MAX_PAYLOAD + 2 + 64], len: 0 }
+    }
+
+    fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    /// A packet that would overflow drops everything held: nothing in the
+    /// buffer can be a message the reader could still finish, because no
+    /// message is longer than the buffer.
+    fn feed(&mut self, bytes: &[u8]) {
+        if self.len + bytes.len() > self.buf.len() {
+            self.len = 0;
+        }
+        self.buf[self.len..self.len + bytes.len()].copy_from_slice(bytes);
+        self.len += bytes.len();
+    }
+
+    fn consume(&mut self, n: usize) {
+        self.buf.copy_within(n..self.len, 0);
+        self.len -= n;
+    }
+
+    /// The next whole message at the head of the buffer, as its kind and
+    /// payload length; [`Self::payload`] has the bytes, and the caller
+    /// consumes `HEADER + len + 2` when done with them.
+    ///
+    /// **Loops only to resynchronise**: a header that fails its version,
+    /// length or CRC check drops one byte and the scan goes again, which is
+    /// `wire::Reader::drop_one` — the difference is that `wire.rs` reports
+    /// each rejection, and nobody here is listening.
+    fn next(&mut self) -> Option<(u8, usize)> {
+        loop {
+            let at = (0..self.len.saturating_sub(1)).find(|&i| self.buf[i..i + 2] == MAGIC);
+            match at {
+                Some(0) => {}
+                Some(a) => self.consume(a),
+                // Keep a trailing `D`: it may be the first half of a magic.
+                None => {
+                    let keep = usize::from(self.len > 0 && self.buf[self.len - 1] == MAGIC[0]);
+                    self.consume(self.len - keep);
+                    return None;
+                }
+            }
+            if self.len < HEADER {
+                return None;
+            }
+            let len = usize::from(le16(&self.buf, 4)?);
+            if self.buf[2] != VERSION || len > MAX_PAYLOAD {
+                self.consume(1);
+                continue;
+            }
+            if self.len < HEADER + len + 2 {
+                return None;
+            }
+            if crc16(&self.buf[2..HEADER + len]) != le16(&self.buf, HEADER + len)? {
+                self.consume(1);
+                continue;
+            }
+            return Some((self.buf[3], len));
+        }
+    }
+
+    fn payload(&self, len: usize) -> &[u8] {
+        &self.buf[HEADER..HEADER + len]
+    }
+}
+
+/// Frames one message and sends it.
+///
+/// **With a timeout**: a host that stopped reading would otherwise hold this
+/// task, and with it the panel, until it came back. Every message the Pico
+/// sends fits one 64-byte packet.
+#[cfg(link)]
+async fn send(link: &mut CdcAcmClass<'static, Driver<'static, USB>>, kind: u8, payload: &[u8]) {
+    let mut out = [0u8; 64];
+    let len = payload.len().min(out.len() - HEADER - 2);
+    out[..2].copy_from_slice(&MAGIC);
+    out[2] = VERSION;
+    out[3] = kind;
+    out[4..6].copy_from_slice(&(len as u16).to_le_bytes());
+    out[HEADER..HEADER + len].copy_from_slice(&payload[..len]);
+    // Over everything but the magic, as `wire.rs` computes it.
+    let crc = crc16(&out[2..HEADER + len]);
+    out[HEADER + len..HEADER + len + 2].copy_from_slice(&crc.to_le_bytes());
+    let _ = with_timeout(Duration::from_millis(100), link.write_packet(&out[..HEADER + len + 2])).await;
+}
+
+/// The panel, served to the deck: `Hello` answered with what is here, each
+/// `Frame` drawn and acknowledged, brightness and blanking carried out.
+///
+/// **It declares a panel whether or not one is wired.** The SPI link is
+/// write-only, so nothing here can see a missing module — it declares the
+/// one this firmware was built for, and a panel unplugged reads as a deck
+/// drawing to dark glass rather than as a `Fault`.
+#[cfg(link)]
+#[embassy_executor::task]
+async fn run_panel(mut panel: Panel, mut link: CdcAcmClass<'static, Driver<'static, USB>>) -> ! {
+    panel.init().await;
+
+    // In static memory with the task rather than on a stack: a whole frame
+    // has to fit, and the executor stores the task's state for its lifetime.
+    let mut reader = LinkReader::new();
+    let mut packet = [0u8; 64];
+    loop {
+        link.wait_connection().await;
+        // A deck that went away mid-frame left half of one behind.
+        reader.clear();
+
+        while let Ok(n) = link.read_packet(&mut packet).await {
+            reader.feed(&packet[..n]);
+            while let Some((kind, len)) = reader.next() {
+                let p = reader.payload(len);
+                match kind {
+                    KIND_HELLO => {
+                        let mut d = [0u8; 8];
+                        d[0..2].copy_from_slice(&(PANEL_W as u16).to_le_bytes());
+                        d[2..4].copy_from_slice(&(PANEL_H as u16).to_le_bytes());
+                        // Neither colour nor partial updates: the pens are
+                        // ignored, and every frame is whole.
+                        d[4] = 0;
+                        d[5] = BRIGHTNESS_LEVELS;
+                        d[6..8].copy_from_slice(&(MAX_PAYLOAD as u16).to_le_bytes());
+                        send(&mut link, KIND_DECLARE, &d).await;
+                    }
+                    KIND_FRAME => {
+                        // Sequence, span count, the spans, then the bitmap.
+                        let seq = le16(p, 0);
+                        let bits = le16(p, 2).and_then(|n| p.get(4 + 9 * usize::from(n)..));
+                        match (seq, bits) {
+                            (Some(seq), Some(bits)) if bits.len() == FRAME_BITS => {
+                                // MSB leftmost, rows `PANEL_W / 8` bytes apart.
+                                panel
+                                    .picture(|x, y| {
+                                        let on = bits[y * (PANEL_W / 8) + x / 8] >> (7 - x % 8) & 1;
+                                        on * 15
+                                    })
+                                    .await;
+                                let mut a = [0u8; 6];
+                                a[0..2].copy_from_slice(&seq.to_le_bytes());
+                                let micros = embassy_time::Instant::now().as_micros() as u32;
+                                a[2..6].copy_from_slice(&micros.to_le_bytes());
+                                send(&mut link, KIND_ACK, &a).await;
+                            }
+                            // Said rather than dropped: a frame the wrong size
+                            // for this glass is a deck that believes in a
+                            // different panel, and an ack would hide it.
+                            _ => send(&mut link, KIND_FAULT, b"\x01frame is not 256x64 1bpp").await,
+                        }
+                    }
+                    KIND_BRIGHTNESS => {
+                        if let Some(&step) = p.first() {
+                            let step = u16::from(step.min(BRIGHTNESS_LEVELS - 1));
+                            let contrast = step * CONTRAST_MAX / u16::from(BRIGHTNESS_LEVELS - 1);
+                            panel.command(0xC1, &[contrast as u8]).await;
+                        }
+                    }
+                    KIND_BLANK => {
+                        if let Some(&on) = p.first() {
+                            // Sleep mode on, display off (Table 9-1). The
+                            // glass's high voltage is the module's own
+                            // converter — the controller takes VCC from
+                            // outside (§8.9) — so this darkens the panel and
+                            // need not stop that supply. Inferred from the
+                            // module having only a 3.3 V input; unmeasured.
+                            panel.command(if on != 0 { 0xAE } else { 0xAF }, &[]).await;
+                        }
+                    }
+                    // `Declare`, `Ack` and `Fault` are the Pico's to send.
+                    _ => {}
+                }
+                reader.consume(HEADER + len + 2);
+            }
+        }
     }
 }

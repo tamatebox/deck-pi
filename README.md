@@ -95,11 +95,17 @@ draws it against the real 12 and 16 px Japanese faces — about 0.3 ms for a ful
 when to redraw and hands the screen to whatever shows one, and `display::text` is one
 such thing: the same grid, the same marks, on a console. `src/bin/deck.rs` assembles
 all of it into the deck, which runs on the Pi — it finds the stick, opens the Digi2
-Pro by name, turns the loop over at 100 Hz and draws the listing over ssh. The packer that would carry pixels to
-the Pico is written and tested against a `Vec<u8>` — `display::wire` is the protocol
-and `display::packed` the encoder — but **nothing has spoken it yet**: the Pico's
-firmware is HID-only, so the deck has no serial port to open and no panel to declare
-one. That is the last gap, and its far half is firmware.
+Pro by name, turns the loop over at 100 Hz and draws the listing over ssh.
+
+**And it draws on the panel.** On 2026-10-22 the deck opened the Pico's serial port,
+sent `Hello`, got back a declared 256x64 with 16 brightness steps, and put `No USB`
+on the SSD1322 — one frame, acknowledged **30.3 ms** after it was written. That
+figure includes the Pico's own SPI write of the frame and up to one loop turn of
+reading the ack late, so it bounds the link rather than isolating it.
+`display::wire` is the protocol on both ends, `display::packed` the Pi's encoder, and
+the Pico's half is in `firmware/src/main.rs`. **The panel is chosen once, at start**:
+a Pico plugged in later, or lost mid-run, is not followed — the controls are, the
+panel is not yet.
 
 ## What plays
 
@@ -227,13 +233,19 @@ Flashing needs `picotool` on **whichever machine the Pico is plugged into**, whi
 during bring-up is the Pi rather than the development machine:
 
 ```sh
-sudo apt install -y picotool                  # on the Pi
+sudo apt install -y picotool                  # on the Pi, once
 brew install picotool                         # on macOS
-sudo picotool load -x target/thumbv8m.main-none-eabihf/release/deck-pico
+picotool reboot -f -u                         # running firmware -> BOOTSEL
+picotool load -x -t elf deck-pico             # flash, then run it
 ```
 
-Hold BOOTSEL while plugging the Pico in, or it is already running and will not
-accept a load. `picotool` takes the ELF directly, so there is no UF2 step —
+**No button and no `sudo`.** The firmware carries the Pico SDK's reset interface,
+which `picotool reboot -f -u` asks to reboot into BOOTSEL, and it identifies as
+`2e8a:0009`, which the udev rule the Debian package installs gives to `plugdev`. A
+board whose firmware predates either still wants BOOTSEL held while it is plugged
+in, once. **`picotool load -f` in one step does not work**: picotool follows the
+board across the reboot by USB serial number, and this firmware's is a name rather
+than the chip's. `picotool` takes the ELF directly, so there is no UF2 step —
 worth knowing because the common UF2 tooling still tags images with the RP2040
 family id, which an RP2350 will not accept.
 
@@ -264,9 +276,10 @@ cargo run --release --bin deck -- --help        # the four flags
 ```
 
 It starts with no stick and no controls if that is what it finds, and picks both up
-when they appear. **With no panel bought it draws to the console** — the same
-`Screen` the panel will get, with the same marks and the same truncation, redrawn in
-place when stdout is a terminal. `--grid=21x5` previews a candidate panel's geometry;
+when they appear. **With no panel it draws to the console** — no Pico serial
+link, no answer to `Hello`, or a Pico declaring none — and says which on its first
+lines. The console gets the same `Screen` the panel does, with the same marks and the
+same truncation, redrawn in place when stdout is a terminal. `--grid=21x5` previews a candidate panel's geometry;
 the default is a roomier 40x12. **The default output device is `hw:CARD=sndrpihifiberry,DEV=0`, by
 name and not by number**: card 0 on this Pi is the analogue headphone jack, and
 `hw:0,0` would open it and play.

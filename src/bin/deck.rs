@@ -56,6 +56,9 @@ mod linux {
     use std::process::ExitCode;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    use std::fs::File;
+    use std::path::{Path, PathBuf};
+
     use deck_pi::app::controls::{self, Controls, Turn};
     use deck_pi::app::deck::Deck;
     use deck_pi::app::medium::{Change, Mount};
@@ -63,8 +66,10 @@ mod linux {
     use deck_pi::app::track::Config;
     use deck_pi::cue;
     use deck_pi::input::Devices;
+    use deck_pi::display::packed::Packed;
     use deck_pi::display::text::{Text, CONSOLE};
-    use deck_pi::display::Geometry;
+    use deck_pi::display::wire::{self, Declared, Message, Reader};
+    use deck_pi::display::{Geometry, Lighting, Screen};
     use deck_pi::media::{self, MediaWatch};
     use deck_pi::ring;
     use deck_pi::sink::alsa::AlsaSink;
@@ -83,7 +88,210 @@ mod linux {
     const PERIOD: usize = 128;
     const PERIODS: u32 = 2;
 
+    /// What udev names the Pico's serial interface under `/dev/serial/by-id`:
+    /// the manufacturer, product and serial number `firmware/src/main.rs`
+    /// declares, then the interface number. A prefix, so that number is the
+    /// firmware's business.
+    const LINK_PREFIX: &str = "usb-deck-pi_deck-pi_control_surface_deck-pico-1-if";
+
+    /// How long the Pico has to answer `Hello`. It brings its panel up before
+    /// it listens — about 0.4 s from power — and a deck started with it
+    /// already up hears back within a frame.
+    const HANDSHAKE: std::time::Duration = std::time::Duration::from_secs(2);
+
     static STOP: AtomicBool = AtomicBool::new(false);
+
+    /// Where the deck draws: the console, or the panel across the Pico.
+    ///
+    /// **Chosen once, at start.** A Pico plugged in later, or one that goes
+    /// away mid-run, is not followed — the controls are rediscovered, the
+    /// panel is not yet.
+    enum Display {
+        Console(Text<std::io::Stdout>),
+        Panel {
+            packed: Packed<File>,
+            /// The same port, for reading what the Pico says back.
+            link: File,
+            /// Frames sent, for the report at the end.
+            frames: u64,
+            /// Set by the first failed read, so a Pico that has gone is said
+            /// once rather than a hundred times a second.
+            gone: bool,
+        },
+    }
+
+    impl Display {
+        /// Whatever the Pico has said since the last turn.
+        ///
+        /// **Every turn, not before each frame.** `Packed` times the round
+        /// trip when it takes the ack, so reading only before the next frame
+        /// would time the gap between frames instead — seconds, on a deck
+        /// left alone. Every turn makes it good to the loop's 10 ms.
+        fn listen(&mut self) {
+            let Display::Panel { packed, link, gone, .. } = self else { return };
+            if *gone {
+                return;
+            }
+            match packed.take(link) {
+                Ok(said) => {
+                    for m in said {
+                        if let Message::Fault { code, reason } = m {
+                            println!("panel: fault {code}: {reason}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("panel: the link failed: {e}");
+                    *gone = true;
+                }
+            }
+        }
+    }
+
+    impl Show for Display {
+        fn geometry(&self) -> Geometry {
+            match self {
+                Display::Console(t) => t.geometry(),
+                Display::Panel { packed, .. } => packed.geometry(),
+            }
+        }
+
+        fn show(&mut self, screen: &Screen) -> std::io::Result<()> {
+            match self {
+                Display::Console(t) => t.show(screen),
+                Display::Panel { packed, frames, .. } => {
+                    *frames += 1;
+                    packed.show(screen)
+                }
+            }
+        }
+
+        fn lighting(&mut self, want: Lighting) -> std::io::Result<()> {
+            match self {
+                Display::Console(t) => t.lighting(want),
+                Display::Panel { packed, .. } => packed.lighting(want),
+            }
+        }
+
+        /// To the terminal either way: a 256x64 panel has no line to spare,
+        /// and the person who started the deck is reading stdout.
+        fn note(&mut self, line: &str) -> std::io::Result<()> {
+            match self {
+                Display::Console(t) => Show::note(t, line),
+                Display::Panel { .. } => {
+                    println!("{line}");
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    fn find_link() -> Option<PathBuf> {
+        std::fs::read_dir("/dev/serial/by-id")
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with(LINK_PREFIX))
+            })
+    }
+
+    /// Opens the Pico's serial port as a byte pipe.
+    ///
+    /// **Three settings, each of which fails silently when missing** —
+    /// `cdj-200.md` found the first two the hard way with `cat`:
+    ///
+    /// - `CLOCAL`, or a blocking open waits for a carrier a USB port never
+    ///   raises. Opened `O_NONBLOCK` so the open itself cannot hang first.
+    /// - DTR, which the firmware's `wait_connection` waits on before it reads
+    ///   a byte. Raised explicitly rather than trusted to the open.
+    /// - Raw mode with `VMIN = VTIME = 0`, so a read with nothing waiting
+    ///   returns 0 at once — which is what `wire::Reader::fill_from` takes as
+    ///   "nothing to read" — and no byte is translated on its way through.
+    fn open_link(path: &Path) -> std::io::Result<File> {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        use std::os::unix::ffi::OsStrExt;
+
+        let c = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+        // SAFETY: a NUL-terminated path and flags; the fd is owned below.
+        let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDWR | libc::O_NOCTTY | libc::O_NONBLOCK) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: `fd` was just opened and nothing else owns it.
+        let file = unsafe { File::from_raw_fd(fd) };
+        let fd = file.as_raw_fd();
+        let check = |r: libc::c_int| if r < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) };
+
+        // SAFETY: `termios` is plain data, filled by `tcgetattr` before use.
+        let mut t: libc::termios = unsafe { std::mem::zeroed() };
+        check(unsafe { libc::tcgetattr(fd, &mut t) })?;
+        // SAFETY: `t` is a valid termios.
+        unsafe { libc::cfmakeraw(&mut t) };
+        t.c_cflag |= libc::CLOCAL | libc::CREAD;
+        t.c_cc[libc::VMIN] = 0;
+        t.c_cc[libc::VTIME] = 0;
+        check(unsafe { libc::tcsetattr(fd, libc::TCSANOW, &t) })?;
+
+        let dtr: libc::c_int = libc::TIOCM_DTR;
+        // SAFETY: TIOCMBIS reads one int through the pointer.
+        check(unsafe { libc::ioctl(fd, libc::TIOCMBIS, &dtr) })?;
+
+        // Blocking writes from here: a frame is written whole or fails.
+        // SAFETY: flag reads and writes on an fd this function owns.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        check(flags)?;
+        check(unsafe { libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK) })?;
+        // Anything the Pico said before this run asked is not an answer to it.
+        // SAFETY: discards the port's queues.
+        check(unsafe { libc::tcflush(fd, libc::TCIOFLUSH) })?;
+        Ok(file)
+    }
+
+    /// Opens the link and asks the Pico what it has.
+    fn connect(path: &Path) -> std::io::Result<(Declared, File, File)> {
+        let mut link = open_link(path)?;
+        let mut out = link.try_clone()?;
+        let declared = wire::handshake(&mut out, &mut link, &mut Reader::new(), HANDSHAKE)?;
+        Ok((declared, out, link))
+    }
+
+    /// The panel if the Pico has one and answers, the console otherwise —
+    /// and a line either way saying which, and why.
+    fn choose_display(grid: Geometry) -> Display {
+        // ANSI only when stdout is a terminal: piped to a file or a log, the
+        // escape codes would be the output rather than decorate it.
+        // SAFETY: `isatty` reads a descriptor and returns a flag.
+        let tty = unsafe { libc::isatty(1) } == 1;
+        let console = || Display::Console(Text::new(std::io::stdout(), grid).with_ansi(tty));
+
+        let Some(path) = find_link() else {
+            println!("panel: no Pico serial link — showing {}x{} on the console", grid.cols, grid.rows);
+            return console();
+        };
+        match connect(&path) {
+            Ok((d, out, link)) if d.has_panel() => {
+                println!(
+                    "panel: {}x{}, {} brightness levels, on {}",
+                    d.px_w,
+                    d.px_h,
+                    d.brightness_levels,
+                    path.display()
+                );
+                Display::Panel { packed: Packed::new(out, d), link, frames: 0, gone: false }
+            }
+            Ok(_) => {
+                println!("panel: the Pico declares none — showing the console");
+                console()
+            }
+            Err(e) => {
+                println!("panel: {}: {e} — showing the console", path.display());
+                console()
+            }
+        }
+    }
 
     /// Async-signal-safe by construction: one relaxed store to a static, and
     /// nothing else. The loop reads it once a turn.
@@ -178,7 +386,10 @@ mod linux {
     /// `println!` landing in the middle of that leaves the arithmetic wrong
     /// for the rest of the run — `Show::note` is the door that exists so this
     /// cannot happen.
-    fn report_turn<D: Show>(turn: &Turn, change: Option<&Change>, show: &mut D) {
+    fn report_turn(turn: &Turn, change: Option<&Change>, show: &mut Display) {
+        // Here because this is the one thing the loop calls every turn with
+        // the display in hand; `Display::listen` says why every turn.
+        show.listen();
         let mut say = |line: String| {
             let _ = show.note(&line);
         };
@@ -274,18 +485,9 @@ mod linux {
             args.window_bytes / (1024 * 1024),
             if args.rt { "SCHED_FIFO requested per track" } else { "no realtime" }
         );
-        println!(
-            "watching {}, showing {}x{} on the console",
-            args.mount.display(),
-            args.grid.cols,
-            args.grid.rows
-        );
+        println!("watching {}", args.mount.display());
 
-        // ANSI only when stdout is a terminal: piped to a file or a log, the
-        // escape codes would be the output rather than decorate it.
-        // SAFETY: `isatty` reads a descriptor and returns a flag.
-        let tty = unsafe { libc::isatty(1) } == 1;
-        let mut panel = Panel::new(Text::new(std::io::stdout(), args.grid).with_ansi(tty));
+        let mut panel = Panel::new(choose_display(args.grid));
 
         let outcome = controls::run(
             &mut controls,
@@ -301,6 +503,18 @@ mod linux {
         // the run: `unload` is what stops them, and a report printed first
         // would be printed while the deck was still playing.
         deck.detach();
+
+        // **The link's own measurement**, which `architecture.md` has wanted
+        // since the panel moved to the Pico: write to ack, on the last frame.
+        if let Display::Panel { packed, frames, .. } = panel.show() {
+            println!(
+                "panel: {frames} frames, {} unacknowledged, last round trip {}",
+                packed.outstanding(),
+                packed
+                    .last_rtt()
+                    .map_or("never measured".to_string(), |d| format!("{:.1} ms", d.as_secs_f64() * 1e3))
+            );
+        }
 
         match outcome {
             Ok(r) => {

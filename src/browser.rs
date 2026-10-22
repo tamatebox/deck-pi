@@ -258,6 +258,28 @@ impl Browser {
         self.selected = self.selected.saturating_sub(1);
     }
 
+    /// Puts the selection on `path` if it is a row of the folder shown, and
+    /// says whether it did. **Reads nothing.**
+    ///
+    /// For one temporary rule: while this build has no browse encoder, the
+    /// selection follows TRACK SEARCH — `docs/this-build.md`. A path in any
+    /// other folder leaves the selection where it was.
+    pub fn select_path(&mut self, path: &Path) -> bool {
+        if path.parent() != Some(self.cwd.as_path()) {
+            return false;
+        }
+        let Some(name) = path.file_name() else {
+            return false;
+        };
+        match self.entries.iter().position(|e| e.name.as_os_str() == name) {
+            Some(i) => {
+                self.selected = i;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Renders `height` rows, reading and caching the headers of exactly
     /// those rows — the one place a file is opened.
     ///

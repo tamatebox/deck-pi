@@ -219,6 +219,15 @@ impl<S: AudioSink + Send + 'static> Deck<S> {
                 };
                 if let Some(next) = self.loaded.neighbour(step).map_err(DeckError::Browse)? {
                     self.load(&next)?;
+                    // **Temporary, until the browse encoder is bought** —
+                    // `docs/this-build.md`. With no encoder the selection
+                    // never moves, so the highlighted row was the first file
+                    // and the playing track was named nowhere. It follows the
+                    // tap, and only in the folder shown: browsing another
+                    // folder while this one plays is left alone.
+                    if let Some(b) = self.browser.as_mut() {
+                        b.select_path(&next);
+                    }
                 }
             }
 

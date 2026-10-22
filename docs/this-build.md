@@ -58,6 +58,13 @@ pair on those pins with the ladder's; this build has none and is not getting one
 **Nothing turns a detent yet**, because the encoder is not bought — so `REL_X` has
 been declared to the kernel and never sent by a real knob.
 
+**Until it is, FOLDER ►►| is ENTER** (2026-10-22, `src/input.rs`). With no encoder
+the selection never leaves the top row, so on a flat folder it loads the first file,
+TRACK SEARCH walks from there and PLAY plays. **And the selection follows TRACK
+SEARCH** in the folder shown (`src/app/deck.rs`), or the highlighted row stays the
+first file and the playing track is named nowhere. Both are temporary and go when
+the encoder is wired.
+
 ## The panel
 
 An **SSD1322 3.12" 256x64 OLED** module, sold by WAVGAT, **blue** — its grey levels
@@ -68,6 +75,10 @@ two things the controller's datasheet cannot: the glass starts at **RAM column 2
 and wants **`0xA0` = `0x06, 0x11`** — u8g2's Newhaven values, not its ZJY ones.
 That answers [#2](https://github.com/tamatebox/deck-pi/issues/2) by purchase rather
 than by its comparison.
+
+**The deck draws on it** (2026-10-22): the shipped firmware serves it over USB, and
+the deck on `phono` found the link, was declared 256x64, and put `No USB` on the
+glass.
 
 - **The header is seven pins, SPI only:** `GND VCC SCK SDA RES DC CS` (2026-10-22).
   The SSD1322 chooses parallel or 4-wire SPI on `BS0` and `BS1` — both low for
@@ -107,8 +118,22 @@ One real stick, mounted read-only at `/media/stick`: **2192 names** (2026-09-16)
 - **Builds happen on a Mac.** Linux binaries are built there in Docker
   (`rust:slim-trixie` with `pkg-config libsndfile1-dev libasound2-dev`) and copied to
   the Pi, which also makes the container the Linux gate when no Pi is reachable.
-- **Every flash needs BOOTSEL held by hand while replugging.** The firmware exposes no
-  reset interface, so `picotool load -f` cannot do it. `picotool` wants `-t elf`, the
-  ELF having no extension.
+- **The Pico is flashed from `phono`, over ssh, with no button and no `sudo`**
+  (2026-10-22): `picotool reboot -f -u`, then `picotool load -x -t elf
+  ~/deck-bin/deck-pico`. The ELF is built on the Mac and copied there; `picotool`
+  wants `-t elf`, the ELF having no extension.
+- **Hold one ssh connection open to `phono`** (`ssh -M`) and run through it. On
+  2026-10-22 its sshd began resetting every new connection — the user's too — just
+  after a Pico was replugged, until it was power-cycled. The cause is unknown: its
+  journal does not survive a reboot.
+- **`phono:~/music` is the listening harness's, not a medium** — the deck reads only
+  a mount point, and a folder on the SD card is not one (`src/media.rs`). Its
+  `CD_BURN` folder holds 35 AIFFs from the CD_BURN tracklists, bit-identical to
+  their ALAC sources (2026-10-22). **`phono:~/deck-bin/run-sd.sh` runs the deck on
+  that folder anyway, without `sudo`**: inside `unshare --user --map-root-user
+  --mount` it mounts an empty tmpfs and bind-mounts the folder read-only beneath it,
+  so the mount point's device differs from its parent's. Temporary, like the
+  FOLDER mapping above, and the listening harness has to be stopped first — both
+  want the Digi2 Pro.
 - **`phono` is someone's working machine first.** `sudo` asks for a password, a
   capture service runs on it, and the user may be logged in — do not reboot it unasked.

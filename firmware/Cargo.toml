@@ -17,10 +17,11 @@ selftest = []
 # them. Off by default — the shipped deck has no serial port.
 faderprobe = []
 
-# Draws one fixed test card on the SSD1322 panel over SPI0 and nothing else,
-# to prove the seven wires and the init sequence before the deck's frames
-# have anywhere to go. A bench instrument like the two above; it leaves the
-# controls running, so it combines with either.
+# Draws one fixed test card on the SSD1322 panel instead of serving the
+# deck's frames, to prove the seven wires and the init sequence on their own.
+# A bench instrument like the two above, and it leaves the controls running.
+# `faderprobe` draws the card too: it owns the serial port the frames would
+# arrive on. `selftest` drives no panel at all.
 paneltest = []
 
 [dependencies]
