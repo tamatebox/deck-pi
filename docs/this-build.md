@@ -144,7 +144,9 @@ One real stick, mounted read-only at `/media/stick`: **2192 names** (2026-09-16)
   takes only a mount point (`src/media.rs`), so inside `unshare --user
   --map-root-user --mount` it mounts an empty tmpfs and bind-mounts the folder
   read-only beneath it, and the mount point's device differs from its parent's. No
-  `sudo`, and nothing shows outside the namespace. Temporary, like the FOLDER
+  `sudo`, and nothing shows outside the namespace. **Realtime survives it**: with a
+  track loaded, the audio thread was `SCHED_FIFO` 75 and the other two were not
+  (`ps -L`, measured 2026-10-23). Temporary, like the FOLDER
   mapping above; a stick and the udev rule are the deck's own way.
   **`~/deck-bin/boot.sh`** is the boot wrapper, waiting up to a minute for the
   Pico's link and the Digi2 Pro because the deck looks for its panel only once —
