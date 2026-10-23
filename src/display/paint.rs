@@ -1069,6 +1069,7 @@ mod tests {
             Some(16),
             Some(Duration::from_secs(95)),
             Some(Duration::from_secs(296)),
+            Some("追憶のウォーデンクリフ"),
             g,
         );
         let screen = compose("録音", &rows[..g.listing_rows()], status, g);

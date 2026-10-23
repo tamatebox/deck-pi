@@ -201,16 +201,24 @@ pub fn timecode(at: Duration) -> String {
     format!("{}:{:02}", secs / 60, secs % 60)
 }
 
+/// The fewest columns a name is cut to before it is left out instead. Below
+/// this the cut name is a marker and a letter or two, which names nothing.
+pub const MIN_NAME_COLS: usize = 6;
+
 /// The status line: what is loaded, and what the chain is actually doing.
 ///
-/// `length` is the loaded track's, and rides beside the position as
-/// `1:35 / 4:56` — asked for by the user on 2026-10-23.
+/// `length` is the loaded track's and rides beside the position as
+/// `1:35/4:56`; `name` is the loaded track's file name without its extension,
+/// cut to whatever the line has left. Both asked for by the user on
+/// 2026-10-23 — **the name takes the place the rate and depth had**, which
+/// are shown only when there is no name to show.
 pub fn status_line(
     state: State,
     rate_hz: Option<u32>,
     bits: Option<u16>,
     at: Option<Duration>,
     length: Option<Duration>,
+    name: Option<&str>,
     g: Geometry,
 ) -> String {
     // **No STOP.** `transport.rs` is explicit that a CDJ has no such
@@ -242,17 +250,35 @@ pub fn status_line(
     // where the length could not, which is the order inverted.
     let mut room = true;
     if let (Some(_), Some(length)) = (at, length) {
-        let tail = format!(" / {}", timecode(length));
+        // No spaces round the slash: on a 42-column panel the two columns go
+        // to the name.
+        let tail = format!("/{}", timecode(length));
         if width(&line) + width(&tail) <= g.cols {
             line.push_str(&tail);
         } else {
             room = false;
         }
     }
-    // **Dropped first when the panel is narrow, and that is the right order.**
-    // The transport word and the position are what a hand reaches for mid-set;
-    // the rate and depth are what you read once, when confirming the chain.
-    if let (true, Some(hz), Some(bits)) = (room, rate_hz, bits) {
+    if !room {
+        return fit(&line, g.cols);
+    }
+    // **The name, cut to the room left** — the one field here that is cut
+    // rather than dropped whole, because part of a name still says which
+    // track. Left out when the room would not hold `MIN_NAME_COLS`.
+    if let Some(name) = name {
+        let left = g.cols.saturating_sub(width(&line) + 1);
+        if left >= MIN_NAME_COLS {
+            line.push(' ');
+            line.push_str(&fit(name, left));
+        }
+        return fit(&line, g.cols);
+    }
+    // **Only with no name, and dropped first when the panel is narrow.** The
+    // transport word and the position are what a hand reaches for mid-set;
+    // the rate and depth are what you read once, when confirming the chain —
+    // and `decisions.md` says they were on the panel because they were free,
+    // which a name to show makes them not.
+    if let (Some(hz), Some(bits)) = (rate_hz, bits) {
         let tail = format!(" {}k/{}", hz / 1000, bits);
         if width(&line) + width(&tail) <= g.cols {
             line.push_str(&tail);
@@ -480,29 +506,53 @@ mod tests {
 
     #[test]
     fn the_status_line_keeps_the_transport_when_the_rate_will_not_fit() {
+        // With no name to show, which is how the rate and depth still appear.
         let at = Some(Duration::from_secs(95));
         let length = Some(Duration::from_secs(296));
         let wide = Geometry { cols: 24, ..geom() };
-        let s = status_line(State::Playing, Some(44_100), Some(16), at, length, wide);
-        assert_eq!(s, "PLAY 1:35 / 4:56 44k/16");
+        let s = status_line(State::Playing, Some(44_100), Some(16), at, length, None, wide);
+        assert_eq!(s, "PLAY 1:35/4:56 44k/16");
 
         // Narrower: the rate goes first, then the length; the transport and
         // position stay, and nothing is cut mid-field.
         let no_rate = Geometry { cols: 18, ..geom() };
-        let s = status_line(State::Playing, Some(44_100), Some(16), at, length, no_rate);
-        assert_eq!(s, "PLAY 1:35 / 4:56");
+        let s = status_line(State::Playing, Some(44_100), Some(16), at, length, None, no_rate);
+        assert_eq!(s, "PLAY 1:35/4:56");
         let narrow = Geometry { cols: 12, ..geom() };
-        let s = status_line(State::Playing, Some(44_100), Some(16), at, length, narrow);
+        let s = status_line(State::Playing, Some(44_100), Some(16), at, length, None, narrow);
         assert_eq!(s, "PLAY 1:35");
         assert!(!s.contains('~'), "a dropped field should not look like a cut one: {s}");
 
         // The case the order is for: a length too long for the room left,
         // and a rate short enough to fit in it. The rate must not take the
         // place the length could not.
-        let long = Some(Duration::from_secs(7_425)); // 123:45
+        let long = Some(Duration::from_secs(74_096)); // 1234:56
         let tight = Geometry { cols: 16, ..geom() };
-        let s = status_line(State::Playing, Some(44_100), Some(16), at, long, tight);
+        let s = status_line(State::Playing, Some(44_100), Some(16), at, long, None, tight);
         assert_eq!(s, "PLAY 1:35");
+    }
+
+    #[test]
+    fn the_playing_name_takes_the_rates_place_and_is_cut_to_the_room_left() {
+        // The user's, 2026-10-23: the name of what is playing, on the line
+        // that already says how far into it the deck is.
+        let at = Some(Duration::from_secs(754)); // 12:34
+        let length = Some(Duration::from_secs(2_490)); // 41:30
+        let name = Some("2-03 Long Season [Live]");
+        let line = |cols: usize, name: Option<&str>| {
+            status_line(State::Playing, Some(44_100), Some(16), at, length, name, Geometry { cols, ..geom() })
+        };
+
+        // The panel's 42 columns hold all of it, and no rate.
+        assert_eq!(line(42, name), "PLAY 12:34/41:30 2-03 Long Season [Live]");
+        // Less room: the name is cut, and the cut is marked.
+        assert_eq!(line(30, name), "PLAY 12:34/41:30 2-03 Long Se~");
+        // Full-width characters cost two columns each, and the budget is in
+        // columns.
+        assert_eq!(line(30, Some("ナスカの記憶 (非夢の装置)")), "PLAY 12:34/41:30 ナスカの記憶~");
+        // Too little room to name anything: the name is left out, and the
+        // rate does not come back in its place.
+        assert_eq!(line(22, name), "PLAY 12:34/41:30");
     }
 
     #[test]
@@ -518,17 +568,19 @@ mod tests {
             Some(16),
             Some(Duration::from_secs(95)),
             Some(Duration::from_secs(296)),
+            Some("a name"),
             wide,
         );
         assert!(!s.contains("STOP"), "{s}");
         assert!(!s.contains("1:35"), "an empty deck has no position: {s}");
         assert!(!s.contains("4:56"), "nor a length: {s}");
+        assert!(!s.contains("a name"), "nor a name: {s}");
         assert!(!s.contains("44k"), "nor a rate in use: {s}");
 
         // Seeking reads as the buttons are labelled.
-        let f = status_line(State::SeekingForward, None, None, Some(Duration::ZERO), None, wide);
+        let f = status_line(State::SeekingForward, None, None, Some(Duration::ZERO), None, None, wide);
         assert!(f.starts_with("FF"), "{f}");
-        let b = status_line(State::SeekingBack, None, None, Some(Duration::ZERO), None, wide);
+        let b = status_line(State::SeekingBack, None, None, Some(Duration::ZERO), None, None, wide);
         assert!(b.starts_with("REW"), "{b}");
     }
 

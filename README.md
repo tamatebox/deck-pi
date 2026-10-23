@@ -154,8 +154,9 @@ A detented rotary encoder for browsing, plus BACK, PLAY/PAUSE, CUE, **SEARCH** �
 held, and it only seeks — and **TRACK SEARCH**, which steps to the next track,
 playing on if the deck was playing; back is this track's head first and the previous
 track only within three seconds of it. ENTER is the encoder's push. The display
-shows the browser and the transport, the position against the track's length. It also shows the rate and depth in use, and
-**that is not how the chain is confirmed** — the panel reports what the deck believes,
+shows the browser and the transport: the position against the track's length, and the
+playing file's name. The rate and depth in use gave that name their place, and they
+were **never how the chain is confirmed** — the panel reports what the deck believes,
 so a deck wrong about its own output would be wrong on the panel in the same way. The
 confirmation is `deck-pi --device=`, which reads `hw_params` back out of
 `/proc/asound` and asks whether the mixer is empty: a different source, which is what

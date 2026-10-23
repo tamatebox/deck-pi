@@ -307,11 +307,10 @@ fn the_tap_follows_the_playing_track_not_the_selection() {
 }
 
 #[test]
-fn the_selection_follows_a_tap_in_the_folder_it_shows_until_there_is_an_encoder() {
-    // Temporary, like FOLDER ►►| as ENTER (`docs/this-build.md`): with no
-    // encoder the highlighted row never moved, so the panel named the first
-    // file of the folder whatever was playing. Asserted so that removing the
-    // rule is a visible change.
+fn the_selection_follows_a_tap_in_the_folder_it_shows() {
+    // `controls.md`, the user's, 2026-10-23. Begun as a stand-in while the
+    // build had no encoder — the highlighted row never moved, so the panel
+    // named the first file whatever was playing — and kept as the rule.
     let r = rig("deck-tap-select");
     r.track("set", "1-first", 2_000);
     let second = r.track("set", "2-second", 2_000);

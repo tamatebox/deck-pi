@@ -47,6 +47,12 @@ another track plays is what a browser on a deck is *for*. `src/loaded.rs` exists
 because nothing owned the second of them, and the defect that came of it was a cue
 written against the highlighted row rather than the audible one.
 
+**One exception, and it moves the selection rather than mixing the two**: a TRACK
+SEARCH tap carries the selection to the track it loads, in the folder the browser is
+showing (2026-10-23, the user's). Pressing TRACK is choosing a track, so the
+highlight following it loses little; browsing a *different* folder is left alone.
+No button acts on the other object because of it.
+
 **ENTER is the encoder's own push switch today**, and whether it earns a button of
 its own is [#4](https://github.com/tamatebox/deck-pi/issues/4) — a question about how
 badly cheap push switches bounce, on the most-used control. Its original framing as

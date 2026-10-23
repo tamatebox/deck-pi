@@ -261,9 +261,8 @@ impl Browser {
     /// Puts the selection on `path` if it is a row of the folder shown, and
     /// says whether it did. **Reads nothing.**
     ///
-    /// For one temporary rule: while this build has no browse encoder, the
-    /// selection follows TRACK SEARCH — `docs/this-build.md`. A path in any
-    /// other folder leaves the selection where it was.
+    /// For the rule that the selection follows TRACK SEARCH — `controls.md`.
+    /// A path in any other folder leaves the selection where it was.
     pub fn select_path(&mut self, path: &Path) -> bool {
         if path.parent() != Some(self.cwd.as_path()) {
             return false;

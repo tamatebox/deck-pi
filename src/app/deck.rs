@@ -338,11 +338,11 @@ impl<S: AudioSink + Send + 'static> Deck<S> {
         };
         let was_playing = self.transport.state() == State::Playing;
         self.load(&next)?;
-        // **Temporary, until the browse encoder is bought** —
-        // `docs/this-build.md`. With no encoder the selection never moves, so
-        // the highlighted row was the first file and the playing track was
-        // named nowhere. It follows the tap, and only in the folder shown:
-        // browsing another folder while this one plays is left alone.
+        // **The selection follows the tap, in the folder shown** — the user's,
+        // 2026-10-23, `controls.md`. It began as a stand-in while the build
+        // had no encoder and was kept: pressing TRACK is choosing a track, so
+        // the highlight going with it costs little. Browsing another folder
+        // while this one plays is left alone.
         if let Some(b) = self.browser.as_mut() {
             b.select_path(&next);
         }

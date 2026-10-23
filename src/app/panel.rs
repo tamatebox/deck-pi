@@ -146,7 +146,16 @@ where
         ),
         None => (None, None, None),
     };
-    let status = status_line(state, rate, bits, at, length, g);
+    // The file's name and not its tags: the user's, 2026-10-23. libsndfile
+    // reads AIFF's `NAME` and `AUTH` chunks and not an `ID3 ` chunk, so a
+    // track tagged only in ID3 would have no name to show; every file has a
+    // file name.
+    let name = deck
+        .loaded()
+        .path()
+        .and_then(|p| p.file_stem())
+        .map(|s| s.to_string_lossy().into_owned());
+    let status = status_line(state, rate, bits, at, length, name.as_deref(), g);
 
     let Some(browser) = deck.browser() else {
         return Screen {

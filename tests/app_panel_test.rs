@@ -145,11 +145,14 @@ fn a_deck_with_no_medium_says_so_rather_than_drawing_nothing() {
 
 #[test]
 fn the_status_describes_the_playing_track_and_not_the_browsers_selection() {
-    // **The `loaded.rs` defect, one layer up.** Play a 96/24 track, browse to a
-    // folder holding a 44.1/16 one, and the status must still say 96k/24: it
-    // describes what is coming out of the deck, not what a finger is hovering
-    // over. Asking the browser would be the natural wiring and would be wrong
-    // in a way nobody would notice from a screenshot.
+    // **The `loaded.rs` defect, one layer up.** Play one track, browse to a
+    // folder holding another, and the status must still describe the first:
+    // it is about what is coming out of the deck, not what a finger is
+    // hovering over. Asking the browser would be the natural wiring and would
+    // be wrong in a way nobody would notice from a screenshot. Until
+    // 2026-10-23 the evidence was the rate, 96k/24 against the browsed
+    // track's 44k/16; the name took the rate's place on the line, so the
+    // evidence is now the name.
     let r = rig("panel-two-currents");
     r.track("a", "playing", 96_000, Bits::S24, 200_000);
     r.track("b", "browsed", 44_100, Bits::S16, 2_000);
@@ -167,7 +170,8 @@ fn the_status_describes_the_playing_track_and_not_the_browsers_selection() {
 
     let s = screen_of(&mut deck, g);
     assert_eq!(s.folder, "b", "the listing follows the browser");
-    assert!(s.status.contains("96k/24"), "the status followed the browser: {}", s.status);
+    assert!(s.status.contains("playing"), "the status lost the playing track: {}", s.status);
+    assert!(!s.status.contains("browsed"), "the status followed the browser: {}", s.status);
     assert!(s.status.starts_with("PLAY"), "{}", s.status);
 
     deck.unload();
