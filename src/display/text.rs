@@ -271,7 +271,7 @@ mod tests {
             name: "とても長いフォルダ名".into(),
             selected: false,
         }];
-        let screen = compose("録音", &rows, "PAUSE".into(), g);
+        let screen = compose("録音", &rows, "PAUSE".into(), g, 0);
         let mut buf = Vec::new();
         {
             let mut t = Text::new(&mut buf, g);

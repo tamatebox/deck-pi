@@ -38,8 +38,8 @@ use std::path::PathBuf;
 
 use crate::app::deck::Deck;
 use crate::display::{
-    compose, status_line, Cadence, Geometry, Lighting, Redraw, Screen, State, BLANK_AFTER,
-    DIM_AFTER,
+    compose, furthest_slide, slide, status_line, Cadence, Geometry, Lighting, Redraw, Screen,
+    State, BLANK_AFTER, DIM_AFTER,
 };
 use crate::sink::AudioSink;
 
@@ -123,11 +123,12 @@ where
 /// documents use one word for one thing.
 pub const NO_MEDIUM: &str = "No USB";
 
-/// Builds the screen the deck would show right now.
+/// Builds the screen the deck would show right now, the selected name `slid`
+/// characters to the left.
 ///
 /// Public and taking the deck rather than living on it, so it can be called
 /// with a deck in a known state in a test without a display of any kind.
-pub fn screen_of<S>(deck: &mut Deck<S>, g: Geometry) -> Screen
+pub fn screen_of<S>(deck: &mut Deck<S>, g: Geometry, slid: usize) -> Screen
 where
     S: AudioSink + Send + 'static,
 {
@@ -172,7 +173,17 @@ where
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| browser.path().to_string_lossy().into_owned());
     let rows = browser.view(g.listing_rows());
-    compose(&folder, &rows, status, g)
+    compose(&folder, &rows, status, g, slid)
+}
+
+/// The row the selection is resting on, and since when — what [`slide`]
+/// measures from.
+struct Resting {
+    folder: Option<PathBuf>,
+    selected: usize,
+    budget: usize,
+    since: std::time::Duration,
+    furthest: usize,
 }
 
 fn position_secs<S>(deck: &Deck<S>) -> f64
@@ -202,6 +213,9 @@ pub struct Panel<D: Show> {
     /// transport running; the idle timers are measured from it.
     active_at: Option<std::time::Duration>,
     lighting: Lighting,
+    resting: Option<Resting>,
+    /// How far the selected name is slid on the glass.
+    slid: usize,
 }
 
 impl<D: Show> Panel<D> {
@@ -212,6 +226,8 @@ impl<D: Show> Panel<D> {
             last: None,
             active_at: None,
             lighting: Lighting::Full,
+            resting: None,
+            slid: 0,
         }
     }
 
@@ -270,20 +286,57 @@ impl<D: Show> Panel<D> {
         // its charge pump settled before it takes pixels.
         self.light(now, changed, moving)?;
 
-        match self.cadence.poll(now, changed, moving) {
+        // A slide is a change to draw and **not activity**: `light` never
+        // hears of it, so a sliding name keeps no panel awake.
+        let slid = self.slide(now, deck, &now_print, g);
+        match self.cadence.poll(now, changed || slid != self.slid, moving) {
             Redraw::Nothing => Ok(Redraw::Nothing),
             Redraw::Position => {
-                let screen = screen_of(deck, g);
+                let screen = screen_of(deck, g, self.slid);
                 self.show.show_status(&screen)?;
                 Ok(Redraw::Position)
             }
             Redraw::Full => {
-                let screen = screen_of(deck, g);
+                let screen = screen_of(deck, g, slid);
                 self.show.show(&screen)?;
                 self.last = Some(now_print);
+                self.slid = slid;
                 Ok(Redraw::Full)
             }
         }
+    }
+
+    /// How far the selected name should be slid now. The name is read only
+    /// when the selection moves, so a resting turn costs a comparison.
+    fn slide<S>(
+        &mut self,
+        now: std::time::Duration,
+        deck: &mut Deck<S>,
+        print: &Fingerprint,
+        g: Geometry,
+    ) -> usize
+    where
+        S: AudioSink + Send + 'static,
+    {
+        let budget = g.name_budget();
+        let moved = !matches!(&self.resting, Some(r)
+            if r.folder == print.folder && r.selected == print.selected && r.budget == budget);
+        if moved {
+            let name = deck
+                .browser()
+                .and_then(|b| b.selected_path())
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+            self.resting = Some(Resting {
+                folder: print.folder.clone(),
+                selected: print.selected,
+                budget,
+                since: now,
+                furthest: name.map_or(0, |n| furthest_slide(&n, budget)),
+            });
+        }
+        self.resting
+            .as_ref()
+            .map_or(0, |r| slide(r.furthest, now.saturating_sub(r.since)))
     }
 
     /// The idle policy, which is one sentence of `architecture.md` and one

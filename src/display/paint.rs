@@ -1072,7 +1072,7 @@ mod tests {
             Some("追憶のウォーデンクリフ"),
             g,
         );
-        let screen = compose("録音", &rows[..g.listing_rows()], status, g);
+        let screen = compose("録音", &rows[..g.listing_rows()], status, g, 0);
 
         let mut t = Panel::new(128, 64);
         let r = p.draw(&screen, &Palette::mono(), &mut t).unwrap();
@@ -1124,7 +1124,7 @@ mod tests {
             verdict: Verdict::Refused(Reject::Depth { found: 0 }),
             selected: false,
         }];
-        let screen = compose("録音", &rows, "PAUSE".into(), g);
+        let screen = compose("録音", &rows, "PAUSE".into(), g, 0);
         let mut t = Panel::new(128, 64);
         let r = p.listing_line(&screen.lines[0], 13, &Palette::mono(), &mut t).unwrap();
         assert_eq!(t.oob, 0);

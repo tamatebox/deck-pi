@@ -100,7 +100,7 @@ fn how_long_a_frame_takes_on_this_machine() {
             Some("追憶のウォーデンクリフ"),
             g,
         );
-        let screen = compose("録音", &rows, status.clone(), g);
+        let screen = compose("録音", &rows, status.clone(), g, 0);
         let pal = Palette::mono();
         let mut buf = Buf { w: px_w, h: px_h, px: vec![BinaryColor::Off; (px_w * px_h) as usize] };
 

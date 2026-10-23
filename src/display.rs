@@ -177,6 +177,45 @@ pub fn fit(name: &str, budget: usize) -> String {
     out
 }
 
+/// How many characters must slide off the left before the rest of `name`
+/// fits the budget. Zero for a name that fits already.
+pub fn furthest_slide(name: &str, budget: usize) -> usize {
+    let mut left = width(name);
+    let mut slid = 0;
+    for c in name.chars() {
+        if left <= budget {
+            break;
+        }
+        left -= cols_of(c);
+        slid += 1;
+    }
+    slid
+}
+
+/// How many characters of the selected name have slid off the left, `dwell`
+/// after the selection arrived on it, for a name that can slide `furthest`.
+///
+/// **Out to the tail, a hold, and back the same way — once** — the user's,
+/// 2026-10-23, with [`SLIDE_AFTER`], [`SLIDE_STEP`] and [`SLIDE_HOLD`]. Once
+/// is enough to read it, and a row that kept sliding would keep frames going
+/// to a panel nobody is touching.
+pub fn slide(furthest: usize, dwell: Duration) -> usize {
+    if furthest == 0 || dwell < SLIDE_AFTER {
+        return 0;
+    }
+    let steps =
+        |d: Duration| usize::try_from(d.as_millis() / SLIDE_STEP.as_millis()).unwrap_or(usize::MAX);
+    let since = dwell - SLIDE_AFTER;
+    let travel = SLIDE_STEP.saturating_mul(u32::try_from(furthest).unwrap_or(u32::MAX));
+    if since < travel {
+        steps(since)
+    } else if since < travel + SLIDE_HOLD {
+        furthest
+    } else {
+        furthest.saturating_sub(1 + steps(since - travel - SLIDE_HOLD))
+    }
+}
+
 fn kind_of(row: &Row) -> Kind {
     match row {
         Row::Folder { .. } => Kind::Folder,
@@ -287,11 +326,16 @@ pub fn status_line(
     fit(&line, g.cols)
 }
 
-/// Builds the whole screen from a browser view and the transport's state.
+/// Builds the whole screen from a browser view and the transport's state,
+/// with the selected row's name `slid` characters to the left — [`slide`].
 ///
 /// Takes the rows rather than the `Browser` so this is callable with a handful
 /// of literals in a test, which is most of why the split is here at all.
-pub fn compose(folder: &str, rows: &[Row], status: String, g: Geometry) -> Screen {
+///
+/// **A slid name loses its head without a marker.** The motion is what says
+/// the name is longer, and the row is back at its head a second after the
+/// slide ends; the tail keeps [`TRUNCATED`] until it fits.
+pub fn compose(folder: &str, rows: &[Row], status: String, g: Geometry, slid: usize) -> Screen {
     // The caller asks `Browser::view` for a height, and that height must be
     // this one. Handed more rows than fit, the truncation below is silent and
     // takes them off the **end** — which is where the selection is when the
@@ -308,7 +352,11 @@ pub fn compose(folder: &str, rows: &[Row], status: String, g: Geometry) -> Scree
             .iter()
             .take(g.listing_rows())
             .map(|r| Line {
-                text: fit(r.name(), g.name_budget()),
+                text: if r.selected() && slid > 0 {
+                    fit(&r.name().chars().skip(slid).collect::<String>(), g.name_budget())
+                } else {
+                    fit(r.name(), g.name_budget())
+                },
                 kind: kind_of(r),
                 selected: r.selected(),
             })
@@ -352,6 +400,17 @@ pub const DIM_AFTER: Duration = Duration::from_secs(30);
 /// And before it is blanked. The document says "a few minutes"; this is the
 /// number that phrase became, and it is one place rather than three.
 pub const BLANK_AFTER: Duration = Duration::from_secs(180);
+
+/// How long the selection rests on a cut name before the name slides. A few
+/// seconds on a row is reading it; passing through on TRACK SEARCH is not.
+pub const SLIDE_AFTER: Duration = Duration::from_secs(2);
+
+/// One character a step — the text grid's own unit, so a slid name is a
+/// [`Line`] like any other and the renderer knows nothing about it.
+pub const SLIDE_STEP: Duration = Duration::from_millis(150);
+
+/// How long the end of the name stays up before it slides back to its head.
+pub const SLIDE_HOLD: Duration = Duration::from_secs(1);
 
 /// What the panel should be lit like.
 ///
@@ -598,9 +657,51 @@ mod tests {
         let rows: Vec<Row> = (0..10)
             .map(|i| Row::Folder { name: format!("folder-{i}"), selected: i == 0 })
             .collect();
-        let screen = compose("録音", &rows[..geom().listing_rows()], "PAUSE".into(), geom());
+        let screen = compose("録音", &rows[..geom().listing_rows()], "PAUSE".into(), geom(), 0);
         assert_eq!(screen.lines.len(), geom().listing_rows());
         assert_eq!(screen.lines.len(), 4, "six rows, less the path and the status");
+    }
+
+    #[test]
+    fn a_name_slides_only_as_far_as_its_tail_needs() {
+        assert_eq!(furthest_slide("short", 16), 0);
+        assert_eq!(furthest_slide("exactly-17-charss", 16), 1);
+        // Columns, not characters: fifteen columns into twelve takes two
+        // kanji off the head, not three characters.
+        assert_eq!(furthest_slide("雨音雨音_192k24", 12), 2);
+    }
+
+    #[test]
+    fn a_resting_name_slides_out_holds_its_end_and_slides_home_once() {
+        let end = SLIDE_AFTER + SLIDE_STEP * 3;
+        let back = end + SLIDE_HOLD;
+        assert_eq!(slide(3, Duration::ZERO), 0);
+        assert_eq!(slide(3, SLIDE_AFTER - Duration::from_millis(1)), 0, "not before it rests");
+        assert_eq!(slide(3, SLIDE_AFTER + SLIDE_STEP), 1);
+        assert_eq!(slide(3, SLIDE_AFTER + SLIDE_STEP * 2), 2);
+        assert_eq!(slide(3, end), 3, "at the end");
+        assert_eq!(slide(3, back - Duration::from_millis(1)), 3, "held");
+        assert_eq!(slide(3, back), 2, "back the way it came");
+        assert_eq!(slide(3, back + SLIDE_STEP), 1);
+        assert_eq!(slide(3, back + SLIDE_STEP * 2), 0, "home");
+        assert_eq!(slide(3, Duration::from_secs(3_600)), 0, "and only once");
+        assert_eq!(slide(0, SLIDE_AFTER + SLIDE_STEP), 0, "a name that fits never moves");
+    }
+
+    #[test]
+    fn only_the_selected_name_slides_and_its_tail_is_marked_until_it_fits() {
+        let rows = vec![
+            Row::Folder { name: "a-very-long-folder-name".into(), selected: false },
+            Row::Folder { name: "another-long-folder-name".into(), selected: true },
+        ];
+        let g = Geometry { cols: 16, rows: 6, colour: true };
+        let line = |slid| compose("録音", &rows, "PAUSE".into(), g, slid).lines;
+
+        assert_eq!(line(0)[1].text, "another-long-fo~");
+        assert_eq!(line(3)[1].text, "ther-long-folde~");
+        let end = furthest_slide("another-long-folder-name", 16);
+        assert_eq!(line(end)[1].text, "long-folder-name", "the tail, unmarked");
+        assert_eq!(line(end)[0].text, "a-very-long-fol~", "the other row stays put");
     }
 
     #[test]

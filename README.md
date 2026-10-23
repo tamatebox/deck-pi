@@ -155,7 +155,8 @@ held, and it only seeks — and **TRACK SEARCH**, which steps to the next track,
 playing on if the deck was playing; back is this track's head first and the previous
 track only within a second of it, and pauses either way. ENTER is the encoder's push. The display
 shows the browser and the transport: the position against the track's length, and the
-playing file's name. The rate and depth in use gave that name their place, and they
+playing file's name. A highlighted name too long for its row slides once to its end
+and back after two seconds there. The rate and depth in use gave that name their place, and they
 were **never how the chain is confirmed** — the panel reports what the deck believes,
 so a deck wrong about its own output would be wrong on the panel in the same way. The
 confirmation is `deck-pi --device=`, which reads `hw_params` back out of

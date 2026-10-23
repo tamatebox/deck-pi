@@ -23,7 +23,10 @@ use deck_pi::app::deck::Deck;
 use deck_pi::app::panel::{screen_of, Panel, Show, NO_MEDIUM};
 use deck_pi::app::track::Config;
 use deck_pi::browser::Browser;
-use deck_pi::display::{Geometry, Lighting, Redraw, Screen, BLANK_AFTER, DIM_AFTER};
+use deck_pi::display::{
+    furthest_slide, Geometry, Lighting, Redraw, Screen, BLANK_AFTER, DIM_AFTER, SLIDE_AFTER,
+    SLIDE_HOLD,
+};
 use deck_pi::input::{Action, Button};
 use deck_pi::sink::CaptureSink;
 use deck_pi::transport::State;
@@ -134,7 +137,7 @@ fn a_deck_with_no_medium_says_so_rather_than_drawing_nothing() {
     let mut deck = r.deck(false);
     let g = Geometry { cols: 40, rows: 8, colour: false };
 
-    let s = screen_of(&mut deck, g);
+    let s = screen_of(&mut deck, g, 0);
     assert_eq!(s.folder, NO_MEDIUM);
     assert!(s.lines.is_empty());
     assert_eq!(s.status, "NO TRACK", "and the transport says the same thing");
@@ -168,7 +171,7 @@ fn the_status_describes_the_playing_track_and_not_the_browsers_selection() {
     deck.apply(Action::Press(Button::Back)).expect("back");
     load_selection_only(&mut deck, "b");
 
-    let s = screen_of(&mut deck, g);
+    let s = screen_of(&mut deck, g, 0);
     assert_eq!(s.folder, "b", "the listing follows the browser");
     assert!(s.status.contains("playing"), "the status lost the playing track: {}", s.status);
     assert!(!s.status.contains("browsed"), "the status followed the browser: {}", s.status);
@@ -204,7 +207,7 @@ fn the_position_is_converted_with_the_tracks_own_rate() {
     deck.apply(Action::Press(Button::PlayPause)).expect("pause");
 
     let frames = deck.transport().position();
-    let s = screen_of(&mut deck, g);
+    let s = screen_of(&mut deck, g, 0);
     let expected = deck_pi::display::timecode(Duration::from_secs_f64(frames / 96_000.0));
     assert!(
         s.status.contains(&expected),
@@ -378,6 +381,47 @@ fn an_idle_deck_dims_and_then_blanks() {
         vec![Lighting::Dim, Lighting::Blank],
         "the panel was told the same thing twice"
     );
+
+    drop(r.scratch);
+}
+
+#[test]
+fn a_cut_name_the_selection_rests_on_slides_once_and_keeps_nothing_awake() {
+    // The user's, 2026-10-23: rest on a row whose name is cut, and after a
+    // couple of seconds it slides to its tail one character at a time, holds
+    // there, and slides back to its head the same way — once.
+    let r = rig("panel-slide");
+    let long = "a-folder-whose-name-is-far-longer-than-the-panel-is-wide";
+    r.track(long, "one", 44_100, Bits::S16, 2_000);
+    let mut deck = r.deck(true);
+    let mut panel = Panel::new(Capture::default());
+    let furthest = furthest_slide(long, panel.show().grid().name_budget());
+    assert!(furthest > 1, "pointless unless the name is cut");
+
+    // A turn every 10 ms, past the point the idle timer dims the panel.
+    let mut frames = Vec::new();
+    let mut t = Duration::ZERO;
+    while t <= DIM_AFTER {
+        if panel.turn(t, &mut deck).expect("turn") == Redraw::Full {
+            let line = panel.show().last().lines.iter().find(|l| l.selected).expect("a selection");
+            frames.push((t, line.text.clone()));
+        }
+        t += Duration::from_millis(10);
+    }
+
+    let head = &frames[0].1;
+    assert!(head.starts_with("a-folder") && head.ends_with('~'), "{head}");
+    assert!(frames[1].0 >= SLIDE_AFTER, "slid after {:?}", frames[1].0);
+    assert_eq!(frames.len(), 2 * furthest + 1, "the head, a frame a character out and back");
+    assert!(frames[furthest].1.ends_with("panel-is-wide"), "{}", frames[furthest].1);
+    assert!(frames[furthest + 1].0 - frames[furthest].0 >= SLIDE_HOLD, "held at the tail");
+    for k in 1..=furthest {
+        assert_eq!(frames[furthest + k].1, frames[furthest - k].1, "back the way it came");
+    }
+    assert_eq!(&frames[2 * furthest].1, head, "home");
+
+    // The slide was not activity: the panel dimmed on time.
+    assert_eq!(panel.lighting(), Lighting::Dim);
 
     drop(r.scratch);
 }

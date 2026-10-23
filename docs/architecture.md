@@ -331,6 +331,11 @@ state change, and a small position field on a slow tick** — once a second is p
 That also keeps the idle timer from firing mid-track, which should be deliberate
 rather than a side effect.
 
+**The second timer is a slide**: a cut name the selection rests on slides to its tail
+once, a character a step, and comes back (`decisions.md`). It is bounded — a few
+seconds per selection, then nothing — and it draws without counting as activity, so
+the idle timer runs through it.
+
 Coalesce encoder events and redraw at most every 30-50 ms, or fast scrolling falls
 behind. **Header reads ride the same budget**: drive them from what is actually
 rendered rather than from each encoder event, and cache by path, so a fast spin

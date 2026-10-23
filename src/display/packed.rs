@@ -334,7 +334,7 @@ mod tests {
             crate::browser::Row::Folder { name: "2024_録音".into(), selected: false },
             crate::browser::Row::Folder { name: "ライブ音源".into(), selected: true },
         ];
-        compose("録音", &rows[..g.listing_rows().min(rows.len())], "PLAY 1:35.0".into(), g)
+        compose("録音", &rows[..g.listing_rows().min(rows.len())], "PLAY 1:35.0".into(), g, 0)
     }
 
     fn sent(px_w: u16, px_h: u16) -> (Message, Painter) {
