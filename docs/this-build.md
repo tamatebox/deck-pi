@@ -129,8 +129,16 @@ One real stick, mounted read-only at `/media/stick`: **2192 names** (2026-09-16)
   The Debian package's udev rule is what lets `plugdev` at it. The ELF is built on
   the Mac and copied over; `picotool` wants `-t elf`, the ELF having no extension.
   A reflash breaks the deck's panel link, so the deck is restarted after one.
-- **No music on it yet** — the user is choosing (2026-10-23). The plan for now is a
-  folder on this card, run as a medium by **`~/deck-bin/run-sd.sh`**: the deck
+- **Music is prepared on the Mac in `~/Music/DECK`**, outside this repo like the
+  stick-preparation it stands in for: `tracklist.txt` and `extra/` in, `./deck.sh`
+  converts what the list names (rate and depth kept, PCM checked against the
+  source) and numbers it in list order, takes `extra/` exactly as it is — names,
+  contents, nothing checked — mirrors the lot to `deck-pi:~/music/DECK` and
+  restarts the deck.
+  It is also where `run-sd.sh` and `boot.sh` live, installed by `./deck.sh install`.
+- **Five files on it, all the user's own from `extra/`** (2026-10-23): AIFF and
+  WAV, 44.1 to 96 kHz, 16 and 24 bit, 640 MB. The folder on this
+  card is run as a medium by **`~/deck-bin/run-sd.sh`**: the deck
   takes only a mount point (`src/media.rs`), so inside `unshare --user
   --map-root-user --mount` it mounts an empty tmpfs and bind-mounts the folder
   read-only beneath it, and the mount point's device differs from its parent's. No
@@ -138,7 +146,8 @@ One real stick, mounted read-only at `/media/stick`: **2192 names** (2026-09-16)
   mapping above; a stick and the udev rule are the deck's own way.
   **`~/deck-bin/boot.sh`** is the boot wrapper, waiting up to a minute for the
   Pico's link and the Digi2 Pro because the deck looks for its panel only once —
-  **not installed in cron here**, pending the user.
+  **run at boot** from the user's crontab, `@reboot /home/ryota/deck-bin/boot.sh`
+  (2026-10-23).
 - **`phono`'s own card is unreliable.** On 2026-10-22 it dropped off the bus
   mid-write (`mmc0: card removed`, then `error -84`), and its two netplan files were
   found empty the next day, which is what took its Wi-Fi. Very likely the same
