@@ -162,6 +162,19 @@ impl<S: AudioSink + Send + 'static> Deck<S> {
         self.cues = cues;
     }
 
+    /// **The medium's first row is loaded if it is a track**, paused at its
+    /// head, as ENTER on it would — the user's, 2026-10-23, so a flat medium
+    /// plays on PLAY with nothing chosen first. Nothing sounds: PLAY still
+    /// starts it. A folder there is left alone, because entering it would be
+    /// choosing for the operator.
+    pub fn load_first(&mut self) -> Result<(), DeckError> {
+        if self.browser.as_ref().is_some_and(Browser::selected_is_file) {
+            self.enter()
+        } else {
+            Ok(())
+        }
+    }
+
     /// The medium has gone. **Unloads first**, and the order is the point.
     ///
     /// `decisions.md`: what ends a run is "unloading, the medium going, or a

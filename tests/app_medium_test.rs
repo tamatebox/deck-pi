@@ -175,10 +175,34 @@ fn a_stick_pushed_in_after_the_deck_started_is_what_gives_it_a_browser() {
 
     assert!(deck.browser().is_some(), "the listing arrived with the stick");
     assert!(deck.cues().is_some(), "and so did somewhere to keep cues");
+    assert!(deck.loaded().path().is_none(), "a folder first is not entered for anyone");
 
     // And it is the listing of the medium, not of an empty directory.
     load(&mut deck, "set", "opener.wav");
     assert_eq!(deck.transport().state(), State::Paused);
+
+    deck.unload();
+    drop(r.scratch);
+}
+
+#[test]
+fn a_medium_whose_first_row_is_a_track_arrives_with_it_loaded_and_paused() {
+    // The user's, 2026-10-23: a flat medium plays on PLAY with nothing chosen
+    // first, and nothing sounds until it is pressed.
+    let r = rig("medium-first");
+    let first = r.track("", "1-first", 2_000);
+    r.track("", "2-second", 2_000);
+    let mut deck = r.deck();
+    let mut mount = r.mount(vec![browsable("AAAA-BBBB")]);
+
+    let change = mount.turn(Duration::ZERO, &mut deck).expect("a change");
+    assert!(change.is_clean(), "{change:?}");
+    assert_eq!(deck.loaded().path(), Some(first.as_path()));
+    assert_eq!(deck.transport().state(), State::Paused, "loaded, not started");
+    assert_eq!(deck.transport().position(), 0.0, "at its head");
+
+    deck.apply(Action::Press(Button::PlayPause)).expect("play");
+    assert_eq!(deck.transport().state(), State::Playing);
 
     deck.unload();
     drop(r.scratch);

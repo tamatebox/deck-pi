@@ -404,6 +404,9 @@ mod linux {
             if c.ended.is_some() {
                 say("  the track it was playing has been unloaded".to_string());
             }
+            if let Some(e) = &c.first {
+                say(format!("  its first track would not load: {e}"));
+            }
         }
         if let Some(ended) = &turn.ended {
             say(format!("track ended: {ended:?}"));

@@ -235,6 +235,11 @@ impl Browser {
         self.selected
     }
 
+    /// Whether the selection is a file rather than a folder. **Reads nothing.**
+    pub fn selected_is_file(&self) -> bool {
+        matches!(self.entries.get(self.selected), Some(e) if e.kind == EntryKind::File)
+    }
+
     /// The path under the selection, or `None` in an empty folder.
     pub fn selected_path(&self) -> Option<PathBuf> {
         self.entries.get(self.selected).map(|e| self.cwd.join(&e.name))

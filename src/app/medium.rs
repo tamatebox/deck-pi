@@ -49,7 +49,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::app::deck::Deck;
+use crate::app::deck::{Deck, DeckError};
 use crate::app::track::Ended;
 use crate::browser::{BrowseError, Browser};
 use crate::cue::{CueError, CueStore};
@@ -93,7 +93,7 @@ pub const POLL_EVERY: Duration = Duration::from_millis(500);
 
 /// What one change of medium did to the deck.
 ///
-/// **Four fields rather than a `Result`**, because three of these can be true
+/// **Fields rather than a `Result`**, because several of these can be true
 /// at once and none of them stops the deck. A medium can arrive, fail to
 /// browse, and have ended the previous track on its way in.
 #[derive(Debug)]
@@ -117,13 +117,16 @@ pub struct Change {
     /// not persist — the same state `Medium::Browsable { uuid: None }` is in
     /// for a different reason.
     pub cueless: Option<CueError>,
+    /// The first row is a track and would not load — [`Deck::load_first`].
+    /// The listing is there and ENTER can try again.
+    pub first: Option<DeckError>,
 }
 
 impl Change {
     /// Whether anything about this change needs saying beyond the medium
     /// itself.
     pub fn is_clean(&self) -> bool {
-        self.unbrowsable.is_none() && self.cueless.is_none()
+        self.unbrowsable.is_none() && self.cueless.is_none() && self.first.is_none()
     }
 }
 
@@ -185,6 +188,7 @@ impl<M: MediumSource> Mount<M> {
             medium,
             unbrowsable: None,
             cueless: None,
+            first: None,
         };
 
         let Medium::Browsable { uuid } = &change.medium else {
@@ -212,6 +216,7 @@ impl<M: MediumSource> Mount<M> {
             _ => None,
         };
         deck.attach(browser, cues);
+        change.first = deck.load_first().err();
         Some(change)
     }
 }

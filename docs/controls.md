@@ -35,6 +35,11 @@ gives no feedback that a list has ended, and on the smallest candidate panel's t
 browsable rows, arriving back at the top is indistinguishable from a mis-scroll. The
 ends of a list are places you can feel.
 
+**A medium whose first row is a track arrives with it loaded**, paused at its head,
+as ENTER on it would leave it — so a flat medium plays on PLAY with nothing chosen
+first. One whose first row is a folder arrives with nothing loaded: entering a folder
+is choosing, and that is the operator's. Decided by the user on 2026-10-23.
+
 **ENTER on a file the deck cannot play does nothing, and that is not a silent
 failure.** Every rejection is decidable from the header, so the browser vets on
 *highlight* and the row already carries the reason — `decisions.md`'s "say *why*,

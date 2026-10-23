@@ -59,7 +59,9 @@ been declared to the kernel and never sent by a real knob.
 
 **Until it is, FOLDER ►►| is ENTER** (2026-10-22, `src/input.rs`). With no encoder
 the selection never leaves the top row, so on a flat folder it loads the first file,
-TRACK SEARCH walks from there and PLAY plays — and the selection follows TRACK
+TRACK SEARCH walks from there and PLAY plays. **Since 2026-10-23 the first file is
+loaded when the medium arrives**, so on this build's flat folder PLAY works from boot
+and FOLDER ►►| only reloads the highlighted row. And the selection follows TRACK
 SEARCH, which began as a stand-in here and is now the deck's rule (`controls.md`).
 The FOLDER mapping is the temporary half, and goes when the encoder's push is wired.
 
