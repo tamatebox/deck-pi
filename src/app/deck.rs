@@ -30,6 +30,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::app::track::{self, Ended, LoadError, Playing};
 use crate::browser::{Activation, BrowseError, Browser};
@@ -38,7 +39,33 @@ use crate::file::TrackInfo;
 use crate::input::{Action, Button};
 use crate::loaded::{Loaded, Step};
 use crate::sink::{AudioSink, SinkError};
-use crate::transport::{Cued, Transport, RATE_PAUSED};
+use crate::transport::{Cued, State, Transport, RATE_PAUSED};
+
+/// How far into a track TRACK |◄◄ still means the previous track rather than
+/// this one's head. **Chosen, not measured** — the user asked for "near the
+/// head" (2026-10-23), and the number is this file's.
+pub const BACK_TO_PREVIOUS_WITHIN: Duration = Duration::from_secs(3);
+
+/// Where TRACK |◄◄ goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Back {
+    /// The head of the track already loaded.
+    Head,
+    /// The track before it in its folder.
+    Previous,
+}
+
+impl Back {
+    /// From `at` into the loaded track. Separated so the threshold is tested
+    /// without having to play a track three seconds in.
+    pub fn from(at: Duration) -> Back {
+        if at < BACK_TO_PREVIOUS_WITHIN {
+            Back::Previous
+        } else {
+            Back::Head
+        }
+    }
+}
 
 /// Why a press could not be carried out. **Not** a refused file: that is a
 /// verdict the browser already renders on the row, and pressing ENTER on it
@@ -211,25 +238,13 @@ impl<S: AudioSink + Send + 'static> Deck<S> {
             // on the selection** — `src/loaded.rs`, settled by the user. `None`
             // at a folder boundary is [#12](https://github.com/tamatebox/deck-pi/issues/12)'s
             // answer: do nothing, which is stopping.
-            Action::Press(b @ (Button::TrackNext | Button::TrackPrev)) => {
-                let step = if b == Button::TrackNext {
-                    Step::Next
-                } else {
-                    Step::Previous
-                };
-                if let Some(next) = self.loaded.neighbour(step).map_err(DeckError::Browse)? {
-                    self.load(&next)?;
-                    // **Temporary, until the browse encoder is bought** —
-                    // `docs/this-build.md`. With no encoder the selection
-                    // never moves, so the highlighted row was the first file
-                    // and the playing track was named nowhere. It follows the
-                    // tap, and only in the folder shown: browsing another
-                    // folder while this one plays is left alone.
-                    if let Some(b) = self.browser.as_mut() {
-                        b.select_path(&next);
-                    }
-                }
-            }
+            Action::Press(Button::TrackNext) => self.track_search(Step::Next)?,
+            // |◄◄ is the head first and the previous track only near it —
+            // the user's, 2026-10-23. See [`Back`].
+            Action::Press(Button::TrackPrev) => match Back::from(self.position()) {
+                Back::Head => self.restart()?,
+                Back::Previous => self.track_search(Step::Previous)?,
+            },
 
             Action::Press(Button::Enter) => self.enter()?,
             Action::Press(Button::Back) => {
@@ -292,6 +307,67 @@ impl<S: AudioSink + Send + 'static> Deck<S> {
                 }
             }
             Cued::Previewing | Cued::Nothing => {}
+        }
+        Ok(())
+    }
+
+    /// Where the loaded track is, as time. Zero with nothing loaded.
+    fn position(&self) -> Duration {
+        match self.loaded.track() {
+            Some(t) if t.rate > 0 => {
+                Duration::from_secs_f64(self.transport.position().max(0.0) / f64::from(t.rate))
+            }
+            _ => Duration::ZERO,
+        }
+    }
+
+    /// The next or previous track in the playing one's folder, **playing on
+    /// if the deck was playing** and paused if it was paused.
+    ///
+    /// That half reverses a settled rule — "a tap waits at the head", from
+    /// "nothing starts making sound that PLAY did not start" — on the user's
+    /// decision of 2026-10-23, and `decisions.md` has the reversal. What the
+    /// old rule bought the software survives it: the load still happens with
+    /// the deck stopped, so a track change still contains a pause and
+    /// `track.rs` stays per-track. PLAY comes after the load, and the
+    /// engine's misses until the window fills are silence that does not
+    /// move the position, so the intro is not cut.
+    fn track_search(&mut self, step: Step) -> Result<(), DeckError> {
+        let Some(next) = self.loaded.neighbour(step).map_err(DeckError::Browse)? else {
+            return Ok(());
+        };
+        let was_playing = self.transport.state() == State::Playing;
+        self.load(&next)?;
+        // **Temporary, until the browse encoder is bought** —
+        // `docs/this-build.md`. With no encoder the selection never moves, so
+        // the highlighted row was the first file and the playing track was
+        // named nowhere. It follows the tap, and only in the folder shown:
+        // browsing another folder while this one plays is left alone.
+        if let Some(b) = self.browser.as_mut() {
+            b.select_path(&next);
+        }
+        if was_playing {
+            self.transport.play();
+        }
+        Ok(())
+    }
+
+    /// The head of the loaded track, in the state the deck was in.
+    ///
+    /// **A reload, not a seek.** A seek that does not pause is the case
+    /// [`Playing::relocate`] says this design has not had to answer: the
+    /// window would be rebuilt under a running callback. A reload goes through
+    /// the same pause as a track change, at the same cost — a moment of
+    /// silence — and the stored cue comes back with the track as it would on
+    /// any load.
+    fn restart(&mut self) -> Result<(), DeckError> {
+        let Some(path) = self.loaded.path().map(Path::to_path_buf) else {
+            return Ok(());
+        };
+        let was_playing = self.transport.state() == State::Playing;
+        self.load(&path)?;
+        if was_playing {
+            self.transport.play();
         }
         Ok(())
     }

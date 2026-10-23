@@ -11,11 +11,13 @@
 //! > thread, window thread and sink be per-track and every drop happen off
 //! > the deadline.
 //!
-//! Read that as a **dependency**, not a description. It holds because an
-//! FF/REW tap loads the next track and waits at its head, so a load never
-//! lands inside audible playback. If that is ever changed to load-and-play,
-//! this module is what has to be revisited, and the pause is the thing that
-//! was load-bearing.
+//! Read that as a **dependency**, not a description. It holds because a
+//! load always happens with the deck stopped, so a load never lands inside
+//! audible playback. **That survived TRACK SEARCH becoming load-and-play**
+//! (2026-10-23): from a playing deck it unloads, loads paused, and only then
+//! plays — the pause is still there, a moment long, and the misses while the
+//! window fills are silence that does not move the position. A load that
+//! skipped the stop is what would have to revisit this module.
 //!
 //! # Per *track*, not per *play*
 //!

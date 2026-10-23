@@ -96,6 +96,7 @@ fn how_long_a_frame_takes_on_this_machine() {
             Some(44_100),
             Some(16),
             Some(Duration::from_secs(95)),
+            Some(Duration::from_secs(296)),
             g,
         );
         let screen = compose("録音", &rows, status.clone(), g);

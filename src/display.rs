@@ -188,20 +188,29 @@ fn kind_of(row: &Row) -> Kind {
     }
 }
 
-/// Renders `mm:ss.d`, which is what a cue is set against. Tenths rather than frames: a frame count is unreadable at a
-/// glance and the cue store keeps the exact value anyway.
+/// Renders `m:ss`, truncated rather than rounded, so a position never reads
+/// ahead of where the deck is.
+///
+/// **Seconds, not tenths, since 2026-10-23, by the user.** Tenths were chosen
+/// as "what a cue is set against", but the position is redrawn once a second
+/// while playing ([`POSITION_EVERY`]), so the tenths digit was whatever the
+/// tick happened to land on — and the cue store keeps the exact frame anyway,
+/// so nothing about a cue is coarser for it.
 pub fn timecode(at: Duration) -> String {
-    let tenths = at.as_millis() / 100;
-    let (m, s, d) = (tenths / 600, (tenths / 10) % 60, tenths % 10);
-    format!("{m}:{s:02}.{d}")
+    let secs = at.as_secs();
+    format!("{}:{:02}", secs / 60, secs % 60)
 }
 
 /// The status line: what is loaded, and what the chain is actually doing.
+///
+/// `length` is the loaded track's, and rides beside the position as
+/// `1:35 / 4:56` — asked for by the user on 2026-10-23.
 pub fn status_line(
     state: State,
     rate_hz: Option<u32>,
     bits: Option<u16>,
     at: Option<Duration>,
+    length: Option<Duration>,
     g: Geometry,
 ) -> String {
     // **No STOP.** `transport.rs` is explicit that a CDJ has no such
@@ -227,10 +236,23 @@ pub fn status_line(
         line.push(' ');
         line.push_str(&timecode(at));
     }
+    // **Second to go when the panel is narrow**: the position says where the
+    // deck is, the length only how far there is to go. And if it does not fit,
+    // nothing after it is tried — the shorter rate would otherwise squeeze in
+    // where the length could not, which is the order inverted.
+    let mut room = true;
+    if let (Some(_), Some(length)) = (at, length) {
+        let tail = format!(" / {}", timecode(length));
+        if width(&line) + width(&tail) <= g.cols {
+            line.push_str(&tail);
+        } else {
+            room = false;
+        }
+    }
     // **Dropped first when the panel is narrow, and that is the right order.**
     // The transport word and the position are what a hand reaches for mid-set;
     // the rate and depth are what you read once, when confirming the chain.
-    if let (Some(hz), Some(bits)) = (rate_hz, bits) {
+    if let (true, Some(hz), Some(bits)) = (room, rate_hz, bits) {
         let tail = format!(" {}k/{}", hz / 1000, bits);
         if width(&line) + width(&tail) <= g.cols {
             line.push_str(&tail);
@@ -458,18 +480,29 @@ mod tests {
 
     #[test]
     fn the_status_line_keeps_the_transport_when_the_rate_will_not_fit() {
+        let at = Some(Duration::from_secs(95));
+        let length = Some(Duration::from_secs(296));
         let wide = Geometry { cols: 24, ..geom() };
-        let s = status_line(State::Playing, Some(44_100), Some(16), Some(Duration::from_secs(95)), wide);
-        assert!(s.contains("PLAY"), "{s}");
-        assert!(s.contains("1:35.0"), "{s}");
-        assert!(s.contains("44k/16"), "{s}");
+        let s = status_line(State::Playing, Some(44_100), Some(16), at, length, wide);
+        assert_eq!(s, "PLAY 1:35 / 4:56 44k/16");
 
-        // Narrow: the rate goes, the transport and position stay, and nothing
-        // is cut mid-field.
+        // Narrower: the rate goes first, then the length; the transport and
+        // position stay, and nothing is cut mid-field.
+        let no_rate = Geometry { cols: 18, ..geom() };
+        let s = status_line(State::Playing, Some(44_100), Some(16), at, length, no_rate);
+        assert_eq!(s, "PLAY 1:35 / 4:56");
         let narrow = Geometry { cols: 12, ..geom() };
-        let s = status_line(State::Playing, Some(44_100), Some(16), Some(Duration::from_secs(95)), narrow);
-        assert_eq!(s, "PLAY 1:35.0");
+        let s = status_line(State::Playing, Some(44_100), Some(16), at, length, narrow);
+        assert_eq!(s, "PLAY 1:35");
         assert!(!s.contains('~'), "a dropped field should not look like a cut one: {s}");
+
+        // The case the order is for: a length too long for the room left,
+        // and a rate short enough to fit in it. The rate must not take the
+        // place the length could not.
+        let long = Some(Duration::from_secs(7_425)); // 123:45
+        let tight = Geometry { cols: 16, ..geom() };
+        let s = status_line(State::Playing, Some(44_100), Some(16), at, long, tight);
+        assert_eq!(s, "PLAY 1:35");
     }
 
     #[test]
@@ -479,24 +512,33 @@ mod tests {
         // put a word on the panel that the design says does not exist, for
         // the one state it does not describe.
         let wide = Geometry { cols: 24, ..geom() };
-        let s = status_line(State::Stopped, Some(44_100), Some(16), Some(Duration::from_secs(95)), wide);
+        let s = status_line(
+            State::Stopped,
+            Some(44_100),
+            Some(16),
+            Some(Duration::from_secs(95)),
+            Some(Duration::from_secs(296)),
+            wide,
+        );
         assert!(!s.contains("STOP"), "{s}");
         assert!(!s.contains("1:35"), "an empty deck has no position: {s}");
+        assert!(!s.contains("4:56"), "nor a length: {s}");
         assert!(!s.contains("44k"), "nor a rate in use: {s}");
 
         // Seeking reads as the buttons are labelled.
-        let f = status_line(State::SeekingForward, None, None, Some(Duration::ZERO), wide);
+        let f = status_line(State::SeekingForward, None, None, Some(Duration::ZERO), None, wide);
         assert!(f.starts_with("FF"), "{f}");
-        let b = status_line(State::SeekingBack, None, None, Some(Duration::ZERO), wide);
+        let b = status_line(State::SeekingBack, None, None, Some(Duration::ZERO), None, wide);
         assert!(b.starts_with("REW"), "{b}");
     }
 
     #[test]
-    fn a_position_is_minutes_seconds_and_tenths() {
-        assert_eq!(timecode(Duration::ZERO), "0:00.0");
-        assert_eq!(timecode(Duration::from_millis(1_500)), "0:01.5");
-        assert_eq!(timecode(Duration::from_millis(95_400)), "1:35.4");
-        assert_eq!(timecode(Duration::from_secs(3_600)), "60:00.0");
+    fn a_position_is_minutes_and_seconds_and_never_reads_ahead() {
+        assert_eq!(timecode(Duration::ZERO), "0:00");
+        // Truncated: at 1.9 s the deck has not reached 0:02.
+        assert_eq!(timecode(Duration::from_millis(1_900)), "0:01");
+        assert_eq!(timecode(Duration::from_millis(95_400)), "1:35");
+        assert_eq!(timecode(Duration::from_secs(3_600)), "60:00");
     }
 
     #[test]

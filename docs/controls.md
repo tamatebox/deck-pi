@@ -124,22 +124,25 @@ SEARCH, which means nothing in that state today. Free if ever wanted.
 ## SEARCH, and TRACK SEARCH
 
 **Two pairs, one meaning each.** SEARCH seeks within the track while held.
-TRACK SEARCH loads the next or previous track and **waits at its head — it does
-not start playing, even if the deck was playing.**
+TRACK SEARCH changes track, and **keeps the deck in the state it was in**:
 
-**Waiting at the head is the deck's rule and nothing else's.** An earlier version of
-this file justified it by attributing it to another player, and the attribution was
-false — that machine plays on through a track change. The rule survived the
-correction unchanged, which is the useful part: the attribution was never what made
-it right, and it has gone now along with the reference it pointed at. What makes it
-right is the one rule above. A track arriving already playing is sound the operator
-did not press PLAY for, and in a venue that is the worst version of it, because
-attention is elsewhere.
+| | Playing | Paused |
+|---|---|---|
+| TRACK ►►\| | the next track, playing | the next track, paused at its head |
+| \|◄◄ TRACK, more than 3 s in | this track's head, playing | this track's head, paused |
+| \|◄◄ TRACK, within 3 s | the previous track, playing | the previous track, paused at its head |
 
-It buys the software something as well, worth naming because `src/app/track.rs`
-depends on it: **a track change always contains a pause**, which is what lets the
-threads and the sink be per-track and every drop happen off the deadline. A
-load-and-play control added later is what would have to revisit that module.
+**Decided by the user on 2026-10-23, and it reverses a rule that stood here** —
+"a tap waits at its head, even from a playing deck", from "nothing starts making
+sound that PLAY did not start". `decisions.md` has the reversal and the old argument.
+The PLAY in question was pressed; carrying on through a skip is what it asked for.
+Three seconds is the deck's own number, chosen rather than measured.
+
+**What the old rule bought the software is kept.** `src/app/track.rs` depends on a
+track change containing a pause, and it still does: TRACK SEARCH unloads, loads
+paused, and only then plays. The head of the same track is a reload, not a seek,
+for the same reason — `src/app/deck.rs` says why a seek that does not pause is a
+question this design has not answered.
 
 **They used to be one pair.** FF/REW carried both meanings: hold to seek, tap to
 change track. The CDJ-200 switch panel put six buttons on one wire, so the pins that

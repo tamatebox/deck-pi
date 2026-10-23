@@ -1068,6 +1068,7 @@ mod tests {
             Some(44_100),
             Some(16),
             Some(Duration::from_secs(95)),
+            Some(Duration::from_secs(296)),
             g,
         );
         let screen = compose("録音", &rows[..g.listing_rows()], status, g);

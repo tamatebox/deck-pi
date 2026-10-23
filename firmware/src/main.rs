@@ -504,11 +504,12 @@ async fn main(spawner: Spawner) {
     #[cfg(any(link, card))]
     let panel = {
         let mut config = spi::Config::default();
-        // The SSD1322 allows 10 MHz (a 100 ns cycle, Table 13-4). Jumper
-        // wires get less than that until a frame has been seen arriving
-        // intact. Mode 0, the default: it shifts data in on SCLK's rising
-        // edge (§8.1.3).
-        config.frequency = 4_000_000;
+        // The SSD1322 allows 10 MHz (a 100 ns cycle, Table 13-4), and asking
+        // for it gets 9.375: `calc_prescs` divides the 150 MHz peripheral
+        // clock by 16, the nearest it can without going over. 4 MHz until
+        // 2026-10-23, while the jumpers were unproven. Mode 0, the default:
+        // it shifts data in on SCLK's rising edge (§8.1.3).
+        config.frequency = 10_000_000;
         Panel {
             spi: Spi::new_txonly(p.SPI0, p.PIN_18, p.PIN_19, p.DMA_CH0, DmaIrqs, config),
             // All three idle high: CS# and RES# are active low, and DC is

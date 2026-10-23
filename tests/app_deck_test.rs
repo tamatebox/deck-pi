@@ -23,7 +23,7 @@ mod fixtures;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use deck_pi::app::deck::Deck;
+use deck_pi::app::deck::{Back, Deck, BACK_TO_PREVIOUS_WITHIN};
 use deck_pi::app::track::Config;
 use deck_pi::browser::Browser;
 use deck_pi::cue::CueStore;
@@ -184,34 +184,82 @@ fn a_cue_set_while_browsing_elsewhere_lands_on_the_playing_track() {
 }
 
 #[test]
-fn a_tap_steps_the_playing_folder_and_stops_at_its_end() {
-    // `decisions.md`: a tap loads the next track and waits at its head, even
-    // if the deck was playing — nothing starts making sound that PLAY did
-    // not start. And `None` at a folder boundary is #12's answer: do
-    // nothing, which is stopping.
+fn a_tap_plays_on_from_a_playing_deck_waits_from_a_paused_one_and_stops_at_the_end() {
+    // **Inverted, 2026-10-23, by the user's decision** — `decisions.md`. This
+    // test used to assert that a tap waits at the head even from a playing
+    // deck, on "nothing starts making sound that PLAY did not start". The
+    // deck now plays on through a track change it was playing into, and
+    // stays paused through one it was paused in. And `None` at a folder
+    // boundary is still #12's answer: do nothing, which is stopping.
     let r = rig("deck-tap");
     r.track("set", "1-first", 2_000);
     let second = r.track("set", "2-second", 2_000);
+    let third = r.track("set", "3-third", 2_000);
     let mut deck = r.deck();
 
     select(&mut deck, "set");
     deck.apply(Action::Press(Button::Enter)).expect("descend");
     select(&mut deck, "1-first.wav");
     deck.apply(Action::Press(Button::Enter)).expect("load");
-    deck.apply(Action::Press(Button::PlayPause)).expect("play");
 
-    deck.apply(Action::Press(Button::TrackNext)).expect("next");
+    // Paused: the tap waits at the head, as it always did.
+    deck.apply(Action::Press(Button::TrackNext)).expect("next, paused");
     assert_eq!(deck.loaded().path(), Some(second.as_path()));
+    assert_eq!(deck.transport().state(), State::Paused);
+    assert_eq!(deck.transport().rate(), RATE_PAUSED);
+
+    // Playing: the next track plays.
+    deck.apply(Action::Press(Button::PlayPause)).expect("play");
+    deck.apply(Action::Press(Button::TrackNext)).expect("next, playing");
+    assert_eq!(deck.loaded().path(), Some(third.as_path()));
     assert_eq!(
         deck.transport().state(),
-        State::Paused,
-        "a tap waits at the head even from a playing deck"
+        State::Playing,
+        "a tap from a playing deck plays on"
     );
-    assert_eq!(deck.transport().rate(), RATE_PAUSED);
 
     // The end of the folder: nothing happens, and that is the answer.
     deck.apply(Action::Press(Button::TrackNext)).expect("no next");
-    assert_eq!(deck.loaded().path(), Some(second.as_path()), "still there");
+    assert_eq!(deck.loaded().path(), Some(third.as_path()), "still there");
+
+    deck.unload();
+    drop(r.scratch);
+}
+
+#[test]
+fn back_is_the_head_past_three_seconds_and_the_previous_track_inside_them() {
+    // The user's, 2026-10-23. The threshold alone first, so it is pinned
+    // without playing anything.
+    assert_eq!(Back::from(Duration::ZERO), Back::Previous);
+    assert_eq!(Back::from(BACK_TO_PREVIOUS_WITHIN - Duration::from_millis(1)), Back::Previous);
+    assert_eq!(Back::from(BACK_TO_PREVIOUS_WITHIN), Back::Head);
+
+    // Then on a deck: four seconds of track, run past three by a silent
+    // seek, released paused.
+    let r = rig("deck-back");
+    let first = r.track("set", "1-first", 2_000);
+    let long = r.track("set", "2-long", 4 * RATE as usize);
+    let mut deck = r.deck();
+
+    select(&mut deck, "set");
+    deck.apply(Action::Press(Button::Enter)).expect("descend");
+    select(&mut deck, "2-long.wav");
+    deck.apply(Action::Press(Button::Enter)).expect("load");
+    deck.apply(Action::Press(Button::Ff)).expect("seek");
+    wait_for("the seek to pass three seconds", || {
+        deck.transport().position() > 3.0 * f64::from(RATE)
+    });
+    deck.apply(Action::Release(Button::Ff)).expect("release");
+
+    // Past three seconds: the head of the same track, still paused.
+    deck.apply(Action::Press(Button::TrackPrev)).expect("back to the head");
+    assert_eq!(deck.loaded().path(), Some(long.as_path()), "the same track");
+    assert_eq!(deck.transport().position(), 0.0, "at its head");
+    assert_eq!(deck.transport().state(), State::Paused);
+
+    // At the head: the previous track.
+    deck.apply(Action::Press(Button::TrackPrev)).expect("back again");
+    assert_eq!(deck.loaded().path(), Some(first.as_path()), "the one before");
 
     deck.unload();
     drop(r.scratch);

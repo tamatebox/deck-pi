@@ -138,11 +138,15 @@ where
     // believes it is playing. `decisions.md` is blunt that this is not a
     // confirmation of anything — a deck wrong about its own output would
     // print the wrong number with the same confidence.
-    let (rate, bits) = match deck.loaded().track() {
-        Some(t) => (Some(t.rate), Some(depth_bits(t))),
-        None => (None, None),
+    let (rate, bits, length) = match deck.loaded().track() {
+        Some(t) => (
+            Some(t.rate),
+            Some(depth_bits(t)),
+            Some(std::time::Duration::from_secs_f64(t.duration_secs())),
+        ),
+        None => (None, None, None),
     };
-    let status = status_line(state, rate, bits, at, g);
+    let status = status_line(state, rate, bits, at, length, g);
 
     let Some(browser) = deck.browser() else {
         return Screen {

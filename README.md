@@ -151,9 +151,10 @@ feed — and both live in [docs/hardware.md](docs/hardware.md).
 ## Controls
 
 A detented rotary encoder for browsing, plus BACK, PLAY/PAUSE, CUE, **SEARCH** —
-held, and it only seeks — and **TRACK SEARCH**, which steps to the next or previous
-track and waits at its head. ENTER is the encoder's push. The display
-shows the browser and the transport. It also shows the rate and depth in use, and
+held, and it only seeks — and **TRACK SEARCH**, which steps to the next track,
+playing on if the deck was playing; back is this track's head first and the previous
+track only within three seconds of it. ENTER is the encoder's push. The display
+shows the browser and the transport, the position against the track's length. It also shows the rate and depth in use, and
 **that is not how the chain is confirmed** — the panel reports what the deck believes,
 so a deck wrong about its own output would be wrong on the panel in the same way. The
 confirmation is `deck-pi --device=`, which reads `hw_params` back out of
