@@ -13,8 +13,7 @@ you change, and when a line's date is old and the question matters, ask.
 
 | | | |
 |---|---|---|
-| Pi | A dedicated Raspberry Pi 4, **not yet set up** | 2026-10-21 |
-| — stand-in | `phono`, the user's vinyl-ripping Pi 4 (Rev 1.5, 2 GB). The Digi2 Pro is fitted to it for now; it is not the deck | 2026-09-24 |
+| Pi | **`deck-pi`: `phono`'s board (Pi 4 Rev 1.5, 2 GB) booted from its own microSD** — Raspberry Pi OS Lite 2026-10-06, kernel 6.18.50. Swap the card and the same board is `phono`, the user's vinyl-ripping Pi, again | 2026-10-23 |
 | Digi2 Pro | Board release 2.2, mounted directly on the header | 2026-09-24 |
 | IsolatorPi III | **Not fitted** | 2026-09-15 |
 | Pico 2 H | Runs `firmware/`, reaches the Pi over USB | 2026-09-15 |
@@ -77,7 +76,9 @@ than by its comparison.
 
 **The deck draws on it** (2026-10-22): the shipped firmware serves it over USB, and
 the deck on `phono` found the link, was declared 256x64, and put `No USB` on the
-glass.
+glass. **SPI runs at 9.375 MHz since 2026-10-23** — the SSD1322's 10 MHz, as near as
+the divider gets — and the screen came up clean over the same jumpers, with a
+frame's round trip down from 30.3 ms to 20.2 ms.
 
 - **The header is seven pins, SPI only:** `GND VCC SCK SDA RES DC CS` (2026-10-22).
   The SSD1322 chooses parallel or 4-wire SPI on `BS0` and `BS1` — both low for
@@ -117,25 +118,32 @@ One real stick, mounted read-only at `/media/stick`: **2192 names** (2026-09-16)
 - **Builds happen on a Mac.** Linux binaries are built there in Docker
   (`rust:slim-trixie` with `pkg-config libsndfile1-dev libasound2-dev`) and copied to
   the Pi, which also makes the container the Linux gate when no Pi is reachable.
-- **The Pico is flashed from `phono`, over ssh, with no button and no `sudo`**
-  (2026-10-22): `picotool reboot -f -u`, then `picotool load -x -t elf
-  ~/deck-bin/deck-pico`. The ELF is built on the Mac and copied there; `picotool`
-  wants `-t elf`, the ELF having no extension.
-- **Hold one ssh connection open to `phono`** (`ssh -M`) and run through it. On
-  2026-10-22 its sshd began resetting every new connection — the user's too — just
-  after a Pico was replugged, until it was power-cycled. The cause is unknown: its
-  journal does not survive a reboot.
-- **`phono:~/music` is the listening harness's, not a medium** — the deck reads only
-  a mount point, and a folder on the SD card is not one (`src/media.rs`). Its
-  `CD_BURN` folder holds 36 AIFFs from the CD_BURN tracklists, checked
-  bit-identical to their ALAC sources on the card (2026-10-22). **`phono` runs the
-  deck at boot** — `@reboot ~/deck-bin/boot.sh`, which waits up to a minute for
-  the Pico's link and the Digi2 Pro, because the deck looks for its panel only once
-  — and **`phono:~/deck-bin/run-sd.sh` is what it runs: the deck on
-  that folder anyway, without `sudo`**: inside `unshare --user --map-root-user
-  --mount` it mounts an empty tmpfs and bind-mounts the folder read-only beneath it,
-  so the mount point's device differs from its parent's. Temporary, like the
-  FOLDER mapping above. The listening harness no longer starts at boot, and is not
-  to be started while the deck runs: both want the Digi2 Pro.
-- **`phono` is someone's working machine first.** `sudo` asks for a password, a
-  capture service runs on it, and the user may be logged in — do not reboot it unasked.
+- **`deck-pi` is the deck's own card** (2026-10-23): Lite plus `libsndfile1` and
+  `picotool`, the realtime limits in `/etc/security/limits.d/99-deck-pi.conf`
+  (`--rt-check`: OK, `SCHED_FIFO` 75), and `~/deck-bin` holding the deck, the
+  bring-up CLI, the Pico's ELF and the two scripts below. `sudo` asks for a
+  password, so every root step is the user's. On Wi-Fi; the cable is for when that
+  fails.
+- **The Pico is flashed from the Pi, over ssh, with no button and no `sudo`**:
+  `picotool reboot -f -u`, then `picotool load -x -t elf ~/deck-bin/deck-pico`.
+  The Debian package's udev rule is what lets `plugdev` at it. The ELF is built on
+  the Mac and copied over; `picotool` wants `-t elf`, the ELF having no extension.
+  A reflash breaks the deck's panel link, so the deck is restarted after one.
+- **No music on it yet** — the user is choosing (2026-10-23). The plan for now is a
+  folder on this card, run as a medium by **`~/deck-bin/run-sd.sh`**: the deck
+  takes only a mount point (`src/media.rs`), so inside `unshare --user
+  --map-root-user --mount` it mounts an empty tmpfs and bind-mounts the folder
+  read-only beneath it, and the mount point's device differs from its parent's. No
+  `sudo`, and nothing shows outside the namespace. Temporary, like the FOLDER
+  mapping above; a stick and the udev rule are the deck's own way.
+  **`~/deck-bin/boot.sh`** is the boot wrapper, waiting up to a minute for the
+  Pico's link and the Digi2 Pro because the deck looks for its panel only once —
+  **not installed in cron here**, pending the user.
+- **`phono`'s own card is unreliable.** On 2026-10-22 it dropped off the bus
+  mid-write (`mmc0: card removed`, then `error -84`), and its two netplan files were
+  found empty the next day, which is what took its Wi-Fi. Very likely the same
+  dropout is what reset every new ssh connection earlier that day. Its journal does
+  not survive a reboot, so none of it is certain. It is the vinyl machine again,
+  with the deck's boot entry removed.
+- **Hold one ssh connection open** (`ssh -M`) when the card under the Pi is in doubt:
+  a held connection keeps working when new ones cannot start.

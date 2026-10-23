@@ -307,7 +307,11 @@ the last of 261 frames in a later run, none of them left unacknowledged. It is n
 the link alone: it includes the Pico writing the expanded 8 KiB to the panel over
 SPI at 4 MHz, about 16 ms by arithmetic, and up to 10 ms of the deck reading the ack
 a turn late. So the panel end is likely most of it, and raising the SPI clock is the
-lever before anything on the USB side — **estimated, not separated**.
+lever before anything on the USB side — **estimated, not separated**. **Then pulled,
+2026-10-23**: SPI at 9.375 MHz instead of 3.95, and the same frame came back in
+**20.2 ms**. That 10 ms is what the arithmetic put on the SPI write (16.6 ms down to
+7.0), which is the panel end confirmed as the larger share — one frame each side, and
+still inside a 10 ms reading window.
 
 **Drawing the frame is not what costs.** Measured on the 3B+ in release, into
 memory, 2026-09-16, by `tests/render_bench.rs`: a full 128x64 frame at 12 px is
