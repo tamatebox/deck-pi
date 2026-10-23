@@ -130,19 +130,21 @@ SEARCH, which means nothing in that state today. Free if ever wanted.
 ## SEARCH, and TRACK SEARCH
 
 **Two pairs, one meaning each.** SEARCH seeks within the track while held.
-TRACK SEARCH changes track, and **keeps the deck in the state it was in**:
+TRACK SEARCH changes track. **Forward keeps the deck in the state it was in; back
+always pauses**:
 
 | | Playing | Paused |
 |---|---|---|
 | TRACK ►►\| | the next track, playing | the next track, paused at its head |
-| \|◄◄ TRACK, more than 3 s in | this track's head, playing | this track's head, paused |
-| \|◄◄ TRACK, within 3 s | the previous track, playing | the previous track, paused at its head |
+| \|◄◄ TRACK, more than 1 s in | this track's head, paused | this track's head, paused |
+| \|◄◄ TRACK, within 1 s | the previous track, paused at its head | the previous track, paused at its head |
 
 **Decided by the user on 2026-10-23, and it reverses a rule that stood here** —
 "a tap waits at its head, even from a playing deck", from "nothing starts making
 sound that PLAY did not start". `decisions.md` has the reversal and the old argument.
 The PLAY in question was pressed; carrying on through a skip is what it asked for.
-Three seconds is the deck's own number, chosen rather than measured.
+**Back keeping the state too lasted the same day**: the user then had |◄◄ pause,
+and the old rule holds for it. One second is the user's number, not measured.
 
 **What the old rule bought the software is kept.** `src/app/track.rs` depends on a
 track change containing a pause, and it still does: TRACK SEARCH unloads, loads

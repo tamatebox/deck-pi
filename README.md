@@ -153,7 +153,7 @@ feed — and both live in [docs/hardware.md](docs/hardware.md).
 A detented rotary encoder for browsing, plus BACK, PLAY/PAUSE, CUE, **SEARCH** —
 held, and it only seeks — and **TRACK SEARCH**, which steps to the next track,
 playing on if the deck was playing; back is this track's head first and the previous
-track only within three seconds of it. ENTER is the encoder's push. The display
+track only within a second of it, and pauses either way. ENTER is the encoder's push. The display
 shows the browser and the transport: the position against the track's length, and the
 playing file's name. The rate and depth in use gave that name their place, and they
 were **never how the chain is confirmed** — the panel reports what the deck believes,

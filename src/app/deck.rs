@@ -42,9 +42,9 @@ use crate::sink::{AudioSink, SinkError};
 use crate::transport::{Cued, State, Transport, RATE_PAUSED};
 
 /// How far into a track TRACK |◄◄ still means the previous track rather than
-/// this one's head. **Chosen, not measured** — the user asked for "near the
-/// head" (2026-10-23), and the number is this file's.
-pub const BACK_TO_PREVIOUS_WITHIN: Duration = Duration::from_secs(3);
+/// this one's head. **The user's, not measured** — "near the head", then one
+/// second in place of this file's first three (both 2026-10-23).
+pub const BACK_TO_PREVIOUS_WITHIN: Duration = Duration::from_secs(1);
 
 /// Where TRACK |◄◄ goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +57,7 @@ pub enum Back {
 
 impl Back {
     /// From `at` into the loaded track. Separated so the threshold is tested
-    /// without having to play a track three seconds in.
+    /// without having to play a track a second in.
     pub fn from(at: Duration) -> Back {
         if at < BACK_TO_PREVIOUS_WITHIN {
             Back::Previous
@@ -239,8 +239,8 @@ impl<S: AudioSink + Send + 'static> Deck<S> {
             // at a folder boundary is [#12](https://github.com/tamatebox/deck-pi/issues/12)'s
             // answer: do nothing, which is stopping.
             Action::Press(Button::TrackNext) => self.track_search(Step::Next)?,
-            // |◄◄ is the head first and the previous track only near it —
-            // the user's, 2026-10-23. See [`Back`].
+            // |◄◄ is the head first and the previous track only near it, and
+            // pauses either way — the user's, 2026-10-23. See [`Back`].
             Action::Press(Button::TrackPrev) => match Back::from(self.position()) {
                 Back::Head => self.restart()?,
                 Back::Previous => self.track_search(Step::Previous)?,
@@ -321,10 +321,11 @@ impl<S: AudioSink + Send + 'static> Deck<S> {
         }
     }
 
-    /// The next or previous track in the playing one's folder, **playing on
-    /// if the deck was playing** and paused if it was paused.
+    /// The next or previous track in the playing one's folder. **The next one
+    /// plays on if the deck was playing**; the previous one is always paused
+    /// at its head, as |◄◄ is — the user's, 2026-10-23.
     ///
-    /// That half reverses a settled rule — "a tap waits at the head", from
+    /// Playing on reverses a settled rule — "a tap waits at the head", from
     /// "nothing starts making sound that PLAY did not start" — on the user's
     /// decision of 2026-10-23, and `decisions.md` has the reversal. What the
     /// old rule bought the software survives it: the load still happens with
@@ -336,7 +337,7 @@ impl<S: AudioSink + Send + 'static> Deck<S> {
         let Some(next) = self.loaded.neighbour(step).map_err(DeckError::Browse)? else {
             return Ok(());
         };
-        let was_playing = self.transport.state() == State::Playing;
+        let play_on = step == Step::Next && self.transport.state() == State::Playing;
         self.load(&next)?;
         // **The selection follows the tap, in the folder shown** — the user's,
         // 2026-10-23, `controls.md`. It began as a stand-in while the build
@@ -346,13 +347,13 @@ impl<S: AudioSink + Send + 'static> Deck<S> {
         if let Some(b) = self.browser.as_mut() {
             b.select_path(&next);
         }
-        if was_playing {
+        if play_on {
             self.transport.play();
         }
         Ok(())
     }
 
-    /// The head of the loaded track, in the state the deck was in.
+    /// The head of the loaded track, paused.
     ///
     /// **A reload, not a seek.** A seek that does not pause is the case
     /// [`Playing::relocate`] says this design has not had to answer: the
@@ -364,12 +365,7 @@ impl<S: AudioSink + Send + 'static> Deck<S> {
         let Some(path) = self.loaded.path().map(Path::to_path_buf) else {
             return Ok(());
         };
-        let was_playing = self.transport.state() == State::Playing;
-        self.load(&path)?;
-        if was_playing {
-            self.transport.play();
-        }
-        Ok(())
+        self.load(&path)
     }
 
     fn enter(&mut self) -> Result<(), DeckError> {
