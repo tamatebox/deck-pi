@@ -517,6 +517,8 @@ async fn main(spawner: Spawner) {
             cs: Output::new(p.PIN_17, Level::High),
             dc: Output::new(p.PIN_16, Level::High),
             res: Output::new(p.PIN_20, Level::High),
+            contrast: CONTRAST_AT_START,
+            lit: true,
         }
     };
     #[cfg(link)]
@@ -803,6 +805,10 @@ struct Panel {
     cs: Output<'static>,
     dc: Output<'static>,
     res: Output<'static>,
+    /// What the deck last asked for, kept so [`Panel::restore`] can say it
+    /// again: the link only sends lighting when the deck's policy changes it.
+    contrast: u8,
+    lit: bool,
 }
 
 #[cfg(any(link, card))]
@@ -819,13 +825,13 @@ const PANEL_H: usize = 64;
 const PANEL_COL0: u8 = 28;
 
 /// u8g2's Newhaven 256x64 sequence, every value checked against the SSD1322
-/// datasheet's command table (Rev 1.2, Table 9-1) for range. Contrast is the
-/// reset value rather than u8g2's 0x9F: the first image on an unmeasured
-/// rail should not be the brightest one.
+/// datasheet's command table (Rev 1.2, Table 9-1) for range — **less display
+/// off, on and contrast**, which are state rather than settings and which
+/// [`Panel::init`] and [`Panel::restore`] add themselves. Written again before
+/// every frame, so none of it may be a command that shows on the glass.
 #[cfg(any(link, card))]
 const PANEL_INIT: &[(u8, &[u8])] = &[
     (0xFD, &[0x12]),       // unlock the command interface
-    (0xAE, &[]),           // display off
     (0xB3, &[0x91]),       // clock: divide by 2, oscillator level 9
     (0xCA, &[0x3F]),       // 64 MUX
     (0xA2, &[0x00]),       // display offset 0
@@ -833,7 +839,6 @@ const PANEL_INIT: &[(u8, &[u8])] = &[
     (0xA0, &[0x06, 0x11]), // column and nibble remap; dual COM, which 64 MUX allows
     (0xAB, &[0x01]),       // internal VDD regulator
     (0xB4, &[0xA0, 0xFD]), // external VSL, enhanced low grey levels
-    (0xC1, &[0x7F]),       // contrast, the reset value
     (0xC7, &[0x0F]),       // master contrast, no reduction
     (0xB9, &[]),           // the default linear grey table
     (0xB1, &[0xE2]),       // phase 1 five DCLKs, phase 2 fourteen
@@ -844,6 +849,12 @@ const PANEL_INIT: &[(u8, &[u8])] = &[
     (0xA6, &[]),           // normal display
     (0xA9, &[]),           // exit partial display
 ];
+
+/// Contrast until the deck says otherwise: the reset value rather than u8g2's
+/// 0x9F, because the first image on an unmeasured rail should not be the
+/// brightest one.
+#[cfg(any(link, card))]
+const CONTRAST_AT_START: u8 = 0x7F;
 
 #[cfg(any(link, card))]
 impl Panel {
@@ -881,6 +892,14 @@ impl Panel {
     /// sends lighting only when its policy changes it, and it starts out
     /// believing the panel is lit. A panel that waited to be told would
     /// stay dark.
+    ///
+    /// **Again whenever a deck says hello**, not only at power-on. On
+    /// 2026-10-24 one boot left the glass faint and squashed while frames
+    /// arrived and were acked — the look of a lost `0xCA`, whose reset value
+    /// is 128 MUX on 64-row glass (Table 9-1) — and the next boot was fine;
+    /// the cause is not known. A deck connects seconds after the Pico powers
+    /// up, on a supply that has settled, so this is a second start that does
+    /// not depend on why the first one failed.
     async fn init(&mut self) {
         // §8.9: commands wait at least 300 ms after the supply is stable, and
         // RES# goes low for at least 100 µs. The wait after RES# is u8g2's,
@@ -891,9 +910,15 @@ impl Panel {
         self.res.set_high();
         Timer::after_millis(100).await;
 
+        // Lit, at the starting contrast: the deck starts out believing so.
+        self.contrast = CONTRAST_AT_START;
+        self.lit = true;
+        self.command(0xAE, &[]).await;
         for &(cmd, args) in PANEL_INIT {
             self.command(cmd, args).await;
         }
+        let contrast = self.contrast;
+        self.command(0xC1, &[contrast]).await;
 
         // All 120 columns and 128 rows, so that a window in the wrong place
         // shows black beside the picture rather than whatever the RAM
@@ -906,6 +931,24 @@ impl Panel {
 
         // §8.9: the segments come on about 200 ms after this.
         self.command(0xAF, &[]).await;
+    }
+
+    /// Every setting, the contrast, and display on or off, written again.
+    ///
+    /// **Before every frame**, because SPI here is write-only: the controller
+    /// cannot be asked what it holds, so a register that lost its value —
+    /// to an init that half-landed, or to a dip that reset the controller and
+    /// left the Pico running — stays lost until something writes it. Writing
+    /// it each time mends either within a frame, for some forty bytes beside
+    /// eight thousand.
+    #[cfg(link)]
+    async fn restore(&mut self) {
+        for &(cmd, args) in PANEL_INIT {
+            self.command(cmd, args).await;
+        }
+        let contrast = self.contrast;
+        self.command(0xC1, &[contrast]).await;
+        self.command(if self.lit { 0xAF } else { 0xAE }, &[]).await;
     }
 
     /// Writes a whole picture, one grey level of 0-15 per pixel.
@@ -1151,6 +1194,10 @@ async fn run_panel(mut panel: Panel, mut link: CdcAcmClass<'static, Driver<'stat
                 let p = reader.payload(len);
                 match kind {
                     KIND_HELLO => {
+                        // A second start for the glass — see `Panel::init`.
+                        // Before the answer, so the deck's first frame lands
+                        // on a panel that has just been set up.
+                        panel.init().await;
                         let mut d = [0u8; 8];
                         d[0..2].copy_from_slice(&(PANEL_W as u16).to_le_bytes());
                         d[2..4].copy_from_slice(&(PANEL_H as u16).to_le_bytes());
@@ -1167,6 +1214,7 @@ async fn run_panel(mut panel: Panel, mut link: CdcAcmClass<'static, Driver<'stat
                         let bits = le16(p, 2).and_then(|n| p.get(4 + 9 * usize::from(n)..));
                         match (seq, bits) {
                             (Some(seq), Some(bits)) if bits.len() == FRAME_BITS => {
+                                panel.restore().await;
                                 // MSB leftmost, rows `PANEL_W / 8` bytes apart.
                                 panel
                                     .picture(|x, y| {
@@ -1190,6 +1238,7 @@ async fn run_panel(mut panel: Panel, mut link: CdcAcmClass<'static, Driver<'stat
                         if let Some(&step) = p.first() {
                             let step = u16::from(step.min(BRIGHTNESS_LEVELS - 1));
                             let contrast = step * CONTRAST_MAX / u16::from(BRIGHTNESS_LEVELS - 1);
+                            panel.contrast = contrast as u8;
                             panel.command(0xC1, &[contrast as u8]).await;
                         }
                     }
@@ -1201,6 +1250,7 @@ async fn run_panel(mut panel: Panel, mut link: CdcAcmClass<'static, Driver<'stat
                             // outside (§8.9) — so this darkens the panel and
                             // need not stop that supply. Inferred from the
                             // module having only a 3.3 V input; unmeasured.
+                            panel.lit = on == 0;
                             panel.command(if on != 0 { 0xAE } else { 0xAF }, &[]).await;
                         }
                     }

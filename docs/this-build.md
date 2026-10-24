@@ -82,6 +82,17 @@ glass. **SPI runs at 9.375 MHz since 2026-10-23** — the SSD1322's 10 MHz, as n
 the divider gets — and the screen came up clean over the same jumpers, with a
 frame's round trip down from 30.3 ms to 20.2 ms.
 
+**One boot came up faint and squashed** (2026-10-24, the user's eyes): frames were
+being sent and acked, so the deck and the link were fine, and the next reboot was
+clean. That is the look of a lost `0xCA` — its reset value is 128 MUX on 64-row
+glass (Table 9-1, read) — whether the init half-landed or the controller was reset
+afterwards with the Pico still running; nobody saw the panel at power-on, so which is
+not known. **The firmware now mends either**: it runs the whole init again when a
+deck says hello, seconds after power-on, and writes every setting, the contrast and
+display on or off again before every frame. The user saw no flicker from it, in
+playback's once-a-second redraw or in a sliding name (2026-10-24). The ELF it
+replaced is `~/deck-bin/deck-pico.prev`.
+
 - **The header is seven pins, SPI only:** `GND VCC SCK SDA RES DC CS` (2026-10-22).
   The SSD1322 chooses parallel or 4-wire SPI on `BS0` and `BS1` — both low for
   4-wire SPI, per Orient Display's datasheet for its own SSD1322 module — and this
@@ -137,8 +148,12 @@ One real stick, mounted read-only at `/media/stick`: **2192 names** (2026-09-16)
   `/data` would be read-only too — and `/boot/firmware` is `ro` in `fstab`.
   **Anything written outside `/data` is in RAM and gone at power-off**, silently:
   measured the same day, a file in `~` vanished across a reboot and one in `/data`
-  stayed. So did the clock, which starts each boot where it started the last until
-  NTP corrects it; the deck uses none of it. **To change the OS**: `sudo mount -o
+  stayed. The clock's saved time goes the same way, so each boot starts where the
+  last one started until NTP corrects it; the deck uses no wall time. **Pulled twice
+  mid-playback** the same day: each time the deck came back with its first track
+  loaded and `SCHED_FIFO` 75, the Pico enumerated once, and `/data` passed its boot
+  check — the second time after replaying its journal, which is what ext4 does for
+  a volume the power left mounted. **To change the OS**: `sudo mount -o
   remount,rw /boot/firmware`, take `overlayroot=tmpfs:recurse=0 ` out of
   `cmdline.txt`, reboot, change it, put it back, reboot. raspi-config's own
   overlay switch writes and removes only `overlayroot=tmpfs`, so it cannot undo
