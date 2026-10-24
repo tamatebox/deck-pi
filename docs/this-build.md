@@ -141,7 +141,9 @@ One real stick, mounted read-only at `/media/stick`: **2192 names** (2026-09-16)
   that fails.
 - **The card is three partitions, and the root is read-only** (2026-10-24, because
   the deck is switched off by pulling the power — `decisions.md`): boot 512 MiB,
-  root 12 GiB, and `/data` (`LABEL=deckdata`, ext4, 45.7 GiB) for everything
+  root 12 GiB, and `/data` (`LABEL=deckdata`, ext4, 45.7 GiB, `nofail` so a
+  damaged one leaves a booting Pi to ssh into — systemd has it wanted, not required,
+  by `local-fs.target`; untried against a real failure) for everything
   written. `~/music`, `~/deck-bin` and `~/.local/state/deck-pi` are links into
   `/data`, so music syncs, deck updates and cues need no reboot. The root is
   `overlayroot=tmpfs:recurse=0` at the head of `cmdline.txt` — `recurse=0`, or
@@ -157,7 +159,11 @@ One real stick, mounted read-only at `/media/stick`: **2192 names** (2026-09-16)
   remount,rw /boot/firmware`, take `overlayroot=tmpfs:recurse=0 ` out of
   `cmdline.txt`, reboot, change it, put it back, reboot. raspi-config's own
   overlay switch writes and removes only `overlayroot=tmpfs`, so it cannot undo
-  this one. `overlayroot-chroot` is installed and untried.
+  this one. **Or, for a small edit, `sudo overlayroot-chroot <command>`**, which runs
+  it in the lower root remounted writable — how `nofail` went in, 2026-10-24. It
+  could not remount the lower read-only again afterwards ("mount point is busy",
+  cause not found), so a reboot follows it, which overlayroot ends read-only.
+  `/etc/fstab` as seen is overlayroot's copy, rebuilt from the lower one at boot.
 - **The Pico is flashed from the Pi, over ssh, with no button and no `sudo`**:
   `picotool reboot -f -u`, then `picotool load -x -t elf ~/deck-bin/deck-pico`.
   The Debian package's udev rule is what lets `plugdev` at it. The ELF is built on
@@ -182,7 +188,8 @@ One real stick, mounted read-only at `/media/stick`: **2192 names** (2026-09-16)
   (`ps -L`, measured 2026-10-23). Temporary, like the FOLDER
   mapping above; a stick and the udev rule are the deck's own way.
   **`~/deck-bin/boot.sh`** is the boot wrapper, waiting up to a minute for the
-  Pico's link and the Digi2 Pro because the deck looks for its panel only once.
+  Pico's link and the Digi2 Pro, because a deck that starts without its panel stays
+  on the console — one that loses it later finds it again (`README.md`).
 - **The deck is `deck-pi.service`** (2026-10-23, the crontab entry removed): systemd
   runs `boot.sh` as the user, with `Restart=always`, and the realtime limits in the
   unit. Its log is `journalctl -u deck-pi`. **To restart it, signal the deck** —

@@ -95,17 +95,21 @@ mod linux {
     const LINK_PREFIX: &str = "usb-deck-pi_deck-pi_control_surface_deck-pico-1-if";
 
     /// How long the Pico has to answer `Hello`. It brings its panel up before
-    /// it listens — about 0.4 s from power — and a deck started with it
-    /// already up hears back within a frame.
+    /// it listens — about 0.4 s from power, and again on every `Hello`.
     const HANDSHAKE: std::time::Duration = std::time::Duration::from_secs(2);
+
+    /// How often a panel that has gone is looked for. The look is a directory
+    /// read; the handshake that follows a find holds the loop while the Pico
+    /// brings its panel up, so it runs only when there is a link to answer.
+    const LOOK_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 
     static STOP: AtomicBool = AtomicBool::new(false);
 
     /// Where the deck draws: the console, or the panel across the Pico.
     ///
-    /// **Chosen once, at start.** A Pico plugged in later, or one that goes
-    /// away mid-run, is not followed — the controls are rediscovered, the
-    /// panel is not yet.
+    /// **Chosen once, at start.** A panel that goes away mid-run is looked for
+    /// until it comes back ([`Display::listen`]); a deck that started on the
+    /// console stays there, which `boot.sh` waiting for the Pico makes rare.
     enum Display {
         Console(Text<std::io::Stdout>),
         Panel {
@@ -114,10 +118,40 @@ mod linux {
             link: File,
             /// Frames sent, for the report at the end.
             frames: u64,
-            /// Set by the first failed read, so a Pico that has gone is said
-            /// once rather than a hundred times a second.
+            /// Set when the link fails or hangs up, and cleared when the Pico
+            /// answers again — [`Display::listen`].
             gone: bool,
+            /// What the deck last asked the glass for, said again to a Pico
+            /// that comes back: the deck draws only when something changes.
+            last: Option<Screen>,
+            lighting: Lighting,
+            /// When to look for the Pico next, while it is gone.
+            look_at: std::time::Instant,
         },
+    }
+
+    /// The Pico has gone: said once, and looked for from the next turn.
+    fn lose(gone: &mut bool, look_at: &mut std::time::Instant, e: &std::io::Error) {
+        if !*gone {
+            println!("panel: the link failed: {e} — looking for the Pico again");
+        }
+        *gone = true;
+        *look_at = std::time::Instant::now();
+    }
+
+    /// Whether the kernel has hung the port up — the Pico unplugged, or reset.
+    ///
+    /// **Asked, because a read cannot tell.** A hung-up tty reads as end of
+    /// file, which with `VMIN = VTIME = 0` is also what "nothing to read"
+    /// looks like, so `take` alone would see a quiet Pico. A paused deck
+    /// writes nothing either, so without this the loss would wait for the
+    /// next button press to be noticed.
+    fn hung_up(link: &File) -> bool {
+        use std::os::fd::AsRawFd;
+        let mut p = libc::pollfd { fd: link.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        // SAFETY: one pollfd, owned here, and no wait.
+        let ready = unsafe { libc::poll(&mut p, 1, 0) };
+        ready > 0 && p.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
     }
 
     impl Display {
@@ -127,22 +161,54 @@ mod linux {
         /// trip when it takes the ack, so reading only before the next frame
         /// would time the gap between frames instead — seconds, on a deck
         /// left alone. Every turn makes it good to the loop's 10 ms.
+        ///
+        /// **And, while the Pico is gone, where it went.** A knocked USB lead
+        /// in a venue is ordinary, and before this a deck that lost its panel
+        /// kept drawing into a dead port for the rest of the run: the controls
+        /// came back on their own and the glass stayed frozen. A Pico that
+        /// answers again is handed the last screen and lighting at once.
         fn listen(&mut self) {
-            let Display::Panel { packed, link, gone, .. } = self else { return };
-            if *gone {
+            let Display::Panel { packed, link, gone, last, lighting, look_at, .. } = self else {
                 return;
-            }
-            match packed.take(link) {
-                Ok(said) => {
-                    for m in said {
-                        if let Message::Fault { code, reason } = m {
-                            println!("panel: fault {code}: {reason}");
+            };
+            if !*gone {
+                if hung_up(link) {
+                    let e = std::io::Error::from(std::io::ErrorKind::BrokenPipe);
+                    lose(gone, look_at, &e);
+                    return;
+                }
+                match packed.take(link) {
+                    Ok(said) => {
+                        for m in said {
+                            if let Message::Fault { code, reason } = m {
+                                println!("panel: fault {code}: {reason}");
+                            }
                         }
                     }
+                    Err(e) => lose(gone, look_at, &e),
                 }
-                Err(e) => {
-                    println!("panel: the link failed: {e}");
-                    *gone = true;
+                return;
+            }
+
+            let now = std::time::Instant::now();
+            if now < *look_at {
+                return;
+            }
+            *look_at = now + LOOK_EVERY;
+            let Some(path) = find_link() else { return };
+            if let Ok((d, out, new_link)) = connect(&path) {
+                if d.has_panel() {
+                    *packed = Packed::new(out, d);
+                    *link = new_link;
+                    *gone = false;
+                    println!("panel: back, on {}", path.display());
+                    if let Err(e) = packed.lighting(*lighting) {
+                        lose(gone, look_at, &e);
+                    } else if let Some(s) = last.as_ref() {
+                        if let Err(e) = packed.show(s) {
+                            lose(gone, look_at, &e);
+                        }
+                    }
                 }
             }
         }
@@ -156,12 +222,20 @@ mod linux {
             }
         }
 
+        /// To a gone panel, kept and not written: an error here would be
+        /// retried and reported every turn, and `listen` says it once.
         fn show(&mut self, screen: &Screen) -> std::io::Result<()> {
             match self {
                 Display::Console(t) => t.show(screen),
-                Display::Panel { packed, frames, .. } => {
-                    *frames += 1;
-                    packed.show(screen)
+                Display::Panel { packed, frames, gone, last, look_at, .. } => {
+                    *last = Some(screen.clone());
+                    if !*gone {
+                        *frames += 1;
+                        if let Err(e) = packed.show(screen) {
+                            lose(gone, look_at, &e);
+                        }
+                    }
+                    Ok(())
                 }
             }
         }
@@ -169,7 +243,15 @@ mod linux {
         fn lighting(&mut self, want: Lighting) -> std::io::Result<()> {
             match self {
                 Display::Console(t) => t.lighting(want),
-                Display::Panel { packed, .. } => packed.lighting(want),
+                Display::Panel { packed, gone, lighting, look_at, .. } => {
+                    *lighting = want;
+                    if !*gone {
+                        if let Err(e) = packed.lighting(want) {
+                            lose(gone, look_at, &e);
+                        }
+                    }
+                    Ok(())
+                }
             }
         }
 
@@ -280,7 +362,15 @@ mod linux {
                     d.brightness_levels,
                     path.display()
                 );
-                Display::Panel { packed: Packed::new(out, d), link, frames: 0, gone: false }
+                Display::Panel {
+                    packed: Packed::new(out, d),
+                    link,
+                    frames: 0,
+                    gone: false,
+                    last: None,
+                    lighting: Lighting::Full,
+                    look_at: std::time::Instant::now(),
+                }
             }
             Ok(_) => {
                 println!("panel: the Pico declares none — showing the console");

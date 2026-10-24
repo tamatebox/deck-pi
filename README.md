@@ -103,9 +103,11 @@ on the SSD1322 — one frame, acknowledged **30.3 ms** after it was written. Tha
 figure includes the Pico's own SPI write of the frame and up to one loop turn of
 reading the ack late, so it bounds the link rather than isolating it.
 `display::wire` is the protocol on both ends, `display::packed` the Pi's encoder, and
-the Pico's half is in `firmware/src/main.rs`. **The panel is chosen once, at start**:
-a Pico plugged in later, or lost mid-run, is not followed — the controls are, the
-panel is not yet.
+the Pico's half is in `firmware/src/main.rs`. **The panel is chosen at start and
+followed after**: a Pico lost mid-run is looked for once a second and handed the last
+screen when it answers — measured on 2026-10-24, the loss noticed 0.13 s after the
+kernel's disconnect and the panel back 0.7 s after the port reappeared. A deck that
+started on the console stays on it.
 
 ## What plays
 
