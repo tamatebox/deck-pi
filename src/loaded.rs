@@ -114,16 +114,15 @@ impl Loaded {
         self.track.as_ref().map(|t| t.path.as_path())
     }
 
-    /// The file a tap should load, or `None` at a folder boundary and when
-    /// nothing is loaded.
+    /// The file a tap should load, or `None` when nothing is loaded or the
+    /// folder holds no other track.
     ///
-    /// `None` at the ends is the whole of the answer to
-    /// [#12](https://github.com/tamatebox/deck-pi/issues/12): the caller does
-    /// nothing, which is stopping, which is what `decisions.md` already
-    /// decided for a track reaching its end — "nothing starts on its own".
-    /// The selection does not wrap either, and for the same reason: on a
-    /// two-row panel, arriving back at the top is indistinguishable from a
-    /// mis-scroll.
+    /// **It wraps** — the next of the last is the first, the previous of the
+    /// first the last — the user's, 2026-10-24, reversing
+    /// [#12](https://github.com/tamatebox/deck-pi/issues/12)'s "a tap stops at
+    /// a folder boundary". A tap is a press, so nothing starts on its own, and
+    /// the track it lands on is named on the panel; `decisions.md` has the old
+    /// reasoning. The browser's selection still does not wrap.
     ///
     /// Folders are skipped. A tap is "next **track**", and stepping onto a
     /// folder would be a load that fails.
@@ -148,11 +147,14 @@ impl Loaded {
             // exist, and guessing one would move to an arbitrary track.
             return Ok(None);
         };
+        if files.len() < 2 {
+            return Ok(None);
+        }
         let to = match step {
-            Step::Next => at.checked_add(1).filter(|i| *i < files.len()),
-            Step::Previous => at.checked_sub(1),
+            Step::Next => (at + 1) % files.len(),
+            Step::Previous => (at + files.len() - 1) % files.len(),
         };
-        Ok(to.map(|i| dir.join(files[i])))
+        Ok(Some(dir.join(files[to])))
     }
 
     /// The cue point for the loaded track, or zero when nothing is loaded.

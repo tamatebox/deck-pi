@@ -193,12 +193,13 @@ new interval: the CDJ-200's ladder passes through other buttons' voltages on the
 way to its own, measured, so a level must hold for the debounce count before it
 is believed. `cdj-200.md` has the numbers.
 
-**At a folder boundary, TRACK SEARCH stops** —
-[#12](https://github.com/tamatebox/deck-pi/issues/12), settled and closed.
-`Loaded::neighbour` returns `None` at either end and the caller does nothing, which
-is what stopping is, and it is the same rule a track reaching its end already
-follows: nothing advances on its own. Folders are skipped on the way — TRACK SEARCH
-means next *track*, and stepping onto a folder would be a load that fails.
+**At a folder boundary, TRACK SEARCH wraps**: past the last track is the first, and
+before the first the last, in the same folder — decided by the user on 2026-10-24,
+reversing [#12](https://github.com/tamatebox/deck-pi/issues/12)'s stop.
+`decisions.md` has the old reasoning. A folder with one track has nowhere to wrap
+to, and a tap there does nothing. Folders are skipped on the way — TRACK SEARCH
+means next *track*, and stepping onto a folder would be a load that fails. **The
+browser's selection still does not wrap**; that is the encoder's, for its own reason.
 
 **FOLDER SEARCH is the half of that question still open.** The CDJ-200 panel carries
 two more buttons, the firmware sends both of them — as `KEY_CHANNELDOWN` and

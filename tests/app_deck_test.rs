@@ -184,15 +184,15 @@ fn a_cue_set_while_browsing_elsewhere_lands_on_the_playing_track() {
 }
 
 #[test]
-fn a_tap_plays_on_from_a_playing_deck_waits_from_a_paused_one_and_stops_at_the_end() {
+fn a_tap_plays_on_from_a_playing_deck_waits_from_a_paused_one_and_wraps_at_the_end() {
     // **Inverted, 2026-10-23, by the user's decision** — `decisions.md`. This
     // test used to assert that a tap waits at the head even from a playing
     // deck, on "nothing starts making sound that PLAY did not start". The
     // deck now plays on through a track change it was playing into, and
-    // stays paused through one it was paused in. And `None` at a folder
-    // boundary is still #12's answer: do nothing, which is stopping.
+    // stays paused through one it was paused in. **And inverted again at the
+    // end, 2026-10-24**: past the last track is the first, where #12 stopped.
     let r = rig("deck-tap");
-    r.track("set", "1-first", 2_000);
+    let first = r.track("set", "1-first", 2_000);
     let second = r.track("set", "2-second", 2_000);
     let third = r.track("set", "3-third", 2_000);
     let mut deck = r.deck();
@@ -218,9 +218,10 @@ fn a_tap_plays_on_from_a_playing_deck_waits_from_a_paused_one_and_stops_at_the_e
         "a tap from a playing deck plays on"
     );
 
-    // The end of the folder: nothing happens, and that is the answer.
-    deck.apply(Action::Press(Button::TrackNext)).expect("no next");
-    assert_eq!(deck.loaded().path(), Some(third.as_path()), "still there");
+    // The end of the folder: round to the first, still playing.
+    deck.apply(Action::Press(Button::TrackNext)).expect("wrap");
+    assert_eq!(deck.loaded().path(), Some(first.as_path()), "round to the first");
+    assert_eq!(deck.transport().state(), State::Playing);
 
     deck.unload();
     drop(r.scratch);

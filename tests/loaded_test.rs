@@ -58,7 +58,11 @@ fn a_tap_steps_through_the_playing_tracks_folder_not_the_browsed_one() {
         l.neighbour(Step::Next).expect("read"),
         Some(s.dir.join("A/2_two.wav"))
     );
-    assert_eq!(l.neighbour(Step::Previous).expect("read"), None, "at the top");
+    assert_eq!(
+        l.neighbour(Step::Previous).expect("read"),
+        Some(s.dir.join("A/3_three.wav")),
+        "from the top, round to the bottom of the same folder"
+    );
 }
 
 /// Walks the selection to a named row and enters it.
@@ -81,18 +85,33 @@ fn row_named(rows: &[deck_pi::browser::Row], name: &str) -> usize {
 }
 
 #[test]
-fn a_tap_stops_at_a_folder_boundary_rather_than_wrapping() {
-    // Issue #12 falls out of this: `None` means the caller does nothing,
-    // which is stopping — the same answer `decisions.md` already gives for a
-    // track reaching its end, "nothing starts on its own".
+fn a_tap_wraps_at_a_folder_boundary_and_a_lone_track_goes_nowhere() {
+    // **Inverted, 2026-10-24, by the user's decision** — `decisions.md`. This
+    // test used to assert that a tap stops at a folder boundary, #12's answer
+    // on "nothing starts on its own". A tap is a press, and the track it lands
+    // on is named on the panel, so the last track's next is the first.
     let s = stick("loaded-boundary");
     let mut l = Loaded::nothing();
     load(&mut l, &s.dir.join("A/3_three.wav"));
-    assert_eq!(l.neighbour(Step::Next).expect("read"), None, "past the last");
+    assert_eq!(
+        l.neighbour(Step::Next).expect("read"),
+        Some(s.dir.join("A/1_one.wav")),
+        "past the last, the first"
+    );
     assert_eq!(
         l.neighbour(Step::Previous).expect("read"),
         Some(s.dir.join("A/2_two.wav"))
     );
+
+    // A folder of one has no other track to wrap to, and a tap that reloaded
+    // the same file would be a restart nobody asked for.
+    let lone = Scratch::new("loaded-lone");
+    let samples = fixtures::signal(Bits::S16, 2, 256);
+    let bytes = fixtures::build(Kind::Wav, &samples, Bits::S16, 44_100, 2);
+    let only = fixtures::write(&lone.dir, "only", Kind::Wav, &bytes);
+    load(&mut l, &only);
+    assert_eq!(l.neighbour(Step::Next).expect("read"), None);
+    assert_eq!(l.neighbour(Step::Previous).expect("read"), None);
 }
 
 #[test]

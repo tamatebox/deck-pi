@@ -13,7 +13,7 @@ you change, and when a line's date is old and the question matters, ask.
 
 | | | |
 |---|---|---|
-| Pi | **`deck-pi`: `phono`'s board (Pi 4 Rev 1.5, 2 GB) booted from its own microSD** — Raspberry Pi OS Lite 2026-10-06, kernel 6.18.50. Swap the card and the same board is `phono`, the user's vinyl-ripping Pi, again | 2026-10-23 |
+| Pi | **`deck-pi`: `phono`'s board (Pi 4 Rev 1.5, 2 GB) booted from its own microSD** — Raspberry Pi OS Lite 2026-10-06, kernel 6.18.50, root read-only (*The bench*). Swap the card and the same board is `phono`, the user's vinyl-ripping Pi, again | 2026-10-24 |
 | Digi2 Pro | Board release 2.2, mounted directly on the header | 2026-09-24 |
 | IsolatorPi III | **Not fitted** | 2026-09-15 |
 | Pico 2 H | Runs `firmware/`, reaches the Pi over USB | 2026-09-15 |
@@ -120,12 +120,29 @@ One real stick, mounted read-only at `/media/stick`: **2192 names** (2026-09-16)
 - **Builds happen on a Mac.** Linux binaries are built there in Docker
   (`rust:slim-trixie` with `pkg-config libsndfile1-dev libasound2-dev`) and copied to
   the Pi, which also makes the container the Linux gate when no Pi is reachable.
-- **`deck-pi` is the deck's own card** (2026-10-23): Lite plus `libsndfile1` and
-  `picotool`, the realtime limits in `/etc/security/limits.d/99-deck-pi.conf`
-  (`--rt-check`: OK, `SCHED_FIFO` 75), and `~/deck-bin` holding the deck, the
-  bring-up CLI, the Pico's ELF and the two scripts below. `sudo` asks for a
-  password, so every root step is the user's. On Wi-Fi; the cable is for when that
-  fails.
+- **`deck-pi` is the deck's own card**, reflashed 2026-10-24: Lite plus `libsndfile1`,
+  `picotool` and `overlayroot`, the realtime limits in
+  `/etc/security/limits.d/99-deck-pi.conf`, journald volatile
+  (`/etc/systemd/journald.conf.d/volatile.conf`), and `~/deck-bin` holding the deck,
+  the bring-up CLI, the Pico's ELF and the scripts below. `sudo` asks for a password
+  and then holds for a while across sessions (`timestamp_type=global`), so a root
+  step is the user's or follows their `sudo -v`. On Wi-Fi; the cable is for when
+  that fails.
+- **The card is three partitions, and the root is read-only** (2026-10-24, because
+  the deck is switched off by pulling the power — `decisions.md`): boot 512 MiB,
+  root 12 GiB, and `/data` (`LABEL=deckdata`, ext4, 45.7 GiB) for everything
+  written. `~/music`, `~/deck-bin` and `~/.local/state/deck-pi` are links into
+  `/data`, so music syncs, deck updates and cues need no reboot. The root is
+  `overlayroot=tmpfs:recurse=0` at the head of `cmdline.txt` — `recurse=0`, or
+  `/data` would be read-only too — and `/boot/firmware` is `ro` in `fstab`.
+  **Anything written outside `/data` is in RAM and gone at power-off**, silently:
+  measured the same day, a file in `~` vanished across a reboot and one in `/data`
+  stayed. So did the clock, which starts each boot where it started the last until
+  NTP corrects it; the deck uses none of it. **To change the OS**: `sudo mount -o
+  remount,rw /boot/firmware`, take `overlayroot=tmpfs:recurse=0 ` out of
+  `cmdline.txt`, reboot, change it, put it back, reboot. raspi-config's own
+  overlay switch writes and removes only `overlayroot=tmpfs`, so it cannot undo
+  this one. `overlayroot-chroot` is installed and untried.
 - **The Pico is flashed from the Pi, over ssh, with no button and no `sudo`**:
   `picotool reboot -f -u`, then `picotool load -x -t elf ~/deck-bin/deck-pico`.
   The Debian package's udev rule is what lets `plugdev` at it. The ELF is built on
@@ -137,9 +154,10 @@ One real stick, mounted read-only at `/media/stick`: **2192 names** (2026-09-16)
   source) and numbers it in list order, takes `extra/` exactly as it is — names,
   contents, nothing checked — mirrors the lot to `deck-pi:~/music/DECK` and
   restarts the deck.
-  It is also where `run-sd.sh` and `boot.sh` live, installed by `./deck.sh install`.
-- **Five files on it, all the user's own from `extra/`** (2026-10-23): AIFF and
-  WAV, 44.1 to 96 kHz, 16 and 24 bit, 640 MB. The folder on this
+  It is also where `run-sd.sh`, `boot.sh` and `deck-pi.service` live, installed by
+  `./deck.sh install`.
+- **26 files on it** (2026-10-24): 21 from `tracklist.txt`, ALAC converted to AIFF,
+  and the user's 5 from `extra/` — 44.1 to 96 kHz, 16 and 24 bit, 4.1 GB. The folder on this
   card is run as a medium by **`~/deck-bin/run-sd.sh`**: the deck
   takes only a mount point (`src/media.rs`), so inside `unshare --user
   --map-root-user --mount` it mounts an empty tmpfs and bind-mounts the folder
@@ -149,9 +167,14 @@ One real stick, mounted read-only at `/media/stick`: **2192 names** (2026-09-16)
   (`ps -L`, measured 2026-10-23). Temporary, like the FOLDER
   mapping above; a stick and the udev rule are the deck's own way.
   **`~/deck-bin/boot.sh`** is the boot wrapper, waiting up to a minute for the
-  Pico's link and the Digi2 Pro because the deck looks for its panel only once —
-  **run at boot** from the user's crontab, `@reboot /home/ryota/deck-bin/boot.sh`
-  (2026-10-23).
+  Pico's link and the Digi2 Pro because the deck looks for its panel only once.
+- **The deck is `deck-pi.service`** (2026-10-23, the crontab entry removed): systemd
+  runs `boot.sh` as the user, with `Restart=always`, and the realtime limits in the
+  unit. Its log is `journalctl -u deck-pi`. **To restart it, signal the deck** —
+  `./deck.sh restart` sends `SIGINT` and systemd starts it again — and never start
+  `boot.sh` by hand, which makes a second deck wanting the same Digi2 Pro. Measured
+  the same day: back in about 2 s after `./deck.sh restart` and after a `SIGKILL`,
+  each time with the audio thread at `SCHED_FIFO` 75.
 - **`phono`'s own card is unreliable.** On 2026-10-22 it dropped off the bus
   mid-write (`mmc0: card removed`, then `error -84`), and its two netplan files were
   found empty the next day, which is what took its Wi-Fi. Very likely the same
