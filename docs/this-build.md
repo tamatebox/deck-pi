@@ -160,9 +160,14 @@ One real stick, mounted read-only at `/media/stick`: **2192 names** (2026-09-16)
   `cmdline.txt`, reboot, change it, put it back, reboot. raspi-config's own
   overlay switch writes and removes only `overlayroot=tmpfs`, so it cannot undo
   this one. **Or, for a small edit, `sudo overlayroot-chroot <command>`**, which runs
-  it in the lower root remounted writable — how `nofail` went in, 2026-10-24. It
-  could not remount the lower read-only again afterwards ("mount point is busy",
-  cause not found), so a reboot follows it, which overlayroot ends read-only.
+  it in the lower root remounted writable — how `nofail` went in, 2026-10-24.
+  **A reboot always follows it.** The kernel's overlayfs document says changes to
+  an underlying filesystem while the overlay is mounted "are not allowed" and leave
+  the overlay's behaviour undefined, so what the running system sees of the edit is
+  not to be trusted until the next boot. It also could not remount the lower
+  read-only afterwards ("mount point is busy") — likely `sed -i` having replaced a
+  file the overlay still held, untested — and the reboot ends that too. Anything
+  larger than an edit, a package for one, takes the two-reboot way above.
   `/etc/fstab` as seen is overlayroot's copy, rebuilt from the lower one at boot.
 - **The Pico is flashed from the Pi, over ssh, with no button and no `sudo`**:
   `picotool reboot -f -u`, then `picotool load -x -t elf ~/deck-bin/deck-pico`.
