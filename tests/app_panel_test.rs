@@ -24,7 +24,7 @@ use deck_pi::app::panel::{screen_of, Panel, Show, NO_MEDIUM};
 use deck_pi::app::track::Config;
 use deck_pi::browser::Browser;
 use deck_pi::display::{
-    furthest_slide, Geometry, Lighting, Redraw, Screen, BLANK_AFTER, DIM_AFTER, SLIDE_AFTER,
+    furthest_slide, Geometry, Lighting, Redraw, Screen, BLANK_AFTER, COALESCE, DIM_AFTER, SLIDE_AFTER,
     SLIDE_HOLD,
 };
 use deck_pi::input::{Action, Button};
@@ -185,6 +185,41 @@ fn the_status_describes_the_playing_track_and_not_the_browsers_selection() {
 fn load_selection_only(deck: &mut Deck<CaptureSink>, folder: &str) {
     select(deck, folder);
     deck.apply(Action::Press(Button::Enter)).expect("descend");
+}
+
+#[test]
+fn going_back_to_the_head_of_a_paused_track_redraws_the_time() {
+    // The user's, 2026-10-25: |◄◄ on a paused deck left the old time on the
+    // glass. Nothing else the panel watches moves — the same track, the same
+    // state, the same selection — and a paused position is not ticked.
+    let r = rig("panel-head");
+    r.track("a", "long", 44_100, Bits::S16, 4 * 44_100);
+    let mut deck = r.deck(true);
+    let mut panel = Panel::new(Capture::default());
+
+    load(&mut deck, "a", "long.wav");
+    // Past two seconds by a silent seek, released paused.
+    deck.apply(Action::Press(Button::Ff)).expect("seek");
+    wait_for("the seek to pass two seconds", || {
+        deck.transport().position() > 2.0 * 44_100.0
+    });
+    deck.apply(Action::Release(Button::Ff)).expect("release");
+    assert_eq!(deck.transport().state(), State::Paused);
+
+    let mut t = Duration::ZERO;
+    panel.turn(t, &mut deck).expect("turn");
+    let before = panel.show().last().status.clone();
+    assert!(!before.contains("0:00/"), "the fixture never left the head: {before}");
+
+    deck.apply(Action::Press(Button::TrackPrev)).expect("back to the head");
+    assert_eq!(deck.transport().position(), 0.0, "the deck is at the head");
+    t += COALESCE;
+    panel.turn(t, &mut deck).expect("turn");
+    let after = panel.show().last().status.clone();
+    assert!(after.contains("0:00/"), "the old time is still up: {after}");
+
+    deck.unload();
+    drop(r.scratch);
 }
 
 #[test]

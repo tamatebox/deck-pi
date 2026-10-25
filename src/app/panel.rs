@@ -96,6 +96,14 @@ struct Fingerprint {
     state: State,
     loaded: Option<PathBuf>,
     geometry: Geometry,
+    /// Where a deck that is not moving stands, to the second the panel shows.
+    ///
+    /// **Only while it is still**: a moving position has the slow tick, and
+    /// in here it would turn that into a full redraw every second. A still
+    /// one moves only when a press puts it somewhere, and |◄◄ to the head of
+    /// the same paused track changes nothing else above — the old time stayed
+    /// on the glass until something did (2026-10-25).
+    still_at: Option<u64>,
 }
 
 fn fingerprint<S>(deck: &mut Deck<S>, geometry: Geometry) -> Fingerprint
@@ -108,13 +116,22 @@ where
         Some(b) => (Some(b.path().to_path_buf()), b.selected_index()),
         None => (None, 0),
     };
+    let still_at = (!moving(state)).then(|| position_secs(deck) as u64);
     Fingerprint {
         folder,
         selected,
         state,
         loaded,
         geometry,
+        still_at,
     }
+}
+
+/// Whether the position advances in this state — what the slow tick is for.
+/// Seeking counts: the position moves and the readout has to follow it,
+/// silent or not.
+fn moving(state: State) -> bool {
+    matches!(state, State::Playing | State::SeekingForward | State::SeekingBack)
 }
 
 /// What the folder line says when there is no medium.
@@ -271,13 +288,7 @@ impl<D: Show> Panel<D> {
         let g = self.show.geometry();
         let now_print = fingerprint(deck, g);
         let changed = self.last.as_ref() != Some(&now_print);
-        // "Moving" is the position advancing, which is what the slow tick is
-        // for. Seeking counts: the position moves and the readout has to
-        // follow it, silent or not.
-        let moving = matches!(
-            now_print.state,
-            State::Playing | State::SeekingForward | State::SeekingBack
-        );
+        let moving = moving(now_print.state);
 
         // **Before the draw, so a frame never lands on a blanked panel.**
         // Waking and drawing in the other order would put the new listing on
