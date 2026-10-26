@@ -200,9 +200,12 @@ fn a_scan_plays_the_source_in_fragments_and_playback_resumes_where_its_sound_was
     // Fragments a whole number of periods long, so no period straddles a jump
     // and each one is a single run of the source.
     const PERIODS_PER_FRAGMENT: usize = 4;
+    const FRAGMENT: usize = PERIODS_PER_FRAGMENT * PERIOD;
+    let fade = deck_pi::engine::fade_frames(FRAGMENT as u64) as usize;
+    assert!(fade > 0, "pointless unless the fragments fade");
     let t = Transport::new();
     t.track_loaded(0);
-    let mut e = Engine::new(frames).fragments_of((PERIODS_PER_FRAGMENT * PERIOD) as u64);
+    let mut e = Engine::new(frames).fragments_of(FRAGMENT as u64);
     t.play();
     let mut period = vec![0i32; PERIOD * RING_CHANNELS];
 
@@ -229,39 +232,55 @@ fn a_scan_plays_the_source_in_fragments_and_playback_resumes_where_its_sound_was
             into = 0;
         }
         let at = e.position() as usize + into * PERIOD;
+        let first = into * PERIOD;
         into += 1;
         if period.iter().all(|&s| s == 0) {
             continue;
         }
         audible += 1;
-        assert_eq!(
-            period[..],
-            source[at * RING_CHANNELS..(at + PERIOD) * RING_CHANNELS],
-            "the scan played something other than the source at frame {at}"
-        );
+        // The source, except within the fade at each end of the fragment,
+        // where it may only be quieter and never of the other sign.
+        for (i, frame) in period.chunks_exact(RING_CHANNELS).enumerate() {
+            let k = first + i;
+            let edge = k.min(FRAGMENT - 1 - k);
+            for (c, &got) in frame.iter().enumerate() {
+                let src = source[(at + i) * RING_CHANNELS + c];
+                if edge >= fade {
+                    assert_eq!(got, src, "the scan played something other than the source at frame {}", at + i);
+                } else {
+                    assert!(
+                        got.abs() <= src.abs() && (got == 0 || got.signum() == src.signum()),
+                        "the fade at frame {} is louder than the source, or turned it over",
+                        at + i
+                    );
+                }
+            }
+        }
     }
     assert!(audible > 0, "the scan never sounded");
     let landed = e.position();
     assert!(landed > 1_000.0);
     assert_eq!(landed.fract(), 0.0, "a scan must leave the position integral");
 
-    // Release: audio resumes from where the scan's sound had got to.
+    // Release: audio resumes from where the scan's sound had got to, and is
+    // the source bit for bit from there — the fade is the scan's alone, and
+    // `CLAUDE.md` allows it only on that condition.
     t.end_seek(true);
-    let at = landed as usize + into * PERIOD;
+    let mut at = landed as usize + into * PERIOD;
+    let mut played = 0;
     let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
+    while played < 20 {
         match e.fill(&t, &reader, &mut period) {
             Outcome::Played { frames: n } => {
                 for i in 0..n * RING_CHANNELS {
                     assert_eq!(
                         period[i],
                         source[at * RING_CHANNELS + i],
-                        "resumed at the wrong sample: offset {} from frame {}",
-                        i,
-                        at
+                        "played period {played} after the scan is not the source: offset {i} from frame {at}"
                     );
                 }
-                break;
+                at += n;
+                played += 1;
             }
             Outcome::Missed(Miss::NotResident) | Outcome::Missed(Miss::Relocated) => {
                 std::thread::yield_now()

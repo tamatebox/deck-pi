@@ -186,9 +186,10 @@ source at unity, then a jump of the speed's worth of tenths, and again. REW step
 and plays each fragment forwards. Slow first, so a short press moves a little and is
 heard landing; fast after, so an hour is crossed in about two minutes. Letting go
 carries on from where the sound had got to, playing or paused as before the press.
-**Every sample is the source's own**, so it needs no resampler and v1 stays
-bit-perfect; the joins click, because softening them would take a fade, which is a
-gain stage. A deck paused before the press sounds while it is held, as the Cue Point
+**Every sample comes from the source at unity**, so it needs no resampler, and each
+fragment fades in and out over 3 ms so the joins do not click — the one gain stage in
+the callback, allowed for the scan alone (`CLAUDE.md`); playback after a scan is the
+source bit for bit. A deck paused before the press sounds while it is held, as the Cue Point
 Sampler does, and is silent again when it is let go. `decisions.md` has the
 reversal.
 

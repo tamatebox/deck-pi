@@ -60,6 +60,8 @@ pub struct Engine {
     track_frames: u64,
     /// Frames in one fragment of the scan — [`FRAGMENT_SECS`] of this track.
     fragment: u64,
+    /// Frames faded at each end of a fragment — [`FADE_SECS`] of this track.
+    fade: u64,
     /// How much of the current fragment the scan has played, or `None` when
     /// no scan is under way.
     into_fragment: Option<u64>,
@@ -73,6 +75,20 @@ pub const FRAGMENT_SECS: f64 = 0.1;
 /// [`FRAGMENT_SECS`] in frames at `rate` Hz, never zero.
 pub fn fragment_frames(rate: u32) -> u64 {
     ((f64::from(rate) * FRAGMENT_SECS) as u64).max(1)
+}
+
+/// How long each end of a scan fragment fades: a raised cosine over 3 ms.
+/// Measured offline on 2026-10-26 against three of the user's tracks, hard
+/// joins stepped 20-30 dB past anything the music did on its own; the usual
+/// splice fix is a 2-5 ms raised-cosine fade, and 3 ms is what the offline
+/// renders used.
+pub const FADE_SECS: f64 = 0.003;
+
+/// [`FADE_SECS`] in frames, for a fragment of `fragment` frames — which is
+/// [`FRAGMENT_SECS`] long, so the rate need not be asked again. Less than half
+/// the fragment, so the two fades never meet.
+pub fn fade_frames(fragment: u64) -> u64 {
+    ((fragment as f64 * FADE_SECS / FRAGMENT_SECS) as u64).min(fragment.saturating_sub(1) / 2)
 }
 
 impl Engine {
@@ -94,6 +110,7 @@ impl Engine {
             position,
             track_frames,
             fragment: fragment_frames(44_100),
+            fade: fade_frames(fragment_frames(44_100)),
             into_fragment: None,
         }
     }
@@ -102,6 +119,7 @@ impl Engine {
     /// of a second.
     pub fn fragments_of(mut self, frames: u64) -> Self {
         self.fragment = frames.max(1);
+        self.fade = fade_frames(self.fragment);
         self
     }
 
@@ -246,10 +264,16 @@ impl Engine {
     /// FF or REW held: **a fragment of the source at unity, then a jump**, so
     /// the operator hears where the scan is — the user's, 2026-10-26.
     ///
-    /// Every sample this emits is the source's own, read at an integral
-    /// position, so the module's rule holds: nothing sounds but unity. What
-    /// it gives up is continuity — a click at each join, which only a fade
-    /// would soften, and a fade is a gain stage.
+    /// Every sample this emits is read from the source at an integral
+    /// position, so nothing sounds but unity — and **the first and last
+    /// [`FADE_SECS`] of each fragment are faded**, [`fade_edges`], because
+    /// the joins clicked. That is a gain stage in the callback, and the only
+    /// one: `CLAUDE.md`'s rule against them carries this exception by the
+    /// user's decision of 2026-10-26, on the condition that playback never
+    /// passes through it. Playback is `step`'s unity branch, which shares
+    /// nothing with this function but the ring, and the tests hold every
+    /// period played after a scan — let go at every point of a fragment,
+    /// fades included — to the source bit for bit.
     ///
     /// **`position` is where the fragment starts**, and moves only between
     /// fragments, by `rate` fragments' worth. So it travels one way at the
@@ -282,6 +306,7 @@ impl Engine {
                 // A miss has already silenced `dst`.
                 let _ = ring.read_block(from, dst);
             }
+            fade_edges(dst, into, self.fragment, self.fade);
             self.into_fragment = Some(into + n);
             done += n;
         }
@@ -293,6 +318,30 @@ impl Engine {
     #[inline]
     fn advance(&mut self, by: f64) {
         self.position = (self.position + by).clamp(0.0, self.track_frames as f64);
+    }
+}
+
+/// Scales the frames of `dst` that lie within `fade` of either end of a
+/// fragment by a raised cosine, from zero at the edge to unity `fade` in.
+/// `dst` starts `into` frames into a fragment of `fragment` frames.
+///
+/// **The only place in this file that scales a sample**, and called from
+/// [`Engine::scan`] alone — see there for why it exists and what keeps it out
+/// of playback. Never above unity, so it cannot overflow the 24-bit sample.
+fn fade_edges(dst: &mut [i32], into: u64, fragment: u64, fade: u64) {
+    if fade == 0 {
+        return;
+    }
+    for (i, frame) in dst.chunks_exact_mut(RING_CHANNELS).enumerate() {
+        let k = into + i as u64;
+        let edge = k.min(fragment - 1 - k);
+        if edge >= fade {
+            continue;
+        }
+        let g = 0.5 * (1.0 - (std::f64::consts::PI * edge as f64 / fade as f64).cos());
+        for s in frame.iter_mut() {
+            *s = (f64::from(*s) * g) as i32;
+        }
     }
 }
 
@@ -374,6 +423,105 @@ mod tests {
         })
     }
 
+    /// Whether `out` is a stretch of a scan fragment: the source from frame
+    /// `from` on, `into` frames into a fragment of `fragment`. Stated as what
+    /// a fade must be rather than as the formula, so it is not the code
+    /// checking itself: **exactly the source** away from the ends, and at
+    /// them never louder than the source, never of the other sign, and
+    /// silent on the edge frame itself.
+    fn scanned(out: &[i32], from: u64, into: u64, fragment: u64) -> bool {
+        let fade = fade_frames(fragment);
+        assert!(fade > 0, "pointless unless the fragment fades");
+        out.chunks_exact(RING_CHANNELS).enumerate().all(|(i, frame)| {
+            let k = into + i as u64;
+            let edge = k.min(fragment - 1 - k);
+            frame.iter().enumerate().all(|(c, &got)| {
+                let f = from + i as u64;
+                let src = f as i32 * 2 + c as i32;
+                if edge >= fade {
+                    got == src
+                } else if edge == 0 {
+                    got == 0
+                } else {
+                    got.abs() <= src.abs() && (got == 0 || got.signum() == src.signum())
+                }
+            })
+        })
+    }
+
+    #[test]
+    fn a_scan_fragment_fades_in_and_out_and_is_the_source_between() {
+        // The fade, alone: one whole fragment from frame 1000 of a source
+        // whose samples are large enough for the ramp to show in every step.
+        let (mut w, ring) = ring::new(4096);
+        let block: Vec<i32> = (0..4096i32).flat_map(|_| [1 << 22, -(1 << 22)]).collect();
+        w.append(&block);
+        std::mem::forget(w);
+        let t = Transport::new();
+        t.track_loaded(0);
+        let fragment = 400u64;
+        let fade = fade_frames(fragment);
+        let mut e = Engine::new(4096).fragments_of(fragment);
+        t.request_seek(1000);
+        t.begin_seek(true);
+        let mut out = vec![0i32; fragment as usize * RING_CHANNELS];
+        assert_eq!(e.fill(&t, &ring, &mut out), Outcome::Seeking);
+
+        let left: Vec<i32> = out.chunks_exact(RING_CHANNELS).map(|f| f[0]).collect();
+        let n = fragment as usize;
+        assert_eq!((left[0], left[n - 1]), (0, 0), "silent at both edges");
+        let k = fade as usize;
+        assert!(left[..k].windows(2).all(|w| w[0] < w[1]), "rises through the fade-in");
+        assert!(left[n - k..].windows(2).all(|w| w[0] > w[1]), "falls through the fade-out");
+        assert!(left[k..n - k].iter().all(|&s| s == 1 << 22), "untouched between");
+        assert!(out.chunks_exact(2).all(|f| f[1] == -f[0]), "both channels, the same gain");
+    }
+
+    #[test]
+    fn playback_after_a_scan_is_the_source_bit_for_bit_wherever_it_was_let_go() {
+        // **The guard on the one gain stage in the callback.** `CLAUDE.md`
+        // allows the scan's fade on the condition that playback never passes
+        // through it. Let go at every frame of two whole fragments — the
+        // fade-ins and fade-outs included — and every period played after
+        // has to be the source, sample for sample, from where the sound had
+        // got to. Twice, for letting go to play and to pause and then play.
+        let (ring, frames) = filled(16_384);
+        let fragment = 200u64;
+        assert!(fade_frames(fragment) > 0);
+        for let_go_after in 1..=2 * fragment {
+            for resume_by_play in [false, true] {
+                let t = Transport::new();
+                t.track_loaded(0);
+                let mut e = Engine::new(frames).fragments_of(fragment);
+                t.request_seek(1000);
+                t.play();
+                t.begin_seek(true);
+                // One frame at a time, so the scan stops exactly there.
+                let mut one = vec![0i32; RING_CHANNELS];
+                for _ in 0..let_go_after {
+                    e.fill(&t, &ring, &mut one);
+                }
+                let at = e.position() as u64 + e.into_fragment.unwrap_or(0);
+
+                if resume_by_play {
+                    t.end_seek(false);
+                    t.play();
+                } else {
+                    t.end_seek(true);
+                }
+                let mut out = vec![0i32; 128 * RING_CHANNELS];
+                for p in 0..8u64 {
+                    assert_eq!(e.fill(&t, &ring, &mut out), Outcome::Played { frames: 128 });
+                    assert!(
+                        source_from(&out, at + p * 128),
+                        "let go after {let_go_after} frames ({}): period {p} is not the source",
+                        if resume_by_play { "paused, then PLAY" } else { "playing" }
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn a_held_seek_plays_the_source_in_fragments_and_jumps_by_its_rate() {
         // **Inverted, 2026-10-26, by the user's decision** — `decisions.md`.
@@ -393,31 +541,31 @@ mod tests {
         // FF at the starting speed: a fragment from where the deck was...
         t.begin_seek(true);
         assert_eq!(e.fill(&t, &ring, &mut out), Outcome::Seeking);
-        assert!(source_from(&out, 128), "the scan starts where the deck was");
+        assert!(scanned(&out, 128, 0, 256), "the scan starts where the deck was");
         assert_eq!(e.fill(&t, &ring, &mut out), Outcome::Seeking);
-        assert!(source_from(&out, 256), "the fragment plays on at unity");
+        assert!(scanned(&out, 256, 128, 256), "the fragment plays on at unity");
         assert_eq!(e.position(), 128.0, "the position moves between fragments, not in one");
         // ...then the rate's worth of fragments on, and the next one.
         assert_eq!(e.fill(&t, &ring, &mut out), Outcome::Seeking);
         assert_eq!(e.position(), 128.0 + RATE_SEEK * 256.0);
-        assert!(source_from(&out, 640));
+        assert!(scanned(&out, 640, 0, 256));
 
         // Faster: the same, with longer jumps.
         t.set_seek_speed(32.0);
         e.fill(&t, &ring, &mut out);
-        assert!(source_from(&out, 768), "a speed change waits for the fragment to end");
+        assert!(scanned(&out, 768, 128, 256), "a speed change waits for the fragment to end");
         e.fill(&t, &ring, &mut out);
         assert_eq!(e.position(), 640.0 + 32.0 * 256.0);
-        assert!(source_from(&out, 8832));
+        assert!(scanned(&out, 8832, 0, 256));
 
         // REW: steps back by the same rule, and its fragments still play
         // forwards.
         t.begin_seek(false);
         e.fill(&t, &ring, &mut out);
-        assert!(source_from(&out, 8960));
+        assert!(scanned(&out, 8960, 128, 256));
         e.fill(&t, &ring, &mut out);
         assert_eq!(e.position(), 8832.0 - RATE_SEEK * 256.0);
-        assert!(source_from(&out, 8320));
+        assert!(scanned(&out, 8320, 0, 256));
 
         // Let go, playing: on from where the sound was, not from the start
         // of the fragment that was just heard.
@@ -450,7 +598,7 @@ mod tests {
         // Then a step back, into the track.
         assert_eq!(e.fill(&t, &ring, &mut out), Outcome::Seeking);
         assert_eq!(e.position(), frames as f64 - RATE_SEEK * 128.0);
-        assert!(source_from(&out, frames - 256));
+        assert!(scanned(&out, frames - 256, 0, 128));
 
         // And audio comes back on release.
         t.end_seek(true);
@@ -474,7 +622,7 @@ mod tests {
         t.begin_seek(true);
         t.set_seek_speed(32.0);
         e.fill(&t, &ring, &mut out);
-        assert!(source_from(&out, 0), "resident: played");
+        assert!(scanned(&out, 0, 0, 128), "resident: played");
         e.fill(&t, &ring, &mut out);
         assert_eq!(e.position(), 32.0 * 128.0, "past the ring, and still moving");
         assert!(out.iter().all(|&s| s == 0), "not resident: silence");

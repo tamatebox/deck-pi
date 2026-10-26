@@ -127,8 +127,11 @@ every supported conversion is a pure shift. FF and REW do not break it either: t
 are a **scan**, the position advancing at the seek's rate while what sounds is
 fragments of the source at unity — a tenth of a second, then a jump — so there is
 never a moment when something other than the source's own samples reaches the DAC.
-What the scan gives up is continuity: a click at each join, which only a fade would
-soften, and a fade is a gain stage. Silent until 2026-10-26 (`decisions.md`).
+Its joins clicked, so each fragment fades in and out over 3 ms — the one gain stage in
+the callback, allowed for the scan alone by the user (`CLAUDE.md`), in the spirit of
+v2's cross-faded unity handover below: a fade between things that are not playback,
+never inside playback. The tests hold every period played after a scan to the source
+bit for bit. Silent until 2026-10-26 (`decisions.md`).
 
 Four ALSA requirements, because it converts silently when asked wrongly: **`hw:`
 only** (`default` mixes, `plughw` resamples), **the exact rate, never the nearest**

@@ -18,6 +18,10 @@ Short, load-bearing, and silent when broken — which is why they are here rathe
 than in a document you would have to think to open.
 
 - **No gain stage in the playback path, ever.** Not even temporarily, for testing.
+  **One exception, the user's (2026-10-26):** SEARCH's scan fades the first and last
+  3 ms of each fragment, because its joins clicked (`Engine::scan`). It never touches
+  a period played at unity, and `engine.rs`'s tests hold playback after a scan to the
+  source bit for bit — keep both true.
 - **Output sample rate follows the source, per track.** Never resample to a fixed
   rate. Unity pitch means the rates already match.
 - **The audio callback allocates nothing, locks nothing, does no I/O, and cannot
