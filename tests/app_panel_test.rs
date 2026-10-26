@@ -188,6 +188,36 @@ fn load_selection_only(deck: &mut Deck<CaptureSink>, folder: &str) {
 }
 
 #[test]
+fn going_back_to_the_head_of_a_playing_track_redraws_the_time() {
+    // The other half of the test below: from a playing deck |◄◄ pauses, so
+    // the state changes and the redraw follows from that alone.
+    let r = rig("panel-head-playing");
+    r.track("a", "long", 44_100, Bits::S16, 4 * 44_100);
+    let mut deck = r.deck(true);
+    let mut panel = Panel::new(Capture::default());
+
+    load(&mut deck, "a", "long.wav");
+    deck.apply(Action::Press(Button::PlayPause)).expect("play");
+    wait_for("two seconds of audio", || deck.transport().position() > 2.0 * 44_100.0);
+    assert_eq!(deck.transport().state(), State::Playing);
+
+    let mut t = Duration::ZERO;
+    panel.turn(t, &mut deck).expect("turn");
+    let before = panel.show().last().status.clone();
+    assert!(!before.contains("0:00/"), "the fixture never left the head: {before}");
+
+    deck.apply(Action::Press(Button::TrackPrev)).expect("back to the head");
+    assert_eq!(deck.transport().state(), State::Paused, "back pauses");
+    t += COALESCE;
+    panel.turn(t, &mut deck).expect("turn");
+    let after = panel.show().last().status.clone();
+    assert!(after.contains("0:00/"), "the old time is still up: {after}");
+
+    deck.unload();
+    drop(r.scratch);
+}
+
+#[test]
 fn going_back_to_the_head_of_a_paused_track_redraws_the_time() {
     // The user's, 2026-10-25: |◄◄ on a paused deck left the old time on the
     // glass. Nothing else the panel watches moves — the same track, the same
