@@ -80,8 +80,8 @@ pub fn fragment_frames(rate: u32) -> u64 {
 /// How long each end of a scan fragment fades: a raised cosine over 3 ms.
 /// Measured offline on 2026-10-26 against three of the user's tracks, hard
 /// joins stepped 20-30 dB past anything the music did on its own; the usual
-/// splice fix is a 2-5 ms raised-cosine fade, and 3 ms is what the offline
-/// renders used.
+/// splice fix is a 2-5 ms raised-cosine fade. 3 ms is what the offline
+/// renders used, and the user heard them and kept it the same day.
 pub const FADE_SECS: f64 = 0.003;
 
 /// [`FADE_SECS`] in frames, for a fragment of `fragment` frames — which is
