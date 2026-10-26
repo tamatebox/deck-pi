@@ -181,7 +181,12 @@ fn a_mono_track_reaches_both_channels_identically_through_the_whole_path() {
 }
 
 #[test]
-fn a_silent_seek_produces_no_audio_and_playback_resumes_where_it_left_off() {
+fn a_scan_plays_the_source_in_fragments_and_playback_resumes_where_its_sound_was() {
+    // **Inverted, 2026-10-26, by the user's decision** — `decisions.md`. This
+    // test held FF and asserted that not one sample was produced, because v1's
+    // seek was silent. The scan now plays fragments of the source at unity,
+    // through the real window thread, and every sample it plays has to be the
+    // source's own at the frame the scan says it is at.
     let scratch = Scratch::new("engine-seek");
     let frames = 20_000u64;
     let source = signal(Bits::S24, 2, frames as usize);
@@ -192,9 +197,12 @@ fn a_silent_seek_produces_no_audio_and_playback_resumes_where_it_left_off() {
     let (tx, rx) = mpsc::channel();
     let thread = std::thread::spawn(move || window.run(rx, |_| {}));
 
+    // Fragments a whole number of periods long, so no period straddles a jump
+    // and each one is a single run of the source.
+    const PERIODS_PER_FRAGMENT: usize = 4;
     let t = Transport::new();
     t.track_loaded(0);
-    let mut e = Engine::new(frames);
+    let mut e = Engine::new(frames).fragments_of((PERIODS_PER_FRAGMENT * PERIOD) as u64);
     t.play();
     let mut period = vec![0i32; PERIOD * RING_CHANNELS];
 
@@ -205,23 +213,41 @@ fn a_silent_seek_produces_no_audio_and_playback_resumes_where_it_left_off() {
         assert!(Instant::now() < deadline, "never got going");
     }
 
-    // Hold FF. Not one sample may be produced while it is held.
+    // Hold FF. What sounds is the source at the scan's own frame, or — where
+    // the window has not reached — nothing.
     t.begin_seek(true);
+    let mut into = 0;
+    let mut audible = 0;
     for _ in 0..20 {
+        // Paced like the DAC — a period is 2.9 ms at 44.1 kHz. Unpaced, the
+        // scan jumps through all twenty before the window thread has run once
+        // and every fragment is a miss, which is a test of the scheduler.
+        std::thread::sleep(Duration::from_millis(3));
         let outcome = e.fill(&t, &reader, &mut period);
         assert_eq!(outcome, Outcome::Seeking);
-        assert!(
-            period.iter().all(|&s| s == 0),
-            "v1's seek must be silent — audible scan needs the resampler"
+        if into == PERIODS_PER_FRAGMENT {
+            into = 0;
+        }
+        let at = e.position() as usize + into * PERIOD;
+        into += 1;
+        if period.iter().all(|&s| s == 0) {
+            continue;
+        }
+        audible += 1;
+        assert_eq!(
+            period[..],
+            source[at * RING_CHANNELS..(at + PERIOD) * RING_CHANNELS],
+            "the scan played something other than the source at frame {at}"
         );
     }
+    assert!(audible > 0, "the scan never sounded");
     let landed = e.position();
     assert!(landed > 1_000.0);
-    assert_eq!(landed.fract(), 0.0, "a 4x seek must leave the position integral");
+    assert_eq!(landed.fract(), 0.0, "a scan must leave the position integral");
 
-    // Release: audio resumes from exactly where the seek left it.
+    // Release: audio resumes from where the scan's sound had got to.
     t.end_seek(true);
-    let at = landed as usize;
+    let at = landed as usize + into * PERIOD;
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         match e.fill(&t, &reader, &mut period) {

@@ -3,7 +3,7 @@
 //! `Transport`'s fields are each a single atomic, which the type's own doc
 //! used to offer as the reason there was nothing to guard. That is true of
 //! each field and was false of the **pair** `Engine::step` decides on: it
-//! reads `rate`, then `is_silent()`, and two adjacent loads against two
+//! reads `rate`, then `is_seeking()`, and two adjacent loads against two
 //! adjacent stores are enough to see a combination that never existed. No
 //! memory reordering required, and so nothing here is `#[ignore]`d or timing
 //! sensitive in the way `ring_race_test.rs` is — the defect it guards was

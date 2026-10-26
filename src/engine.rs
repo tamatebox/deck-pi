@@ -33,8 +33,8 @@ pub enum Outcome {
     PlayedTail { frames: usize },
     /// `r = 0`. Silence, and the position does not move.
     Paused,
-    /// FF or REW held. The position moves, the display follows, and no audio
-    /// is produced — a silent seek, by design in v1.
+    /// FF or REW held. The position moves, the display follows, and the scan
+    /// plays: fragments of the source at unity — [`Engine`]'s `scan`.
     Seeking,
     /// The window thread has not reached here, or was outrun, or the window
     /// was relocated under us. Silence.
@@ -58,6 +58,21 @@ pub struct Engine {
     /// The track's length in frames, so the last period can be served short
     /// instead of failing as an underrun.
     track_frames: u64,
+    /// Frames in one fragment of the scan — [`FRAGMENT_SECS`] of this track.
+    fragment: u64,
+    /// How much of the current fragment the scan has played, or `None` when
+    /// no scan is under way.
+    into_fragment: Option<u64>,
+}
+
+/// How long each fragment of the scan sounds: the user's "about a tenth of a
+/// second", 2026-10-26. Long enough to tell where the scan is, short enough
+/// that 32x still moves.
+pub const FRAGMENT_SECS: f64 = 0.1;
+
+/// [`FRAGMENT_SECS`] in frames at `rate` Hz, never zero.
+pub fn fragment_frames(rate: u32) -> u64 {
+    ((f64::from(rate) * FRAGMENT_SECS) as u64).max(1)
 }
 
 impl Engine {
@@ -71,11 +86,23 @@ impl Engine {
     /// a load has **one** answer to "where does this start" instead of two
     /// that happen to agree. `Transport::track_loaded` sets zero; this
     /// follows it rather than restating it.
+    ///
+    /// The scan's fragments are a tenth of a second at 44.1 kHz until
+    /// [`fragments_of`](Self::fragments_of) says what the track's rate is.
     pub fn at(track_frames: u64, position: f64) -> Self {
         Engine {
             position,
             track_frames,
+            fragment: fragment_frames(44_100),
+            into_fragment: None,
         }
+    }
+
+    /// Fragments of `frames` each, for a track whose rate makes that a tenth
+    /// of a second.
+    pub fn fragments_of(mut self, frames: u64) -> Self {
+        self.fragment = frames.max(1);
+        self
     }
 
     pub fn position(&self) -> f64 {
@@ -113,6 +140,8 @@ impl Engine {
         // project gets wrong.
         if let Some(target) = t.peek_seek() {
             self.position = target.min(self.track_frames) as f64;
+            // Wherever a scan's fragment had got to, it is not here.
+            self.into_fragment = None;
             t.publish_position(self.position);
             t.consumed_seek(target);
         }
@@ -120,8 +149,8 @@ impl Engine {
         // One reading of the pair the branch below depends on, not two
         // loads that can straddle a control-thread write. See
         // `Transport::motion`.
-        let (rate, silent) = t.motion();
-        let outcome = self.step(ring, out, frames, rate, silent);
+        let (rate, seeking) = t.motion();
+        let outcome = self.step(ring, out, frames, rate, seeking);
 
         // Publish after the decision, so the display and the window thread
         // see where the audio actually is.
@@ -136,20 +165,28 @@ impl Engine {
         out: &mut [i32],
         frames: u64,
         rate: f64,
-        silent: bool,
+        seeking: bool,
     ) -> Outcome {
-        // A silent seek moves the position and emits nothing, so the rate may
-        // be anything — including negative — without needing a resampler.
+        // A seek moves the position at the rate and plays only at unity, so
+        // the rate may be anything — including negative — without needing a
+        // resampler.
         //
         // **Checked before the end of the track**, deliberately. With the
         // order reversed, a deck that has played to the end reports
         // `EndOfTrack` forever and REW cannot move the position back out of
         // it — the only way off the last frame would be reloading the file.
         // Seeking is a position operation and has to work at the boundaries.
-        if silent && rate != RATE_PAUSED {
-            silence(out);
-            self.advance(rate * frames as f64);
-            return Outcome::Seeking;
+        if seeking && rate != RATE_PAUSED {
+            return self.scan(ring, out, frames, rate);
+        }
+        // Out of a scan, carry on from where its sound had got to rather than
+        // from its fragment's start, which was heard a moment ago. Not on a
+        // paused reading mid-seek — `Transport::motion`'s safe guess — which
+        // is a scan standing still, not one that has ended.
+        if !seeking {
+            if let Some(into) = self.into_fragment.take() {
+                self.advance(into as f64);
+            }
         }
 
         if self.position >= self.track_frames as f64 {
@@ -204,6 +241,51 @@ impl Engine {
                 Outcome::Missed(e)
             }
         }
+    }
+
+    /// FF or REW held: **a fragment of the source at unity, then a jump**, so
+    /// the operator hears where the scan is — the user's, 2026-10-26.
+    ///
+    /// Every sample this emits is the source's own, read at an integral
+    /// position, so the module's rule holds: nothing sounds but unity. What
+    /// it gives up is continuity — a click at each join, which only a fade
+    /// would soften, and a fade is a gain stage.
+    ///
+    /// **`position` is where the fragment starts**, and moves only between
+    /// fragments, by `rate` fragments' worth. So it travels one way at the
+    /// seek's speed, which is what the window thread reads its direction
+    /// from and what the display shows, and REW plays its fragments forwards
+    /// from each step back — the part of the source the window has just
+    /// filled on the way down. A fragment the window does not hold is
+    /// silence, and the scan moves on regardless: a seek that waited for the
+    /// window would stall at 32x on a fast card's worth of hi-res.
+    fn scan(&mut self, ring: &RingReader, out: &mut [i32], frames: u64, rate: f64) -> Outcome {
+        let mut done = 0u64;
+        while done < frames {
+            let into = match self.into_fragment {
+                Some(i) if i < self.fragment => i,
+                Some(_) => {
+                    self.advance(rate * self.fragment as f64);
+                    0
+                }
+                None => 0,
+            };
+            let n = (frames - done).min(self.fragment - into);
+            let dst = &mut out[done as usize * RING_CHANNELS..(done + n) as usize * RING_CHANNELS];
+            let from = self.position as u64 + into;
+            if from >= self.track_frames {
+                silence(dst);
+            } else if self.track_frames - from < n {
+                // The source's last frames, then silence.
+                let _ = ring.read_tail(from, dst);
+            } else {
+                // A miss has already silenced `dst`.
+                let _ = ring.read_block(from, dst);
+            }
+            self.into_fragment = Some(into + n);
+            done += n;
+        }
+        Outcome::Seeking
     }
 
     /// Moves the position, clamped to the track. Clamping at zero is what
@@ -283,27 +365,94 @@ mod tests {
         }
     }
 
+    /// Whether `out` is the source from frame `from` on, sample for sample —
+    /// `filled` writes each frame's own index into it.
+    fn source_from(out: &[i32], from: u64) -> bool {
+        out.iter().enumerate().all(|(i, &s)| {
+            let f = from + (i / RING_CHANNELS) as u64;
+            s == f as i32 * 2 + (i % RING_CHANNELS) as i32
+        })
+    }
+
     #[test]
-    fn a_held_seek_moves_the_position_at_four_times_and_stays_silent() {
-        let (ring, frames) = filled(8192);
+    fn a_held_seek_plays_the_source_in_fragments_and_jumps_by_its_rate() {
+        // **Inverted, 2026-10-26, by the user's decision** — `decisions.md`.
+        // This test asserted that v1's seek was silent and moved the position
+        // at 4x. The scan now plays a fragment of the source at unity and
+        // jumps by the rate's worth of fragments; the speed is the deck's to
+        // raise while the button is held.
+        let (ring, frames) = filled(16_384);
         let t = Transport::new();
         t.track_loaded(0);
-        let mut e = Engine::new(frames);
+        let mut e = Engine::new(frames).fragments_of(256);
         t.play();
         let mut out = vec![0i32; 128 * RING_CHANNELS];
         e.fill(&t, &ring, &mut out);
-        let from = e.position();
+        assert_eq!(e.position(), 128.0);
 
+        // FF at the starting speed: a fragment from where the deck was...
         t.begin_seek(true);
         assert_eq!(e.fill(&t, &ring, &mut out), Outcome::Seeking);
-        assert!(out.iter().all(|&s| s == 0), "v1's seek produces no audio");
-        assert_eq!(e.position(), from + 128.0 * RATE_SEEK);
+        assert!(source_from(&out, 128), "the scan starts where the deck was");
+        assert_eq!(e.fill(&t, &ring, &mut out), Outcome::Seeking);
+        assert!(source_from(&out, 256), "the fragment plays on at unity");
+        assert_eq!(e.position(), 128.0, "the position moves between fragments, not in one");
+        // ...then the rate's worth of fragments on, and the next one.
+        assert_eq!(e.fill(&t, &ring, &mut out), Outcome::Seeking);
+        assert_eq!(e.position(), 128.0 + RATE_SEEK * 256.0);
+        assert!(source_from(&out, 640));
 
+        // Faster: the same, with longer jumps.
+        t.set_seek_speed(32.0);
+        e.fill(&t, &ring, &mut out);
+        assert!(source_from(&out, 768), "a speed change waits for the fragment to end");
+        e.fill(&t, &ring, &mut out);
+        assert_eq!(e.position(), 640.0 + 32.0 * 256.0);
+        assert!(source_from(&out, 8832));
+
+        // REW: steps back by the same rule, and its fragments still play
+        // forwards.
+        t.begin_seek(false);
+        e.fill(&t, &ring, &mut out);
+        assert!(source_from(&out, 8960));
+        e.fill(&t, &ring, &mut out);
+        assert_eq!(e.position(), 8832.0 - RATE_SEEK * 256.0);
+        assert!(source_from(&out, 8320));
+
+        // Let go, playing: on from where the sound was, not from the start
+        // of the fragment that was just heard.
+        t.end_seek(true);
+        assert_eq!(e.fill(&t, &ring, &mut out), Outcome::Played { frames: 128 });
+        assert!(source_from(&out, 8448));
+    }
+
+    #[test]
+    fn rew_can_rewind_out_of_the_end_of_a_track() {
+        // Regression. The end-of-track check used to run before the seek, so
+        // once the position reached the last frame REW did nothing and the
+        // deck was stuck there until the file was reloaded.
+        let frames = 1_000u64;
+        let (ring, _) = filled(frames);
+        let t = Transport::new();
+        t.track_loaded(0);
+        let mut e = Engine::new(frames).fragments_of(128);
+        let mut out = vec![0i32; 128 * RING_CHANNELS];
+
+        t.request_seek(frames);
+        t.play();
+        assert_eq!(e.fill(&t, &ring, &mut out), Outcome::EndOfTrack);
+        assert_eq!(e.position(), frames as f64);
+
+        // The first fragment is at the end, where there is nothing to play.
         t.begin_seek(false);
         assert_eq!(e.fill(&t, &ring, &mut out), Outcome::Seeking);
-        assert_eq!(e.position(), from, "REW retraces exactly");
+        assert!(out.iter().all(|&s| s == 0));
+        // Then a step back, into the track.
+        assert_eq!(e.fill(&t, &ring, &mut out), Outcome::Seeking);
+        assert_eq!(e.position(), frames as f64 - RATE_SEEK * 128.0);
+        assert!(source_from(&out, frames - 256));
 
-        // And audio resumes on release, from wherever the seek left it.
+        // And audio comes back on release.
         t.end_seek(true);
         assert!(matches!(
             e.fill(&t, &ring, &mut out),
@@ -312,32 +461,23 @@ mod tests {
     }
 
     #[test]
-    fn rew_can_rewind_out_of_the_end_of_a_track() {
-        // Regression. The end-of-track check used to run before the silent
-        // seek, so once the position reached the last frame REW did nothing
-        // and the deck was stuck there until the file was reloaded.
-        let frames = 1_000u64;
-        let (ring, _) = filled(frames);
+    fn a_fragment_the_window_does_not_hold_is_silence_and_the_scan_moves_on() {
+        // A seek that waited for the window would stall at 32x on hi-res. One
+        // that plays what it has and moves on reaches the end of the track
+        // all the same.
+        let (ring, _) = filled(512);
         let t = Transport::new();
         t.track_loaded(0);
-        let mut e = Engine::new(frames);
-        let mut out = vec![0i32; 128 * RING_CHANNELS];
-
-        t.request_seek(frames);
-        t.play();
-        assert_eq!(e.fill(&t, &ring, &mut out), Outcome::EndOfTrack);
-        assert_eq!(e.position(), frames as f64);
-
-        t.begin_seek(false);
-        assert_eq!(e.fill(&t, &ring, &mut out), Outcome::Seeking);
-        assert_eq!(e.position(), frames as f64 - 128.0 * RATE_SEEK);
-
-        // And audio comes back on release.
-        t.end_seek(true);
-        assert!(matches!(
-            e.fill(&t, &ring, &mut out),
-            Outcome::Played { .. }
-        ));
+        // The track is longer than the ring holds.
+        let mut e = Engine::new(100_000).fragments_of(128);
+        let mut out = vec![9i32; 128 * RING_CHANNELS];
+        t.begin_seek(true);
+        t.set_seek_speed(32.0);
+        e.fill(&t, &ring, &mut out);
+        assert!(source_from(&out, 0), "resident: played");
+        e.fill(&t, &ring, &mut out);
+        assert_eq!(e.position(), 32.0 * 128.0, "past the ring, and still moving");
+        assert!(out.iter().all(|&s| s == 0), "not resident: silence");
     }
 
     #[test]

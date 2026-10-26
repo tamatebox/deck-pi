@@ -16,9 +16,10 @@
 //! `architecture.md` requires reads inside the window to be "free in either
 //! direction" and the window to be filled "ahead of **and behind** the
 //! playhead", and an SPSC FIFO's consumer can only move forward — data behind
-//! its read pointer is gone. v1 alone would be satisfied by a FIFO, since
-//! playback only reads forward and FF/REW are a silent seek, but then v2's
-//! jog would be a rewrite rather than a substitution.
+//! its read pointer is gone. v1 once looked satisfiable by a FIFO, while
+//! playback only read forward and FF/REW were a silent seek — which would
+//! have made v2's jog a rewrite rather than a substitution, and does not hold
+//! now that REW's scan plays forwards from each step back.
 //!
 //! # How the callback reads it without a lock
 //!

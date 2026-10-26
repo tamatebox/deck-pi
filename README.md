@@ -153,7 +153,8 @@ feed — and both live in [docs/hardware.md](docs/hardware.md).
 ## Controls
 
 A detented rotary encoder for browsing, plus BACK, PLAY/PAUSE, CUE, **SEARCH** —
-held, and it only seeks — and **TRACK SEARCH**, which steps to the next track,
+held, it scans: tenth-of-a-second fragments of the source at 2x, then 8x, then 32x —
+and **TRACK SEARCH**, which steps to the next track,
 playing on if the deck was playing; back is this track's head first and the previous
 track only within a second of it, and pauses either way. ENTER is the encoder's push. The display
 shows the browser and the transport: the position against the track's length, and the
@@ -171,8 +172,9 @@ through a resistor ladder that the Pico reads as a voltage — `docs/cdj-200.md`
 **None of them is on the Pi.** They hang off a Pico 2 H which reaches the Pi as a USB
 device, so the deck reads the same `/dev/input` keycodes it always did and the Pi's
 header carries nothing but audio. The panel went the same way, with the deck still
-doing the drawing and shipping pixels over the link. Seeking is silent in v1: an
-audible scan needs the resampler, which would give v1 a second mode. Buttons are
+doing the drawing and shipping pixels over the link. The scan plays the source's own
+samples at unity in fragments, so it needs no resampler and v1 stays bit-perfect.
+Buttons are
 debounced and detents decoded on the Pico, never polled from userspace.
 
 ## Track length

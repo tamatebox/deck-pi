@@ -100,13 +100,13 @@ fn holding_ff_seeks_and_releasing_restores_what_was_playing() {
     assert_eq!(deck.transport().rate(), RATE_SEEK, "the press starts the seek");
     assert_eq!(deck.transport().state(), State::SeekingForward);
     assert!(
-        deck.transport().is_silent(),
+        deck.transport().is_seeking(),
         "v1's seek is silent — an audible scan would need the resampler"
     );
 
     feed(&mut deck, &mut d, key(Button::Ff, 0));
     assert_eq!(deck.transport().rate(), RATE_UNITY, "playing resumes");
-    assert!(!deck.transport().is_silent());
+    assert!(!deck.transport().is_seeking());
 }
 
 #[test]

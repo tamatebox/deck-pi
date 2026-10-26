@@ -45,13 +45,24 @@ pub const RATE_UNITY: f64 = 1.0;
 /// Pause. `architecture.md`: "pause is `r = 0`".
 pub const RATE_PAUSED: f64 = 0.0;
 
-/// How fast FF and REW move the position while held.
+/// How fast a held SEARCH starts: the first step of [`seek_speed`].
+pub const RATE_SEEK: f64 = 2.0;
+
+/// How fast a SEARCH held for `held` moves the position — **2x for the first
+/// second, 8x until three, then 32x**, the user's, 2026-10-26. Slow first, so
+/// a short press moves a little and lands where it was heard; fast after, so
+/// an hour's track is crossed in about two minutes.
 ///
-/// **Inferred, not stated.** `architecture.md` says that in v2 the silent
-/// seek "becomes `r = 4` on the rate variable", so using 4 in v1 too makes
-/// the v2 change a pure unmute rather than also a speed change. No document
-/// gives v1's seek speed directly.
-pub const RATE_SEEK: f64 = 4.0;
+/// Whole numbers on purpose: the position only ever moves by the speed times
+/// a whole number of frames, so it stays integral and the engine can play
+/// from it at unity the moment SEARCH is let go.
+pub fn seek_speed(held: std::time::Duration) -> f64 {
+    match held.as_millis() {
+        0..1_000 => RATE_SEEK,
+        1_000..3_000 => 8.0,
+        _ => 32.0,
+    }
+}
 
 /// What the display should say. The callback never reads this; it exists so
 /// the UI does not have to reconstruct intent from a float.
@@ -142,13 +153,13 @@ pub enum Cued {
 /// # Publishing order
 ///
 /// **"No torn state" is true of each field and was false of the pair the
-/// callback decides on.** `Engine::step` reads `rate` and then `is_silent()`,
+/// callback decides on.** `Engine::step` reads `rate` and then `is_seeking()`,
 /// and a control-thread write of the two is two stores: interleave them and
 /// the callback sees a combination that never existed. No memory reordering is
 /// needed — two adjacent loads against two adjacent stores is enough.
 ///
-/// The combination that mattered was `rate == ±RATE_SEEK` with `silent ==
-/// false`, which `step` reads as "a rate other than unity that is not a silent
+/// The combination that mattered was `rate == ±RATE_SEEK` with `seeking ==
+/// false`, which `step` reads as "a rate other than unity that is not a
 /// seek" and reports as `Outcome::NeedsResampler`. v1 has no resampler, so the
 /// caller treats that as fatal — measured at **10.7M of 35.6M fills** with the
 /// control thread pressing and releasing FF, which is a rare event in real use
@@ -156,33 +167,33 @@ pub enum Cued {
 ///
 /// The fix is an ordering rule, not a lock and not a wider atomic:
 ///
-/// - **Entering** a silent state, set `silent` **first**, then the rate.
-/// - **Leaving** one, set the rate **first**, then `silent`.
+/// - **Entering** a seek, set `seeking` **first**, then the rate.
+/// - **Leaving** one, set the rate **first**, then `seeking`.
 ///
-/// So `silent` is never false while the rate is still a seek rate, and the bad
-/// combination cannot be observed. What a badly timed read can still see is
-/// `silent == true` with a rate of unity or zero, which costs one period of
-/// silence or one period of seeking at 1x instead of 4x. Both are recoverable
-/// and neither is reported as an error.
+/// So `seeking` is never false while the rate is still a seek rate, and the
+/// bad combination cannot be observed. What a badly timed read can still see
+/// is `seeking == true` with a rate of unity or zero, which costs one period
+/// of scan at 1x or of standing still. Both are recoverable and neither is
+/// reported as an error.
 ///
-/// **Deriving `silent` from the rate would remove the pair entirely and is
-/// deliberately not done.** In v1 `silent` holds exactly when `|rate| ==
-/// RATE_SEEK`, so the flag looks redundant — but `decisions.md` has FF/REW
-/// becoming an **audible** `r = 4` in v2, so the equivalence is a v1-only
-/// accident. Encoding it here would work now and have to be unpicked then,
-/// which is the same trap as serving the ring with a FIFO.
+/// **Deriving `seeking` from the rate would remove the pair entirely and is
+/// deliberately not done.** A seek's rate is anything but unity and zero,
+/// and v2's pitch is too, so the rate alone cannot say which the callback is
+/// looking at. It was named `silent` while v1's seek made no sound; the scan
+/// plays fragments now (`Engine`), and the old name would have said the
+/// opposite of what the flag does.
 pub struct Transport {
     /// The rate variable `r`. One number carries pause, play, and in v2 pitch
     /// and jog, which is why all three ride the same read path.
     rate: AtomicU64,
-    /// Version around the `(rate, silent)` pair, odd while a write is in
+    /// Version around the `(rate, seeking)` pair, odd while a write is in
     /// flight. See "Publishing order" on the type — the pair is what the
     /// callback decides on, and it has to be read as one thing.
     motion: AtomicU32,
-    /// True while the audio must be muted even though the position is moving.
-    /// This is what makes FF and REW a *silent* seek in v1 without giving v1
-    /// a second read mode. v2 clears it and the same seek becomes audible.
-    silent: AtomicBool,
+    /// True while SEARCH is held: the position moves at the rate, and what
+    /// sounds is the engine's scan — fragments of the source at unity — not
+    /// the source at that rate, which v1 has no resampler to play.
+    seeking: AtomicBool,
     /// A one-shot absolute seek. `-1` means none; the callback peeks it,
     /// applies it, publishes the position, and only then retires it — see
     /// [`Transport::peek_seek`] for why that order matters.
@@ -204,7 +215,7 @@ impl Default for Transport {
         Transport {
             rate: AtomicU64::new(RATE_PAUSED.to_bits()),
             motion: AtomicU32::new(0),
-            silent: AtomicBool::new(false),
+            seeking: AtomicBool::new(false),
             seek_to: AtomicI64::new(-1),
             position: AtomicU64::new(0.0f64.to_bits()),
             state: AtomicU8::new(State::Stopped as u8),
@@ -259,10 +270,10 @@ impl Transport {
         self.state.store(State::Paused as u8, Ordering::Relaxed);
     }
 
-    /// FF or REW held down. The position moves and the display follows, but
-    /// no audio is produced — an audible scan needs the resampler, which
-    /// would give v1 a second mode and break its unconditional
-    /// bit-perfection.
+    /// FF or REW held down, at [`RATE_SEEK`]. The position moves and the
+    /// display follows, and the engine plays the scan: fragments of the source
+    /// at unity, each a jump further on — never the source at the seek's rate,
+    /// which would need the resampler v1 does not have.
     pub fn begin_seek(&self, forward: bool) {
         if self.nothing_loaded() {
             return;
@@ -307,6 +318,24 @@ impl Transport {
             self.play();
         } else {
             self.pause();
+        }
+    }
+
+    /// A held seek's new speed, in its own direction — [`seek_speed`] says
+    /// which, from how long SEARCH has been down.
+    ///
+    /// **Nothing unless the deck is still seeking**, for the reason
+    /// [`end_seek`](Self::end_seek) gives: a Back Cue during the hold has
+    /// already paused it, and a speed change must not start it seeking again.
+    /// Unchanged speeds publish nothing, so calling this every turn is free.
+    pub fn set_seek_speed(&self, speed: f64) {
+        let r = match self.state() {
+            State::SeekingForward => speed,
+            State::SeekingBack => -speed,
+            _ => return,
+        };
+        if self.rate() != r {
+            self.publish_motion(r, true);
         }
     }
 
@@ -394,22 +423,22 @@ impl Transport {
         f64::from_bits(self.rate.load(Ordering::Acquire))
     }
 
-    /// Publishes the rate and the silent flag as one indivisible change.
+    /// Publishes the rate and the seeking flag as one indivisible change.
     ///
     /// Only the control thread calls this, so the version needs no
     /// compare-and-swap; the odd value is what tells a reader mid-flight.
-    fn publish_motion(&self, rate: f64, silent: bool) {
+    fn publish_motion(&self, rate: f64, seeking: bool) {
         let v = self.motion.load(Ordering::Relaxed);
         self.motion.store(v.wrapping_add(1), Ordering::Relaxed);
         fence(Ordering::Release);
-        self.silent.store(silent, Ordering::Relaxed);
+        self.seeking.store(seeking, Ordering::Relaxed);
         self.rate.store(rate.to_bits(), Ordering::Relaxed);
         self.motion.store(v.wrapping_add(2), Ordering::Release);
     }
 
-    /// The rate and the silent flag, as one consistent reading.
+    /// The rate and the seeking flag, as one consistent reading.
     ///
-    /// **Use this, not `rate()` and `is_silent()` separately, anywhere the two
+    /// **Use this, not `rate()` and `is_seeking()` separately, anywhere the two
     /// are decided on together.** Those remain for callers that genuinely want
     /// one — the display wants the rate, a test wants the flag — but the
     /// callback's branch depends on the pair, and two loads across two stores
@@ -417,7 +446,7 @@ impl Transport {
     ///
     /// Bounded at two attempts, so it stays O(1) as the callback rules
     /// require. If both race — which needs a control write to land inside a
-    /// window of a few instructions, twice — it reports a paused, silent deck:
+    /// window of a few instructions, twice — it reports a paused deck mid-seek:
     /// one period of silence, recovered on the next call. That is the only
     /// reading that is safe to invent, because it neither moves the position
     /// nor emits anything.
@@ -426,7 +455,7 @@ impl Transport {
         for _ in 0..2 {
             let before = self.motion.load(Ordering::Acquire);
             if before & 1 == 0 {
-                let silent = self.silent.load(Ordering::Relaxed);
+                let seeking = self.seeking.load(Ordering::Relaxed);
                 let rate = f64::from_bits(self.rate.load(Ordering::Relaxed));
                 // The two loads above must not sink past this check. The
                 // `Acquire` on the load below orders what *follows* it, not
@@ -434,7 +463,7 @@ impl Transport {
                 // unsound, so the fence is not optional here either.
                 fence(Ordering::Acquire);
                 if self.motion.load(Ordering::Relaxed) == before {
-                    return (rate, silent);
+                    return (rate, seeking);
                 }
             }
             std::hint::spin_loop();
@@ -443,12 +472,12 @@ impl Transport {
     }
 
     #[inline]
-    pub fn is_silent(&self) -> bool {
+    pub fn is_seeking(&self) -> bool {
         // `Acquire`, pairing with the `Release` on the *clear* in `play`,
         // `pause` and `reached_end`. Seeing `false` here must also mean
         // seeing the rate that was stored before it, or the callback decides
         // on a pair that never existed. See "Publishing order" on the type.
-        self.silent.load(Ordering::Acquire)
+        self.seeking.load(Ordering::Acquire)
     }
 
     pub fn state(&self) -> State {
@@ -578,7 +607,7 @@ impl Transport {
     /// button that owns the mode question.
     #[cfg(test)]
     pub(crate) fn set_rate_for_test(&self, r: f64) {
-        self.publish_motion(r, self.silent.load(Ordering::Relaxed));
+        self.publish_motion(r, self.seeking.load(Ordering::Relaxed));
     }
 
     /// Reports reaching the end of the track. Stops the rate so the position
@@ -721,6 +750,7 @@ impl Transport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     /// What the callback does with a queued seek, minus applying it: peek,
     /// then retire. The two-call protocol exists so the position can be
@@ -771,7 +801,7 @@ mod tests {
 
         t.play();
         assert_eq!(t.rate(), RATE_UNITY);
-        assert!(!t.is_silent());
+        assert!(!t.is_seeking());
         assert_eq!(t.state(), State::Playing);
 
         t.pause();
@@ -780,18 +810,48 @@ mod tests {
     }
 
     #[test]
-    fn a_held_seek_mutes_but_keeps_the_position_moving() {
+    fn a_held_seek_is_flagged_and_keeps_the_position_moving() {
         let t = Transport::new();
         t.track_loaded(0);
         t.play();
         t.begin_seek(true);
-        assert!(t.is_silent(), "v1's seek is silent");
+        assert!(t.is_seeking(), "the engine has to know to scan");
         assert_eq!(t.rate(), RATE_SEEK);
         assert_eq!(t.state(), State::SeekingForward);
 
         t.begin_seek(false);
         assert_eq!(t.rate(), -RATE_SEEK, "REW runs the rate variable negative");
         assert_eq!(t.state(), State::SeekingBack);
+    }
+
+    #[test]
+    fn a_held_seek_speeds_up_the_longer_it_is_held() {
+        // The user's, 2026-10-26: 2x for the first second, 8x until three,
+        // then 32x.
+        let ms = Duration::from_millis;
+        assert_eq!(seek_speed(Duration::ZERO), RATE_SEEK);
+        assert_eq!(seek_speed(ms(999)), 2.0);
+        assert_eq!(seek_speed(ms(1_000)), 8.0);
+        assert_eq!(seek_speed(ms(2_999)), 8.0);
+        assert_eq!(seek_speed(ms(3_000)), 32.0);
+        assert_eq!(seek_speed(Duration::from_secs(600)), 32.0);
+    }
+
+    #[test]
+    fn a_speed_change_keeps_the_seeks_direction_and_starts_nothing() {
+        let t = Transport::new();
+        t.track_loaded(0);
+        t.begin_seek(false);
+        t.set_seek_speed(8.0);
+        assert_eq!(t.rate(), -8.0, "REW stays REW");
+        assert!(t.is_seeking());
+
+        // A Back Cue mid-hold has paused the deck; the hold's next speed-up
+        // must not start it seeking again.
+        t.pause();
+        t.set_seek_speed(32.0);
+        assert_eq!(t.state(), State::Paused);
+        assert_eq!(t.rate(), RATE_PAUSED);
     }
 
     #[test]
@@ -802,7 +862,7 @@ mod tests {
         t.begin_seek(true);
         t.end_seek(true);
         assert_eq!(t.rate(), RATE_UNITY, "audio resumes on release");
-        assert!(!t.is_silent());
+        assert!(!t.is_seeking());
 
         // Held from a paused deck: releasing must not start playback.
         t.pause();
@@ -947,7 +1007,7 @@ mod tests {
         t.publish_position(60_000.0);
         assert_eq!(t.cue_down(), Cued::Returned(2_000), "a held seek is not paused");
         assert_eq!(t.rate(), RATE_PAUSED);
-        assert!(!t.is_silent(), "back cue leaves the deck ready to play, not muted");
+        assert!(!t.is_seeking(), "back cue leaves the deck ready to play, not muted");
         assert_eq!(take(&t), Some(2_000));
     }
 

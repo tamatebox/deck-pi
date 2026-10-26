@@ -124,8 +124,11 @@ driver returns early when the rate is unchanged.
 
 **v1 is unconditionally bit-perfect.** No pitch and no jog means no second mode, and
 every supported conversion is a pure shift. FF and REW do not break it either: they
-are a **silent seek**, position advancing with no audio produced, so there is never a
-moment when something other than the source reaches the DAC.
+are a **scan**, the position advancing at the seek's rate while what sounds is
+fragments of the source at unity — a tenth of a second, then a jump — so there is
+never a moment when something other than the source's own samples reaches the DAC.
+What the scan gives up is continuity: a click at each join, which only a fade would
+soften, and a fade is a gain stage. Silent until 2026-10-26 (`decisions.md`).
 
 Four ALSA requirements, because it converts silently when asked wrongly: **`hw:`
 only** (`default` mixes, `plughw` resamples), **the exact rate, never the nearest**

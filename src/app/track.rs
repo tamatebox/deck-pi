@@ -86,7 +86,7 @@ use std::thread::JoinHandle;
 
 use crate::app::audio::{self, AtEnd, Report, Stopped};
 use crate::cue::{CueError, CueStore};
-use crate::engine::Engine;
+use crate::engine::{fragment_frames, Engine};
 use crate::file::{OpenError, TrackInfo};
 use crate::loaded::Loaded;
 use crate::ring;
@@ -258,7 +258,8 @@ where
         reader,
         // From the transport, so a load has one answer to "where does this
         // start" rather than two that agree today and need not tomorrow.
-        engine: Engine::at(info.frames, transport.position()),
+        engine: Engine::at(info.frames, transport.position())
+            .fragments_of(fragment_frames(info.rate)),
         sink,
         at_end: AtEnd::Idle,
     };

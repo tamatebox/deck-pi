@@ -39,7 +39,7 @@ use crate::file::TrackInfo;
 use crate::input::{Action, Button};
 use crate::loaded::{Loaded, Step};
 use crate::sink::{AudioSink, SinkError};
-use crate::transport::{Cued, State, Transport, RATE_PAUSED};
+use crate::transport::{seek_speed, Cued, State, Transport, RATE_PAUSED};
 
 /// How far into a track TRACK |◄◄ still means the previous track rather than
 /// this one's head. **The user's, not measured** — "near the head", then one
@@ -108,6 +108,9 @@ pub struct Deck<S: AudioSink + Send + 'static> {
     /// What FF/REW must restore on release. `Transport::end_seek` takes it as
     /// an argument precisely so this decision is the caller's and visible.
     was_playing: bool,
+    /// When the SEARCH being held went down, for [`seek_speed`]; `None` when
+    /// none is.
+    seek_since: Option<std::time::Instant>,
 }
 
 impl<S: AudioSink + Send + 'static> Deck<S> {
@@ -126,6 +129,7 @@ impl<S: AudioSink + Send + 'static> Deck<S> {
             config,
             open_sink,
             was_playing: false,
+            seek_since: None,
         }
     }
 
@@ -201,6 +205,16 @@ impl<S: AudioSink + Send + 'static> Deck<S> {
     /// fault — is this, because the deck must then stop claiming to hold a
     /// track it can no longer play. Returns why, once, for the display.
     pub fn service(&mut self) -> Option<Ended> {
+        // A held SEARCH speeds up the longer it is held — [`seek_speed`].
+        // Here because a hold sends no events to drive it, and the loop turns
+        // every 10 ms, which is finer than any step in the schedule.
+        if let Some(since) = self.seek_since {
+            if matches!(self.transport.state(), State::SeekingForward | State::SeekingBack) {
+                self.transport.set_seek_speed(seek_speed(since.elapsed()));
+            } else {
+                self.seek_since = None;
+            }
+        }
         let playing = self.playing.as_mut()?;
         if playing.finished() {
             // The threads are gone; the track is not playable any more.
@@ -242,8 +256,10 @@ impl<S: AudioSink + Send + 'static> Deck<S> {
             Action::Press(b @ (Button::Ff | Button::Rew)) => {
                 self.was_playing = self.transport.rate() != RATE_PAUSED;
                 self.transport.begin_seek(b == Button::Ff);
+                self.seek_since = Some(std::time::Instant::now());
             }
             Action::Release(Button::Ff | Button::Rew) => {
+                self.seek_since = None;
                 self.transport.end_seek(self.was_playing);
             }
 

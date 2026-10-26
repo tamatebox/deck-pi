@@ -28,7 +28,7 @@ use deck_pi::app::track::Config;
 use deck_pi::browser::Browser;
 use deck_pi::cue::CueStore;
 use deck_pi::input::{Action, Button};
-use deck_pi::sink::CaptureSink;
+use deck_pi::sink::{AudioSink, CaptureSink, SampleFormat, SinkError, SinkParams, SINK_CHANNELS};
 use deck_pi::transport::{State, RATE_PAUSED};
 use fixtures::{Bits, Kind, Scratch};
 
@@ -66,6 +66,21 @@ impl Rig {
         fixtures::write(&dir, name, Kind::Wav, &bytes)
     }
 
+    /// The same deck on a sink that takes each period as long as it lasts.
+    fn paced_deck(&self) -> Deck<PacedSink> {
+        let browser = Browser::open(&self.medium).expect("browser");
+        let cues = CueStore::load(&self.state, VOLUME, &self.medium).expect("cues");
+        Deck::new(
+            Box::new(|info| Ok(PacedSink::new(info.rate))),
+            Some(browser),
+            Some(cues),
+            Config {
+                window_bytes: WINDOW_BYTES,
+                rt: None,
+            },
+        )
+    }
+
     fn deck(&self) -> Deck<CaptureSink> {
         let browser = Browser::open(&self.medium).expect("browser");
         let cues = CueStore::load(&self.state, VOLUME, &self.medium).expect("cues");
@@ -97,7 +112,45 @@ fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
 }
 
 /// Moves the selection to the row with this name, from wherever it is.
-fn select(deck: &mut Deck<CaptureSink>, name: &str) {
+/// A sink at a device's pace: each period takes as long as it lasts. The
+/// capture sink runs as fast as the machine, which is right for comparing
+/// samples and wrong for a test that holds a button for a second — the deck
+/// would scan to the end of the track before the second was up.
+struct PacedSink {
+    params: SinkParams,
+}
+
+impl PacedSink {
+    fn new(rate: u32) -> PacedSink {
+        PacedSink {
+            params: SinkParams {
+                rate,
+                channels: SINK_CHANNELS as u32,
+                format: SampleFormat::S24Le,
+                period_frames: PERIOD,
+                periods: 2,
+            },
+        }
+    }
+}
+
+impl AudioSink for PacedSink {
+    fn params(&self) -> SinkParams {
+        self.params
+    }
+
+    fn write_period(&mut self, period: &[i32]) -> Result<(), SinkError> {
+        let frames = (period.len() / SINK_CHANNELS) as f64;
+        std::thread::sleep(Duration::from_secs_f64(frames / f64::from(self.params.rate)));
+        Ok(())
+    }
+
+    fn drain(&mut self) -> Result<(), SinkError> {
+        Ok(())
+    }
+}
+
+fn select<S: AudioSink + Send + 'static>(deck: &mut Deck<S>, name: &str) {
     let browser = deck.browser().expect("a medium");
     for _ in 0..64 {
         let rows = browser.view(16);
@@ -394,5 +447,36 @@ fn the_control_loop_pauses_the_deck_when_the_track_plays_out() {
     deck.unload();
     assert_eq!(deck.transport().state(), State::Stopped);
     assert!(deck.loaded().path().is_none());
+    drop(r.scratch);
+}
+
+#[test]
+fn a_held_search_speeds_up_and_lets_go_where_it_was() {
+    // The user's, 2026-10-26: 2x for the first second, faster after. The
+    // schedule itself is `transport::seek_speed`'s test; this is that the deck
+    // applies it while the button is down, from its own turn, and stops when
+    // it comes up.
+    let r = rig("deck-search");
+    r.track("set", "long", 60 * RATE as usize);
+    let mut deck = r.paced_deck();
+    select(&mut deck, "set");
+    deck.apply(Action::Press(Button::Enter)).expect("descend");
+    select(&mut deck, "long.wav");
+    deck.apply(Action::Press(Button::Enter)).expect("load");
+
+    deck.apply(Action::Press(Button::Ff)).expect("press");
+    deck.service();
+    assert_eq!(deck.transport().rate(), 2.0, "slow at first");
+
+    std::thread::sleep(Duration::from_millis(1_100));
+    deck.service();
+    assert_eq!(deck.transport().rate(), 8.0, "faster after a second");
+
+    deck.apply(Action::Release(Button::Ff)).expect("release");
+    deck.service();
+    assert_eq!(deck.transport().state(), State::Paused, "it was paused before");
+    assert_eq!(deck.transport().rate(), RATE_PAUSED, "and a turn after does not speed it up");
+
+    deck.unload();
     drop(r.scratch);
 }

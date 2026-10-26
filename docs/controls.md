@@ -179,9 +179,18 @@ having — **it is not a mode**. The idea it rejects is overloading the browse e
 browsing in the list and seeking during playback, which puts a hidden mode on the
 most-used control.
 
-**Seeking is silent in v1.** Position advances and the display follows, but no audio
-is produced — an audible scan needs the resampler, which would give v1 a second mode.
-In v2 it becomes `r = 4` on the existing rate variable.
+**A held SEARCH is an audible scan that speeds up** — decided by the user on
+2026-10-26, reversing "seeking is silent in v1". The position moves at **2x for the
+first second, 8x until three, then 32x**; what sounds is a tenth of a second of the
+source at unity, then a jump of the speed's worth of tenths, and again. REW steps back
+and plays each fragment forwards. Slow first, so a short press moves a little and is
+heard landing; fast after, so an hour is crossed in about two minutes. Letting go
+carries on from where the sound had got to, playing or paused as before the press.
+**Every sample is the source's own**, so it needs no resampler and v1 stays
+bit-perfect; the joins click, because softening them would take a fade, which is a
+gain stage. A deck paused before the press sounds while it is held, as the Cue Point
+Sampler does, and is silent again when it is let go. `decisions.md` has the
+reversal.
 
 **Debounce is 30-50 ms and that is the only interval left.** It used to have to
 sit well clear of a 300-500 ms hold threshold, and the threshold is gone with the

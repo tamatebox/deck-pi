@@ -596,9 +596,11 @@ statement about intent unless something checks it, and something can:
   is what stops the ring becoming a FIFO later.** `architecture.md` requires reads inside
   the window to be "free in either direction" and the window to be filled ahead
   of *and behind* the playhead; an SPSC FIFO's consumer only moves forward, and
-  what it has read is gone. v1 alone would be satisfied by a FIFO — playback
-  reads forward and FF/REW are a silent seek — which is exactly the trap: it
-  would work now and make v2's jog a rewrite instead of a substitution.
+  what it has read is gone. v1 once looked satisfiable by a FIFO — playback
+  read forward and FF/REW were a silent seek — which was exactly the trap: it
+  would have worked then and made v2's jog a rewrite instead of a substitution.
+  It would not work now: REW's scan steps back and plays each fragment forwards
+  from there (2026-10-26).
 
   **The ring's own memory ordering is subtle and `src/ring.rs`'s module doc is
   the authority**, not this file: relaxed `AtomicI32` slots, a seqlock on the

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use deck_pi::app::audio::{AtEnd, Parts};
-use deck_pi::engine::Engine;
+use deck_pi::engine::{fragment_frames, Engine};
 use deck_pi::file::{OpenError, Track};
 use deck_pi::browser::{Browser, Row, Verdict};
 use deck_pi::media::{self, Medium};
@@ -311,7 +311,7 @@ fn play<S: AudioSink>(
     let deck = Parts {
         transport: std::sync::Arc::clone(&transport),
         reader,
-        engine: Engine::new(info.frames),
+        engine: Engine::new(info.frames).fragments_of(fragment_frames(info.rate)),
         sink,
         // One file, pulled through, then a report. The deck's setting is
         // `Idle` and lives in `app::track`.

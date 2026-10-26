@@ -360,8 +360,8 @@ impl<D: Show> Panel<D> {
     /// mid-set. So the clock only runs when **nothing is playing**, which is
     /// what the document means by "idle means nothing playing".
     ///
-    /// Seeking counts as playing. The position is moving and is being read,
-    /// which is the whole reason FF and REW are silent rather than absent.
+    /// Seeking counts as playing. The position is moving and is being read —
+    /// and heard, since the scan plays fragments.
     fn light(&mut self, now: std::time::Duration, changed: bool, moving: bool) -> std::io::Result<()> {
         if changed || moving || self.active_at.is_none() {
             self.active_at = Some(now);
