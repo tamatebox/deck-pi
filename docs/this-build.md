@@ -174,7 +174,7 @@ One real stick, mounted read-only at `/media/stick`: **2192 names** (2026-09-16)
   The Debian package's udev rule is what lets `plugdev` at it. The ELF is built on
   the Mac and copied over; `picotool` wants `-t elf`, the ELF having no extension.
   A reflash breaks the deck's panel link, so the deck is restarted after one.
-- **Music is prepared on the Mac in `~/Music/DECK`**, outside this repo like the
+- **Music is prepared on the Mac in `~/Music/05_Tools/DECK`**, outside this repo like the
   stick-preparation it stands in for: `tracklist.txt` and `extra/` in, `./deck.sh`
   converts what the list names (rate and depth kept, PCM checked against the
   source) and numbers it in list order, takes `extra/` exactly as it is — names,
